@@ -18,10 +18,6 @@ const DEFAULT_CENTER = [32.7767, -96.797];
 const DEFAULT_ZOOM = 10;
 const OFF_ROUTE_THRESHOLD_M = 95;
 const MAX_TRAIL_POINTS = 300;
-const GPS_PERMISSION_REQUIRED_MESSAGE =
-  "Location permission is required for live task GPS tracking.";
-const GPS_PERMISSION_ANDROID_STEPS =
-  "Android Settings > Apps > BabyDragon > Permissions > Location > Allow while using.";
 
 const BASE_LAYERS = {
   street: {
@@ -54,20 +50,6 @@ const ROUTE_URL_FIELDS = [
 ];
 
 const ROUTE_GEOMETRY_FIELDS = [
-  "geojson",
-  "geo_json",
-  "geojson_data",
-  "geoJson",
-  "geometry",
-  "geometry_json",
-  "route_geo_json",
-  "data",
-  "json_data",
-  "shape",
-  "route_shape",
-  "coords",
-  "waypoints",
-  "route_waypoints",
   "route_geojson",
   "routeGeojson",
   "route_geometry",
@@ -216,20 +198,27 @@ export default function MobileRouteView({
         const gridData = await loadAssignedGrids(baseGridIds);
         const routeLookupKeys = buildRouteLookupKeys(baseGridIds, gridData, assignedTasks);
 
-        const [routeGridData, directRouteData, directSavedRouteData] = await Promise.all([
+        const [
+          routeGridData,
+          directRouteData,
+          directSavedRouteData,
+          recentRouteData,
+          recentSavedRouteData,
+        ] = await Promise.all([
           loadRouteGridRows(routeLookupKeys),
           loadRoutesFromTable("routes", routeLookupKeys),
           loadRoutesFromTable("saved_routes", routeLookupKeys),
+          loadRecentRoutesFromTable("routes"),
+          loadRecentRoutesFromTable("saved_routes"),
         ]);
 
         const routeIds = Array.from(
           new Set((routeGridData || []).map((item) => item.route_id).filter(Boolean))
         );
 
-        const [linkedRouteData, linkedSavedRouteData, looseRouteData] = await Promise.all([
+        const [linkedRouteData, linkedSavedRouteData] = await Promise.all([
           loadRoutesByIds("routes", routeIds),
           loadRoutesByIds("saved_routes", routeIds),
-          loadLooseMatchedRoutes(routeLookupKeys, gridData, assignedTasks),
         ]);
 
         const mergedRoutes = mergeById([
@@ -237,7 +226,8 @@ export default function MobileRouteView({
           ...(linkedSavedRouteData || []),
           ...(directRouteData || []),
           ...(directSavedRouteData || []),
-          ...(looseRouteData || []),
+          ...(recentRouteData || []),
+          ...(recentSavedRouteData || []),
           ...assignedTasks.map((task) => task._mobileRoute).filter(Boolean),
         ]);
 
@@ -702,7 +692,6 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
   const [fitTaskKey, setFitTaskKey] = useState(0);
   const [locating, setLocating] = useState(false);
   const [locationMessage, setLocationMessage] = useState("");
-  const [locationPermissionDenied, setLocationPermissionDenied] = useState(false);
   const [remoteRouteGeojsons, setRemoteRouteGeojsons] = useState([]);
   const [remoteRouteLoading, setRemoteRouteLoading] = useState(false);
 
@@ -789,7 +778,6 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
 
   async function locateMe(mapInstance = null) {
     setLocationMessage("");
-    setLocationPermissionDenied(false);
     setLocating(true);
 
     const fallbackLocation = getBestFallbackLocation(row, lastTrailPoint, gridFeatures);
@@ -798,7 +786,6 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
       if (!nextLocation || !isValidLatLng(nextLocation)) return;
 
       setCurrentLocation(nextLocation);
-      setLocationPermissionDenied(false);
 
       const targetMap = mapInstance;
       if (targetMap) {
@@ -817,12 +804,9 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
       setLocationMessage(`${sourceLabel} centered${accuracyText}.`);
     };
 
-    const useFallback = (message, permissionDenied = false) => {
-      if (permissionDenied) setLocationPermissionDenied(true);
-
+    const useFallback = (message) => {
       if (fallbackLocation) {
         centerMap(fallbackLocation, "Last saved GPS");
-        if (permissionDenied) setLocationPermissionDenied(true);
         setLocationMessage(`${message} Showing last saved FE GPS instead.`);
       } else {
         setLocationMessage(message);
@@ -830,18 +814,9 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
       setLocating(false);
     };
 
-    const permissionMessage = getGpsPermissionMessage();
-
     try {
       const capacitorGeo = window?.Capacitor?.Plugins?.Geolocation;
       if (capacitorGeo?.getCurrentPosition) {
-        const permissionStatus = await ensureCapacitorGpsPermission(capacitorGeo);
-
-        if (permissionStatus.denied) {
-          useFallback(permissionMessage, true);
-          return;
-        }
-
         const position = await capacitorGeo.getCurrentPosition({
           enableHighAccuracy: true,
           timeout: 12000,
@@ -857,11 +832,6 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
         return;
       }
     } catch (error) {
-      if (isGpsPermissionDeniedError(error)) {
-        useFallback(permissionMessage, true);
-        return;
-      }
-
       console.warn("Capacitor GPS lookup failed:", error?.message || error);
     }
 
@@ -880,11 +850,11 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
         setLocating(false);
       },
       (error) => {
-        const isDenied = error?.code === 1 || isGpsPermissionDeniedError(error);
+        const isDenied = error?.code === 1;
         const message = isDenied
-          ? permissionMessage
+          ? "GPS permission is denied. Allow Location permission for BabyDragon in Android App Info."
           : error?.message || "Unable to get current location.";
-        useFallback(message, isDenied);
+        useFallback(message);
       },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
     );
@@ -954,17 +924,16 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
           <CurrentLocationController location={currentLocation} focusKey={locationFocusKey} />
           <MapActionControls
             locating={locating}
-            permissionDenied={locationPermissionDenied}
             onLocate={(mapInstance) => locateMe(mapInstance)}
             onFit={() => setFitTaskKey((value) => value + 1)}
           />
 
           <CellSectorLayer
-            market={row.marketLabel === "Unknown Market" ? "" : row.marketLabel}
+            market=""
             showSites
             showSectors
             showLegend={false}
-            maxRecords={1200}
+            maxRecords={5000}
             sectorRadiusM={550}
           />
 
@@ -1068,14 +1037,6 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
         </p>
       )}
 
-      {locationPermissionDenied && (
-        <div style={styles.locationPermissionPanel}>
-          <strong>Location permission needed</strong>
-          <span>Allow Location for BabyDragon so My GPS, live task tracking, and route checkpoints can work.</span>
-          <small>{GPS_PERMISSION_ANDROID_STEPS}</small>
-        </div>
-      )}
-
       <div style={styles.mapFacts}>
         <MapFact label="Route" value={routePointCount} />
         <MapFact label="GPS" value={gpsPoints.length} />
@@ -1086,9 +1047,7 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
       <p style={styles.mapNote}>
         {routeGeojsons.length
           ? "Saved route is shown as a clean blue road line. Green trail means driven near the route. Orange means off-route movement."
-          : row.route
-            ? "Saved route record is linked, but route geometry/file was not found yet. Tap Refresh once; if still missing, Admin should re-save this route so mobile geometry is stored."
-            : "Grid is shown, but no saved route is linked to this grid yet. Navigation will use the grid center until Admin saves or links a route."}
+          : "Grid is shown. If the blue route line is missing, tap Refresh after Admin saves/links the route for this grid."}
         {latestIssue ? ` Latest issue: ${latestIssue.description || formatIssueType(latestIssue.issue_type)}` : ""}
       </p>
     </div>
@@ -1097,18 +1056,11 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
 
 function InfoItem({ label, value, tone = "neutral" }) {
   const toneStyle = tone === "green" ? styles.infoGreen : tone === "amber" ? styles.infoAmber : tone === "blue" ? styles.infoBlue : null;
-  const shouldUseFullRow = ["Grid", "Route"].includes(label);
 
   return (
-    <span
-      style={{
-        ...styles.infoItem,
-        ...(shouldUseFullRow ? styles.infoItemFullRow : null),
-        ...(toneStyle || null),
-      }}
-    >
+    <span style={{ ...styles.infoItem, ...(toneStyle || null) }}>
       <small>{label}</small>
-      <strong style={styles.infoValue}>{value || "N/A"}</strong>
+      <strong>{value || "N/A"}</strong>
     </span>
   );
 }
@@ -1146,7 +1098,8 @@ function MapBoundsController({ gridFeatures = [], routeGeojsons = [], gpsPoints 
       });
 
       if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [34, 34], maxZoom: 17 });
+        const maxFitZoom = (routeGeojsons || []).length ? 16 : 14;
+        map.fitBounds(bounds, { padding: [38, 38], maxZoom: maxFitZoom });
       }
     } catch (error) {
       console.warn("Unable to fit mobile route map bounds:", error);
@@ -1269,60 +1222,7 @@ function MapMeasureTapCapture({ active, onAddPoint }) {
   return null;
 }
 
-function getGpsPermissionMessage() {
-  return `${GPS_PERMISSION_REQUIRED_MESSAGE} ${GPS_PERMISSION_ANDROID_STEPS}`;
-}
-
-function isGpsPermissionDeniedError(error) {
-  const text = [error?.message, error?.name, error?.code]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  return (
-    error?.code === 1 ||
-    error?.name === "NotAllowedError" ||
-    text.includes("permission") ||
-    text.includes("denied") ||
-    text.includes("not granted") ||
-    text.includes("user denied")
-  );
-}
-
-async function ensureCapacitorGpsPermission(capacitorGeo) {
-  if (!capacitorGeo?.checkPermissions) return { denied: false };
-
-  try {
-    const checked = await capacitorGeo.checkPermissions();
-    const checkedStatus = normalizeCapacitorPermissionStatus(checked);
-
-    if (checkedStatus === "granted") return { denied: false };
-
-    if (!capacitorGeo.requestPermissions) {
-      return { denied: checkedStatus === "denied" };
-    }
-
-    const requested = await capacitorGeo.requestPermissions({ permissions: ["location"] });
-    const requestedStatus = normalizeCapacitorPermissionStatus(requested);
-
-    return { denied: requestedStatus !== "granted" };
-  } catch (error) {
-    return { denied: isGpsPermissionDeniedError(error) };
-  }
-}
-
-function normalizeCapacitorPermissionStatus(permissionResult = {}) {
-  const status =
-    permissionResult.location ||
-    permissionResult.coarseLocation ||
-    permissionResult.fineLocation ||
-    permissionResult.locationAlways ||
-    "";
-
-  return String(status).toLowerCase();
-}
-
-function MapActionControls({ locating, permissionDenied = false, onLocate, onFit }) {
+function MapActionControls({ locating, onLocate, onFit }) {
   const map = useMap();
 
   useEffect(() => {
@@ -1337,7 +1237,7 @@ function MapActionControls({ locating, permissionDenied = false, onLocate, onFit
       locateButton.type = "button";
       locateButton.title = "Find my GPS location";
       locateButton.setAttribute("aria-label", "Find my GPS location");
-      locateButton.innerHTML = locating ? "…" : permissionDenied ? "Allow GPS" : "GPS";
+      locateButton.innerHTML = locating ? "…" : "GPS";
       locateButton.onclick = (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -1363,7 +1263,7 @@ function MapActionControls({ locating, permissionDenied = false, onLocate, onFit
     return () => {
       control.remove();
     };
-  }, [locating, map, onFit, onLocate, permissionDenied]);
+  }, [locating, map, onFit, onLocate]);
 
   return null;
 }
@@ -1558,6 +1458,40 @@ async function loadRoutesFromTable(tableName, gridKeys) {
   return mergeById(collected).sort(compareNewestRoute);
 }
 
+async function loadRecentRoutesFromTable(tableName) {
+  // Mobile safety net: assigned route links can be saved under a different
+  // grid label after a grid is edited. Pull a small recent route cache so the
+  // map can still match by actual geometry overlap.
+  const orderColumns = ["generated_at", "updated_at", "created_at"];
+
+  for (const column of orderColumns) {
+    try {
+      const { data, error } = await supabase
+        .from(tableName)
+        .select("*")
+        .order(column, { ascending: false, nullsFirst: false })
+        .limit(350);
+
+      if (!error && Array.isArray(data)) return data;
+    } catch (error) {
+      console.warn(`Recent route cache skipped for ${tableName}.${column}:`, error);
+    }
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from(tableName)
+      .select("*")
+      .limit(350);
+
+    if (!error && Array.isArray(data)) return data;
+  } catch (error) {
+    console.warn(`Recent route cache failed for ${tableName}:`, error);
+  }
+
+  return [];
+}
+
 async function loadRoutesByIds(tableName, routeIds) {
   if (!routeIds.length) return [];
 
@@ -1573,132 +1507,6 @@ async function loadRoutesByIds(tableName, routeIds) {
   }
 
   return Array.isArray(data) ? data : [];
-}
-
-async function loadLooseMatchedRoutes(gridKeys = [], gridData = [], assignedTasks = []) {
-  const matchKeys = buildLooseRouteMatchKeys(gridKeys, gridData, assignedTasks);
-  if (!matchKeys.length) return [];
-
-  const collected = [];
-
-  for (const tableName of ["routes", "saved_routes"]) {
-    try {
-      const { data, error } = await supabase
-        .from(tableName)
-        .select("*")
-        .limit(350);
-
-      if (error) {
-        console.warn(`Loose route scan skipped for ${tableName}:`, error);
-        continue;
-      }
-
-      const matched = (Array.isArray(data) ? data : []).filter((route) =>
-        doesRouteLooselyMatchKeys(route, matchKeys)
-      );
-      collected.push(...matched);
-    } catch (error) {
-      console.warn(`Loose route scan failed for ${tableName}:`, error);
-    }
-  }
-
-  return mergeById(collected).sort(compareNewestRoute);
-}
-
-function buildLooseRouteMatchKeys(gridKeys = [], gridData = [], assignedTasks = []) {
-  const rawValues = [
-    ...(gridKeys || []),
-    ...(gridData || []).flatMap((grid) => [
-      grid?.id,
-      grid?.grid_id,
-      grid?.grid_code,
-      grid?.grid_name,
-      grid?.name,
-      getGridLabel(grid),
-    ]),
-    ...(assignedTasks || []).flatMap((task) => [
-      task?.grid_id,
-      task?.gridId,
-      task?.grid_db_id,
-      task?.grid_name,
-      task?.target_name,
-      task?.target,
-      task?.reference,
-      task?._mobileGrid?.id,
-      task?._mobileGrid?.grid_id,
-      task?._mobileGrid?.grid_code,
-      task?._mobileGrid?.grid_name,
-      task?._mobileGrid?.name,
-      task?._mobileRoute?.grid_id,
-      task?._mobileRoute?.grid_name,
-      task?._mobileRoute?.grid_code,
-      task?._mobileRoute?.route_name,
-      task?._mobileRoute?.name,
-    ]),
-  ];
-
-  return Array.from(
-    new Set(
-      rawValues
-        .flatMap((value) => makeLooseRouteKeyVariants(value))
-        .filter((value) => value.length >= 5)
-    )
-  );
-}
-
-function doesRouteLooselyMatchKeys(route, matchKeys = []) {
-  if (!route || !matchKeys.length) return false;
-
-  const routeText = [
-    route.id,
-    route.route_id,
-    route.grid_id,
-    route.gridId,
-    route.grid_db_id,
-    route.route_grid_id,
-    route.grid_name,
-    route.grid_code,
-    route.target_name,
-    route.route_name,
-    route.name,
-    route.label,
-    route.filename,
-    route.file_name,
-  ]
-    .filter(Boolean)
-    .flatMap((value) => makeLooseRouteKeyVariants(value));
-
-  const routeKeyText = Array.from(new Set(routeText)).join("|");
-  if (!routeKeyText) return false;
-
-  return matchKeys.some((key) => routeKeyText.includes(key) || key.includes(routeKeyText));
-}
-
-function makeLooseRouteKeyVariants(value) {
-  const raw = String(value || "").trim();
-  if (!raw) return [];
-
-  const base = normalizeLooseRouteKey(raw);
-  const withoutEdited = normalizeLooseRouteKey(raw.replace(/(?:^|[_\-\s])(edited?|copy|final|draft|route|dense|hybrid|highway|main|street|streets)(?=$|[_\-\s])/gi, "_"));
-  const withoutExtension = normalizeLooseRouteKey(raw.replace(/\.(kml|kmz|json|geojson|zip)$/gi, ""));
-  const gCode = raw.match(/[a-z]*[_\-\s]*g[_\-\s]*\d+/i)?.[0] || "";
-  const digitCode = raw.match(/\d{5,}/)?.[0] || "";
-
-  return Array.from(
-    new Set(
-      [base, withoutEdited, withoutExtension, normalizeLooseRouteKey(gCode), normalizeLooseRouteKey(digitCode)]
-        .filter(Boolean)
-    )
-  );
-}
-
-function normalizeLooseRouteKey(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/\.(kml|kmz|json|geojson|zip)$/g, "")
-    .replace(/edited?|copy|final|draft|saved|route|dense|hybrid|highway|main|street|streets/g, "")
-    .replace(/[^a-z0-9]/g, "")
-    .trim();
 }
 
 function mergeById(records) {
@@ -1820,36 +1628,17 @@ function findBestRouteForGrid(grid, routes, routeGridRows) {
     .map((link) => String(link.route_id));
 
   const candidates = routes
-    .filter((route) => {
-      if (linkedRouteIds.includes(String(route.id))) return true;
-
-      const routeKeys = [
-        route.grid_id,
-        route.gridId,
-        route.grid_db_id,
-        route.grid_name,
-        route.grid_code,
-        route.target_name,
-        route.route_grid_id,
-      ]
-        .filter(Boolean)
-        .map(normalizeKey);
-
-      if (routeKeys.some((routeKey) => normalizedGridKeys.includes(routeKey))) return true;
-
-      const routeName = normalizeKey(route.route_name || route.name || "");
-      return Boolean(gridLabel && routeName.includes(gridLabel));
-    })
     .map((route) => ({
       route,
-      score: getRouteMatchScore(route, normalizedGridKeys, gridLabel, linkedRouteIds),
+      score: getRouteMatchScore(route, grid, normalizedGridKeys, gridLabel, linkedRouteIds),
     }))
+    .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || compareNewestRoute(a.route, b.route));
 
   return candidates[0]?.route || null;
 }
 
-function getRouteMatchScore(route, normalizedGridKeys, gridLabel, linkedRouteIds) {
+function getRouteMatchScore(route, grid, normalizedGridKeys, gridLabel, linkedRouteIds) {
   let score = 0;
   if (linkedRouteIds.includes(String(route.id))) score += 100;
 
@@ -1870,13 +1659,57 @@ function getRouteMatchScore(route, normalizedGridKeys, gridLabel, linkedRouteIds
   const routeName = normalizeKey(route.route_name || route.name || "");
   if (gridLabel && routeName.includes(gridLabel)) score += 40;
 
+  const spatialScore = getRouteSpatialMatchScore(route, grid);
+  score += spatialScore;
+
   // Prefer the real generated route geometry over metadata-only records.
   // This fixes the mobile route switching from the true generated line to
   // a linked-but-empty route record after background refresh.
   if (hasUsableRouteGeometry(route)) score += 220;
   if (route.route_geojson || route.routeGeojson) score += 40;
 
+  // Guardrail: do not select a random recent route from another grid.
+  // A recent-route-cache record must either match a key/name/link or overlap
+  // the selected grid geometry.
+  const hasDirectMatch =
+    linkedRouteIds.includes(String(route.id)) ||
+    directKeys.some((key) => normalizedGridKeys.includes(key)) ||
+    Boolean(gridLabel && routeName.includes(gridLabel));
+
+  if (!hasDirectMatch && spatialScore <= 0) return 0;
+
   return score;
+}
+
+function getRouteSpatialMatchScore(route, grid) {
+  const gridFeature = buildGridFeature(grid);
+  const gridGeometry = gridFeature?.geometry;
+  const routeGeojson = parseRouteGeojson(route);
+
+  if (!gridGeometry || !routeGeojson) return 0;
+
+  const routePoints = dedupeLngLatPoints(collectLngLatPoints(routeGeojson));
+  if (routePoints.length < 2) return 0;
+
+  const sampleStep = Math.max(1, Math.floor(routePoints.length / 60));
+  const sampled = routePoints.filter((_point, index) => index % sampleStep === 0).slice(0, 80);
+  const insideCount = sampled.filter((point) => isLngLatInsideGeometry(point, gridGeometry)).length;
+
+  if (insideCount > 0) {
+    const ratio = insideCount / sampled.length;
+    return 145 + Math.round(ratio * 95);
+  }
+
+  const gridCenter = getPointCenter(collectLngLatPoints(gridFeature));
+  const routeCenter = getPointCenter(routePoints);
+
+  if (gridCenter && routeCenter) {
+    const distance = getLatLngDistanceMeters([gridCenter, routeCenter]);
+    if (Number.isFinite(distance) && distance <= 900) return 45;
+    if (Number.isFinite(distance) && distance <= 1600) return 20;
+  }
+
+  return 0;
 }
 
 function hasUsableRouteGeometry(route) {
@@ -2004,6 +1837,53 @@ function isActiveRouteStatus(status) {
 
 function isCompletedStatus(status) {
   return ["completed", "complete", "done", "closed"].includes(normalizeStatus(status));
+}
+
+function isLngLatInsideGeometry(point, geometry) {
+  if (!Array.isArray(point) || !geometry) return false;
+
+  if (geometry.type === "Polygon") {
+    return isLngLatInsidePolygon(point, geometry.coordinates);
+  }
+
+  if (geometry.type === "MultiPolygon") {
+    return (geometry.coordinates || []).some((polygonCoords) =>
+      isLngLatInsidePolygon(point, polygonCoords)
+    );
+  }
+
+  return false;
+}
+
+function isLngLatInsidePolygon(point, polygonCoords) {
+  if (!Array.isArray(polygonCoords) || !polygonCoords.length) return false;
+
+  const outerRing = polygonCoords[0];
+  const holes = polygonCoords.slice(1);
+
+  if (!isLngLatInsideRing(point, outerRing)) return false;
+
+  return !holes.some((hole) => isLngLatInsideRing(point, hole));
+}
+
+function isLngLatInsideRing(point, ring) {
+  if (!Array.isArray(ring) || ring.length < 3) return false;
+
+  const [x, y] = point;
+  let inside = false;
+
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+
+    const intersects =
+      yi > y !== yj > y &&
+      x < ((xj - xi) * (y - yi)) / ((yj - yi) || 0.0000001) + xi;
+
+    if (intersects) inside = !inside;
+  }
+
+  return inside;
 }
 
 function normalizeGeometry(value) {
@@ -2726,15 +2606,6 @@ const styles = {
     background: "rgba(15, 23, 42, 0.58)",
     minWidth: 0,
   },
-  infoItemFullRow: {
-    gridColumn: "1 / -1",
-  },
-  infoValue: {
-    display: "block",
-    overflowWrap: "anywhere",
-    wordBreak: "break-word",
-    lineHeight: 1.22,
-  },
   infoGreen: {
     borderColor: "rgba(34, 197, 94, 0.45)",
     background: "rgba(20, 83, 45, 0.24)",
@@ -2887,18 +2758,6 @@ const styles = {
     margin: 0,
     padding: "8px 10px 0",
     color: "#bae6fd",
-    fontSize: 10,
-    lineHeight: 1.35,
-  },
-  locationPermissionPanel: {
-    margin: "8px 10px 0",
-    border: "1px solid rgba(250, 204, 21, 0.52)",
-    borderRadius: 14,
-    padding: "10px 11px",
-    display: "grid",
-    gap: 5,
-    color: "#fef3c7",
-    background: "rgba(113, 63, 18, 0.34)",
     fontSize: 10,
     lineHeight: 1.35,
   },
