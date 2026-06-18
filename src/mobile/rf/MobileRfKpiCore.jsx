@@ -2,12 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { registerPlugin } from "@capacitor/core";
 import { CircleMarker, MapContainer, Polygon, Polyline, TileLayer, Tooltip, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
-import { DATA_TEST_TYPES, DATA_DIRECTIONS, DEFAULT_NATIVE_HTTP_SETUP, DEFAULT_FCC_IMPORT_SETUP, DEFAULT_OOKLA_SETUP } from "./config/dataTestConfig";
+import { DATA_TEST_TYPES, DATA_DIRECTIONS, DEFAULT_NATIVE_HTTP_SETUP, DEFAULT_FTP_SETUP, DEFAULT_IPERF_SETUP, DEFAULT_FCC_IMPORT_SETUP, DEFAULT_OOKLA_SETUP } from "./config/dataTestConfig";
 import NativeHttpTestCard from "./components/testcards/NativeHttpTestCard";
 import FtpTestCard from "./components/testcards/FtpTestCard";
-import IperfTestCard from "./components/testcards/IperfTestCard";
+import Iperf3TestPage from "./pages/Iperf3TestPage";
 import OoklaTestCard from "./components/testcards/OoklaTestCard";
 import FccTestCard from "./components/testcards/FccTestCard";
+import { runBabyDragonFtpTest } from "../testEngines/ftpTestEngine";
 
 
 const BabyDragonRfKpi = registerPlugin("BabyDragonRfKpi");
@@ -163,7 +164,7 @@ const KPI_LEGENDS = [
 
 const DATA_TEST_OPTIONS = [
   { label: "Internal HTTP DL/UL", status: "Next", note: "BabyDragon controlled application throughput test." },
-  { label: "iPerf", status: "Planned", note: "Use configured server and record RF/GPS trace." },
+  { label: "iPerf", status: "Setup", note: "Setup + placeholder active; native iPerf runner comes in Step 1G4." },
   { label: "FTP", status: "Planned", note: "Use configured FTP server and record RF/GPS trace." },
   { label: "Open Ookla", status: "App", note: "Launch app, run test there, keep RF/GPS trace active." },
   { label: "Open FCC", status: "App", note: "Launch app, run test there, keep RF/GPS trace active." },
@@ -190,10 +191,12 @@ const DEFAULT_THP_ITERATIONS = Number(DEFAULT_NATIVE_HTTP_SETUP.iterations || 1)
 const DEFAULT_THP_WAIT_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.waitSeconds || 5);
 const DEFAULT_THP_DURATION_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.durationSeconds || 10);
 const DEFAULT_THP_INTERVAL_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.intervalSeconds || 1);
+const DEFAULT_THP_WARMUP_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.warmupSeconds ?? 3);
 const MAX_THP_ITERATIONS = 20;
 const MAX_THP_WAIT_SECONDS = 120;
 const MAX_THP_DURATION_SECONDS = 300;
 const MAX_THP_INTERVAL_SECONDS = 10;
+const MAX_THP_WARMUP_SECONDS = 30;
 
 function makeDataTestIdle() {
   return {
@@ -209,6 +212,7 @@ function makeDataTestIdle() {
     waitSeconds: DEFAULT_THP_WAIT_SECONDS,
     durationSeconds: DEFAULT_THP_DURATION_SECONDS,
     intervalSeconds: DEFAULT_THP_INTERVAL_SECONDS,
+    warmupSeconds: DEFAULT_THP_WARMUP_SECONDS,
     downloadUrl: DEFAULT_NATIVE_HTTP_SETUP.downloadUrl,
     uploadUrl: DEFAULT_NATIVE_HTTP_SETUP.uploadUrl,
     currentIteration: 0,
@@ -236,6 +240,7 @@ function pickThroughputValue(metric, dataContext = {}) {
 
 function formatThroughputValue(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "N/A";
+  if (value > 0 && value < 0.01) return "<0.01";
   if (value >= 100) return value.toFixed(0);
   if (value >= 10) return value.toFixed(1);
   return value.toFixed(2);
@@ -260,6 +265,43 @@ function formatThroughputWithUnit(value) {
   return `${shown} Mbps`;
 }
 
+function formatBytesCompact(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function ftpFinalPolishNote(dataTest = {}) {
+  if (dataTest.testType !== "ftp") return "";
+  if (dataTest.status === "running") return "FTP running natively. RF/GPS recording continues in parallel.";
+  if (dataTest.status === "partial") return "Partial FTP result: one direction completed, another direction failed or produced zero measured bytes.";
+  if (dataTest.status === "error") return "FTP needs a reachable server and valid path/permission. Rebex is DL smoke only; DLPTest is UL smoke only.";
+  if (dataTest.status === "complete") return "FTP result saved. Use a controlled FTP server with a large file for final DL/UL throughput validation.";
+  return "";
+}
+
+
+function iperfPlaceholderNote(dataTest = {}) {
+  if (dataTest.testType !== "iperf") return "";
+  if (dataTest.status === "running") return "iPerf3 setup is being captured. RF/GPS recording continues in parallel.";
+  if (dataTest.status === "complete" || dataTest.status === "external_ready") {
+    return "iPerf3 setup saved. Command/form settings are stored with RF/GPS; real execution wiring comes in Step 1G4B.";
+  }
+  if (dataTest.status === "error") return "iPerf3 setup needs a server, port, protocol, and direction.";
+  return "";
+}
+
+function dataTestMonitorTitle(dataTest = {}) {
+  if (dataTest.testType === "ftp") return "FTP Test Monitor";
+  if (dataTest.testType === "iperf") return "iPerf3 Test Monitor";
+  if (dataTest.testType === "ookla_app") return "OOKLA App Monitor";
+  if (dataTest.testType === "fcc_app") return "FCC App Monitor";
+  return "Internal DL / UL Throughput";
+}
+
 function throughputStatus(metric, dataContext = {}) {
   const active = dataContext.dataTest || {};
   const saved = dataContext.savedSession || {};
@@ -275,6 +317,49 @@ function throughputStatus(metric, dataContext = {}) {
   if (active.status === "stopped") return value !== null ? "Stopped" : "Stopped";
   if (value !== null) return saved.frozen ? "Saved" : "Live";
   return "Ready";
+}
+
+function throughputStatusBadge(dataContext = {}) {
+  const active = dataContext.dataTest || {};
+  const saved = dataContext.savedSession || {};
+
+  if (active.testType === "ftp") {
+    if (active.status === "running") {
+      if (active.phase === "iteration_start") return "Testing";
+      if (active.phase === "iteration_done") return "Testing";
+      if (active.phase === "starting") return "Starting";
+      return "Testing";
+    }
+
+    if (active.status === "complete") return "Saved";
+    if (active.status === "partial") return "Partial";
+    if (active.status === "error") {
+      const hasAnyBytes = Number(active.downloadBytes || 0) > 0 || Number(active.uploadBytes || 0) > 0;
+      return hasAnyBytes ? "Partial" : "Error";
+    }
+    if (active.status === "stopped") return "Stopped";
+
+    const hasSavedFtp = saved?.appTestType === "ftp" || saved?.appSource === "native-ftp-v1g2a" || saved?.appSource === "native-ftp-v1g2";
+    if (hasSavedFtp && (getNumber(saved.appDlMbps) !== null || getNumber(saved.appUlMbps) !== null)) return "Saved";
+    return "Ready";
+  }
+
+  if (active.testType === "iperf") {
+    if (active.status === "running") return "Setup";
+    if (active.status === "complete" || active.status === "external_ready") return "Saved";
+    if (active.status === "error") return "Error";
+    if (active.status === "stopped") return "Stopped";
+    return "Ready";
+  }
+
+  return throughputStatus("dl", dataContext);
+}
+
+function statusClassName(label) {
+  return String(label || "ready")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "ready";
 }
 
 function makeAbortError() {
@@ -318,7 +403,12 @@ function splitIterationDuration(totalSeconds, direction) {
 
 function formatThpIterationSummary(row) {
   if (!row) return "N/A";
-  return `DL ${formatThroughputValue(getNumber(row.dlMbps))} / UL ${formatThroughputValue(getNumber(row.ulMbps))} Mbps`;
+  const base = `DL ${formatThroughputValue(getNumber(row.dlMbps))} / UL ${formatThroughputValue(getNumber(row.ulMbps))} Mbps`;
+  const isFtp = row.source === "native-ftp-v1g2" || row.source === "native-ftp-v1g2a" || row.dlSource === "native-ftp-v1g2" || row.dlSource === "native-ftp-v1g2a";
+  if (!isFtp) return base;
+  const dlBytes = row.dlMeasuredBytes ?? row.dlBytes ?? 0;
+  const ulBytes = row.ulMeasuredBytes ?? row.ulBytes ?? 0;
+  return `${base} · DL ${formatBytesCompact(dlBytes)} / UL ${formatBytesCompact(ulBytes)}`;
 }
 
 function waitForThroughputPause(waitSeconds, signal, onTick) {
@@ -371,7 +461,7 @@ function shouldFallbackToWeb(error) {
   return message.includes("not implemented") || message.includes("not available") || message.includes("plugin") || message.includes("web");
 }
 
-async function runNativeThroughputPhase({ phase, bytes, url, durationSeconds, intervalSeconds, signal }) {
+async function runNativeThroughputPhase({ phase, bytes, url, durationSeconds, intervalSeconds, warmupSeconds, signal }) {
   if (signal?.aborted) throw makeAbortError();
   if (typeof BabyDragonRfKpi.runThroughputTest !== "function") return null;
 
@@ -385,6 +475,7 @@ async function runNativeThroughputPhase({ phase, bytes, url, durationSeconds, in
         : INTERNAL_THP_CONFIG.timeoutMs,
       durationSeconds,
       intervalSeconds,
+      warmupSeconds,
     });
 
     if (signal?.aborted) throw makeAbortError();
@@ -398,6 +489,9 @@ async function runNativeThroughputPhase({ phase, bytes, url, durationSeconds, in
       bytes: Number(response.bytes || bytes),
       seconds: Number(response.seconds || 0),
       wallSeconds: Number(response.wallSeconds || response.seconds || 0),
+      warmupSeconds: Number(response.warmupSeconds || 0),
+      warmupBytes: Number(response.warmupBytes || 0),
+      measuredBytes: Number(response.measuredBytes || response.bytes || 0),
       source: response.source || "native-http",
     };
   } catch (error) {
@@ -431,6 +525,7 @@ async function measureDownloadThroughput({ signal, onProgress, config = {} }) {
     url,
     durationSeconds,
     intervalSeconds: config.intervalSeconds,
+    warmupSeconds: config.warmupSeconds,
     signal,
   });
 
@@ -461,7 +556,7 @@ async function measureDownloadThroughput({ signal, onProgress, config = {} }) {
   }
 
   const seconds = Math.max(0.15, (performance.now() - startedAt) / 1000);
-  return { mbps: (received * 8) / seconds / 1000000, bytes: received, seconds };
+  return { mbps: (received * 8) / seconds / 1000000, bytes: received, measuredBytes: received, warmupBytes: 0, warmupSeconds: 0, seconds };
 }
 
 async function measureUploadThroughput({ signal, config = {} }) {
@@ -474,6 +569,7 @@ async function measureUploadThroughput({ signal, config = {} }) {
     url,
     durationSeconds,
     intervalSeconds: config.intervalSeconds,
+    warmupSeconds: config.warmupSeconds,
     signal,
   });
 
@@ -491,13 +587,13 @@ async function measureUploadThroughput({ signal, config = {} }) {
   if (!response.ok) throw new Error(`UL test HTTP ${response.status}`);
 
   const seconds = Math.max(0.15, (performance.now() - startedAt) / 1000);
-  return { mbps: (body.byteLength * 8) / seconds / 1000000, bytes: body.byteLength, seconds };
+  return { mbps: (body.byteLength * 8) / seconds / 1000000, bytes: body.byteLength, measuredBytes: body.byteLength, warmupBytes: 0, warmupSeconds: 0, seconds };
 }
 
 const EXPORT_ITEMS = [
   { title: "Summary CSV", description: "One clean row with task, grid, RF averages, THP averages, and voice monitor status." },
   { title: "Trace CSV", description: "One row per RF/GPS sample with LTE, NR, 3G, 2G, call state, and GPS fields." },
-  { title: "THP Iteration CSV", description: "One row per DL/UL iteration with bytes, seconds, Mbps, and source." },
+  { title: "THP Iteration CSV", description: "One row per DL/UL iteration with warmup bytes, measured bytes, seconds, Mbps, and source." },
   { title: "Voice KPI CSV", description: "Voice monitor summary now. Full call attempts/drops come in the voice step." },
   { title: "FCC-style JSON", description: "One structured JSON package containing summary, RF trace, THP iterations, voice, and report metadata." },
 ];
@@ -658,13 +754,15 @@ function buildSummaryCsv(session, user, activeTask) {
     "session_started_local", "session_ended_local", "session_duration", "session_duration_ms", "samples", "gps_points", "rat",
     "thp_started_local", "thp_ended_local", "thp_duration", "thp_duration_ms",
     "app_dl_avg_mbps", "app_ul_avg_mbps", "thp_iterations_requested", "thp_iterations_completed",
-    "thp_requested_duration_per_iteration_sec", "thp_interval_sec", "thp_wait_between_iterations_sec", "thp_direction",
+    "thp_requested_duration_sec", "thp_warmup_sec", "thp_interval_sec", "thp_wait_between_iterations_sec", "thp_direction",
     "thp_status", "thp_summary_rule", "report_scope",
     "avg_lte_rsrp_dbm", "min_lte_rsrp_dbm", "max_lte_rsrp_dbm",
     "avg_lte_rsrq_db", "min_lte_rsrq_db", "max_lte_rsrq_db",
     "avg_lte_sinr_db", "min_lte_sinr_db", "max_lte_sinr_db",
     "avg_lte_rssi_dbm", "min_lte_rssi_dbm", "max_lte_rssi_dbm",
-    "avg_nr_rsrp_dbm", "avg_nr_sinr_db",
+    "avg_nr_rsrp_dbm", "min_nr_rsrp_dbm", "max_nr_rsrp_dbm",
+    "avg_nr_rsrq_db", "min_nr_rsrq_db", "max_nr_rsrq_db",
+    "avg_nr_sinr_db", "min_nr_sinr_db", "max_nr_sinr_db",
     "avg_3g_rscp_dbm", "avg_3g_ecno_db", "avg_3g_rssi_dbm",
     "avg_2g_rssi_dbm", "avg_2g_ber", "avg_2g_timing_advance",
     "voice_monitor_status", "final_call_state", "offhook_samples", "remarks"
@@ -693,7 +791,8 @@ function buildSummaryCsv(session, user, activeTask) {
     app_ul_avg_mbps: compactNumber(session?.appUlMbps, 2),
     thp_iterations_requested: session?.appIterationsRequested ?? "",
     thp_iterations_completed: session?.appCompletedIterations ?? "",
-    thp_requested_duration_per_iteration_sec: session?.appDurationSeconds ?? "",
+    thp_requested_duration_sec: session?.appDurationSeconds ?? "",
+    thp_warmup_sec: session?.appWarmupSeconds ?? "",
     thp_interval_sec: session?.appIntervalSeconds ?? "",
     thp_wait_between_iterations_sec: session?.appWaitSeconds ?? "",
     thp_direction: session?.appDirection ?? "",
@@ -713,7 +812,14 @@ function buildSummaryCsv(session, user, activeTask) {
     min_lte_rssi_dbm: compactNumber(stats?.lteRssi?.min, 1),
     max_lte_rssi_dbm: compactNumber(stats?.lteRssi?.max, 1),
     avg_nr_rsrp_dbm: compactNumber(stats?.nrRsrp?.avg ?? session?.avgNrRsrp, 1),
+    min_nr_rsrp_dbm: compactNumber(stats?.nrRsrp?.min, 1),
+    max_nr_rsrp_dbm: compactNumber(stats?.nrRsrp?.max, 1),
+    avg_nr_rsrq_db: compactNumber(stats?.nrRsrq?.avg ?? session?.avgNrRsrq, 1),
+    min_nr_rsrq_db: compactNumber(stats?.nrRsrq?.min, 1),
+    max_nr_rsrq_db: compactNumber(stats?.nrRsrq?.max, 1),
     avg_nr_sinr_db: compactNumber(stats?.nrSinr?.avg ?? session?.avgNrSinr, 1),
+    min_nr_sinr_db: compactNumber(stats?.nrSinr?.min, 1),
+    max_nr_sinr_db: compactNumber(stats?.nrSinr?.max, 1),
     avg_3g_rscp_dbm: compactNumber(stats?.threeGRscp?.avg ?? session?.avgThreeGRscp, 1),
     avg_3g_ecno_db: compactNumber(stats?.threeGEcno?.avg ?? session?.avgThreeGEcno, 1),
     avg_3g_rssi_dbm: compactNumber(stats?.threeGRssi?.avg ?? session?.avgThreeGRssi, 1),
@@ -763,8 +869,8 @@ function buildThpCsv(session) {
   const headers = [
     "iteration", "status", "task", "grid", "session_id",
     "started_at_local", "ended_at_local", "wall_seconds",
-    "direction", "requested_total_duration_sec", "requested_dl_duration_sec", "requested_ul_duration_sec", "interval_sec", "wait_after_iteration_sec",
-    "dl_mbps", "ul_mbps", "dl_bytes", "ul_bytes", "dl_transfer_seconds", "ul_transfer_seconds", "dl_wall_seconds", "ul_wall_seconds", "dl_source", "ul_source", "summary_note"
+    "direction", "requested_duration_sec", "warmup_sec", "requested_dl_duration_sec", "requested_ul_duration_sec", "interval_sec", "wait_after_iteration_sec",
+    "dl_mbps", "ul_mbps", "dl_warmup_bytes", "ul_warmup_bytes", "dl_measured_bytes", "ul_measured_bytes", "dl_total_bytes", "ul_total_bytes", "dl_transfer_seconds", "ul_transfer_seconds", "dl_wall_seconds", "ul_wall_seconds", "dl_source", "ul_source", "summary_note"
   ];
   const totalRows = (session?.appIterationResults || []).length;
   const rows = (session?.appIterationResults || []).map((item) => ({
@@ -777,15 +883,20 @@ function buildThpCsv(session) {
     ended_at_local: formatLocalDateTime(item.endedAt),
     wall_seconds: compactNumber(((getNumber(item.endedAt) || 0) - (getNumber(item.startedAt) || 0)) / 1000, 2),
     direction: item.direction || session?.appDirection || "",
-    requested_total_duration_sec: item.durationSeconds ?? session?.appDurationSeconds ?? "",
+    requested_duration_sec: item.durationSeconds ?? session?.appDurationSeconds ?? "",
+    warmup_sec: item.warmupSeconds ?? session?.appWarmupSeconds ?? 0,
     requested_dl_duration_sec: item.dlDurationSeconds ?? "",
     requested_ul_duration_sec: item.ulDurationSeconds ?? "",
     interval_sec: item.intervalSeconds ?? session?.appIntervalSeconds ?? "",
     wait_after_iteration_sec: item.iteration < totalRows ? (item.waitSeconds ?? session?.appWaitSeconds ?? "") : 0,
     dl_mbps: compactNumber(item.dlMbps, 2),
     ul_mbps: compactNumber(item.ulMbps, 2),
-    dl_bytes: item.dlBytes || 0,
-    ul_bytes: item.ulBytes || 0,
+    dl_warmup_bytes: item.dlWarmupBytes || 0,
+    ul_warmup_bytes: item.ulWarmupBytes || 0,
+    dl_measured_bytes: item.dlMeasuredBytes || item.dlBytes || 0,
+    ul_measured_bytes: item.ulMeasuredBytes || item.ulBytes || 0,
+    dl_total_bytes: (item.dlBytes || 0) + (item.dlWarmupBytes || 0),
+    ul_total_bytes: (item.ulBytes || 0) + (item.ulWarmupBytes || 0),
     dl_transfer_seconds: compactNumber(item.dlSeconds, 3),
     ul_transfer_seconds: compactNumber(item.ulSeconds, 3),
     dl_wall_seconds: compactNumber(item.dlWallSeconds, 3),
@@ -887,17 +998,36 @@ function buildJsonRfSummary(session) {
     },
     nr: {
       avg_ss_rsrp_dbm: jsonNumber(stats?.nrRsrp?.avg ?? session?.avgNrRsrp, 1),
+      min_ss_rsrp_dbm: jsonNumber(stats?.nrRsrp?.min, 1),
+      max_ss_rsrp_dbm: jsonNumber(stats?.nrRsrp?.max, 1),
+      avg_ss_rsrq_db: jsonNumber(stats?.nrRsrq?.avg ?? session?.avgNrRsrq, 1),
+      min_ss_rsrq_db: jsonNumber(stats?.nrRsrq?.min, 1),
+      max_ss_rsrq_db: jsonNumber(stats?.nrRsrq?.max, 1),
       avg_ss_sinr_db: jsonNumber(stats?.nrSinr?.avg ?? session?.avgNrSinr, 1),
+      min_ss_sinr_db: jsonNumber(stats?.nrSinr?.min, 1),
+      max_ss_sinr_db: jsonNumber(stats?.nrSinr?.max, 1),
     },
     wcdma: {
       avg_rscp_dbm: jsonNumber(stats?.threeGRscp?.avg ?? session?.avgThreeGRscp, 1),
+      min_rscp_dbm: jsonNumber(stats?.threeGRscp?.min, 1),
+      max_rscp_dbm: jsonNumber(stats?.threeGRscp?.max, 1),
       avg_ecno_db: jsonNumber(stats?.threeGEcno?.avg ?? session?.avgThreeGEcno, 1),
+      min_ecno_db: jsonNumber(stats?.threeGEcno?.min, 1),
+      max_ecno_db: jsonNumber(stats?.threeGEcno?.max, 1),
       avg_rssi_dbm: jsonNumber(stats?.threeGRssi?.avg ?? session?.avgThreeGRssi, 1),
+      min_rssi_dbm: jsonNumber(stats?.threeGRssi?.min, 1),
+      max_rssi_dbm: jsonNumber(stats?.threeGRssi?.max, 1),
     },
     gsm: {
       avg_rxlev_rssi_dbm: jsonNumber(stats?.twoGRssi?.avg ?? session?.avgTwoGRssi, 1),
+      min_rxlev_rssi_dbm: jsonNumber(stats?.twoGRssi?.min, 1),
+      max_rxlev_rssi_dbm: jsonNumber(stats?.twoGRssi?.max, 1),
       avg_ber: jsonNumber(stats?.twoGBer?.avg ?? session?.avgTwoGBer, 1),
+      min_ber: jsonNumber(stats?.twoGBer?.min, 1),
+      max_ber: jsonNumber(stats?.twoGBer?.max, 1),
       avg_timing_advance: jsonNumber(stats?.twoGTimingAdvance?.avg ?? session?.avgTwoGTimingAdvance, 0),
+      min_timing_advance: jsonNumber(stats?.twoGTimingAdvance?.min, 0),
+      max_timing_advance: jsonNumber(stats?.twoGTimingAdvance?.max, 0),
     },
   };
 }
@@ -981,21 +1111,26 @@ function buildJsonThpIterations(session) {
     ended_at_iso: jsonTimestamp(item.endedAt),
     wall_seconds: jsonNumber(((getNumber(item.endedAt) || 0) - (getNumber(item.startedAt) || 0)) / 1000, 2),
     direction: item.direction || session?.appDirection || null,
-    requested_total_duration_sec: jsonNumber(item.durationSeconds ?? session?.appDurationSeconds),
+    requested_duration_sec: jsonNumber(item.durationSeconds ?? session?.appDurationSeconds),
+    warmup_sec: jsonNumber(item.warmupSeconds ?? session?.appWarmupSeconds ?? 0),
     requested_dl_duration_sec: jsonNumber(item.dlDurationSeconds),
     requested_ul_duration_sec: jsonNumber(item.ulDurationSeconds),
     interval_sec: jsonNumber(item.intervalSeconds ?? session?.appIntervalSeconds),
     wait_after_iteration_sec: item.iteration < totalRows ? jsonNumber(item.waitSeconds ?? session?.appWaitSeconds) : 0,
     dl: {
       mbps: jsonNumber(item.dlMbps, 2),
-      bytes: jsonNumber(item.dlBytes),
+      measured_bytes: jsonNumber(item.dlMeasuredBytes ?? item.dlBytes),
+      warmup_bytes: jsonNumber(item.dlWarmupBytes || 0),
+      total_bytes: jsonNumber((item.dlBytes || 0) + (item.dlWarmupBytes || 0)),
       transfer_seconds: jsonNumber(item.dlSeconds, 3),
       wall_seconds: jsonNumber(item.dlWallSeconds, 3),
       source: jsonText(item.dlSource || item.source),
     },
     ul: {
       mbps: jsonNumber(item.ulMbps, 2),
-      bytes: jsonNumber(item.ulBytes),
+      measured_bytes: jsonNumber(item.ulMeasuredBytes ?? item.ulBytes),
+      warmup_bytes: jsonNumber(item.ulWarmupBytes || 0),
+      total_bytes: jsonNumber((item.ulBytes || 0) + (item.ulWarmupBytes || 0)),
       transfer_seconds: jsonNumber(item.ulSeconds, 3),
       wall_seconds: jsonNumber(item.ulWallSeconds, 3),
       source: jsonText(item.ulSource || item.source),
@@ -1011,7 +1146,7 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
   return JSON.stringify({
     schema: {
       name: "BabyDragon Android Info RF Report",
-      version: "1.0.0-step-1f9",
+      version: "1.0.1-step-1f10a",
       layout: "fcc_like_structured_json",
       owner: "MobbiTech Global LLC",
       note: "BabyDragon JSON is FCC-style for interoperability, but not an FCC-certified result unless imported from the FCC app export.",
@@ -1046,8 +1181,9 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
       status: session?.appTestStatus || null,
       summary_rule: "Average DL/UL THP is the arithmetic average of completed iteration rows only.",
       requested: {
-        iterations: jsonNumber(session?.appIterations),
+        iterations: jsonNumber(session?.appIterationsRequested ?? session?.appIterations ?? thpRows.length),
         duration_sec: jsonNumber(session?.appDurationSeconds),
+        warmup_sec: jsonNumber(session?.appWarmupSeconds || 0),
         interval_sec: jsonNumber(session?.appIntervalSeconds),
         wait_between_iterations_sec: jsonNumber(session?.appWaitSeconds),
       },
@@ -1764,6 +1900,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
   const lteSinrStats = metricStats(list, "lteSinr");
   const lteRssiStats = metricStats(list, "lteRssi");
   const nrRsrpStats = metricStats(list, "nrRsrp");
+  const nrRsrqStats = metricStats(list, "nrRsrq");
   const nrSinrStats = metricStats(list, "nrSinr");
   const threeGRscpStats = metricStats(list, "threeGRscp");
   const threeGEcnoStats = metricStats(list, "threeGEcno");
@@ -1780,6 +1917,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
   const appWaitSeconds = clampInteger(appSource.waitSeconds ?? DEFAULT_THP_WAIT_SECONDS, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
   const appDurationSeconds = clampInteger(appSource.durationSeconds ?? DEFAULT_THP_DURATION_SECONDS, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
   const appIntervalSeconds = clampInteger(appSource.intervalSeconds ?? DEFAULT_THP_INTERVAL_SECONDS, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
+  const appWarmupSeconds = clampInteger(appSource.warmupSeconds ?? DEFAULT_THP_WARMUP_SECONDS, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
   const appDirection = appSource.direction || DEFAULT_DATA_DIRECTION;
 
   return {
@@ -1798,6 +1936,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     avgLteSinr: lteSinrStats.avg,
     avgLteRssi: lteRssiStats.avg,
     avgNrRsrp: nrRsrpStats.avg,
+    avgNrRsrq: nrRsrqStats.avg,
     avgNrSinr: nrSinrStats.avg,
     avgThreeGRscp: threeGRscpStats.avg,
     avgThreeGEcno: threeGEcnoStats.avg,
@@ -1814,6 +1953,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     appWaitSeconds,
     appDurationSeconds,
     appIntervalSeconds,
+    appWarmupSeconds,
     appDirection,
     appIterationResults,
     appTestStatus: appSource.status || "idle",
@@ -1826,6 +1966,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
       lteSinr: lteSinrStats,
       lteRssi: lteRssiStats,
       nrRsrp: nrRsrpStats,
+      nrRsrq: nrRsrqStats,
       nrSinr: nrSinrStats,
       threeGRscp: threeGRscpStats,
       threeGEcno: threeGEcnoStats,
@@ -2251,6 +2392,7 @@ function getSessionRfMetricCards(session) {
       { label: "Avg LTE RSRQ", value: session?.avgLteRsrq, unit: "dB", min: stats.lteRsrq?.min, max: stats.lteRsrq?.max },
       { label: "Avg LTE SINR", value: session?.avgLteSinr, unit: "dB", min: stats.lteSinr?.min, max: stats.lteSinr?.max, digits: 2 },
       { label: "Avg NR RSRP", value: session?.avgNrRsrp, unit: "dBm", min: stats.nrRsrp?.min, max: stats.nrRsrp?.max },
+      { label: "Avg NR RSRQ", value: session?.avgNrRsrq, unit: "dB", min: stats.nrRsrq?.min, max: stats.nrRsrq?.max },
       { label: "Avg NR SINR", value: session?.avgNrSinr, unit: "dB", min: stats.nrSinr?.min, max: stats.nrSinr?.max, digits: 2 },
     ];
   }
@@ -2298,16 +2440,18 @@ export default function MobileRfKpi({
   const [thpWaitSeconds, setThpWaitSeconds] = useState(String(DEFAULT_THP_WAIT_SECONDS));
   const [thpDurationSeconds, setThpDurationSeconds] = useState(String(DEFAULT_THP_DURATION_SECONDS));
   const [thpIntervalSeconds, setThpIntervalSeconds] = useState(String(DEFAULT_THP_INTERVAL_SECONDS));
+  const [thpWarmupSeconds, setThpWarmupSeconds] = useState(String(DEFAULT_THP_WARMUP_SECONDS));
   const [nativeDownloadUrl, setNativeDownloadUrl] = useState(DEFAULT_NATIVE_HTTP_SETUP.downloadUrl);
   const [nativeUploadUrl, setNativeUploadUrl] = useState(DEFAULT_NATIVE_HTTP_SETUP.uploadUrl);
-  const [ftpSetup, setFtpSetup] = useState({});
-  const [iperfSetup, setIperfSetup] = useState({});
+  const [ftpSetup, setFtpSetup] = useState(DEFAULT_FTP_SETUP);
+  const [iperfSetup, setIperfSetup] = useState(DEFAULT_IPERF_SETUP);
   const [ooklaSetup, setOoklaSetup] = useState(DEFAULT_OOKLA_SETUP);
   const [fccSetup, setFccSetup] = useState(DEFAULT_FCC_IMPORT_SETUP);
   const resolvedThpIterations = clampInteger(thpIterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
   const resolvedThpWaitSeconds = clampInteger(thpWaitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
   const resolvedThpDurationSeconds = clampInteger(thpDurationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
   const resolvedThpIntervalSeconds = clampInteger(thpIntervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
+  const resolvedThpWarmupSeconds = clampInteger(thpWarmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
   const [clockTick, setClockTick] = useState(Date.now());
   const [rfPollCount, setRfPollCount] = useState(0);
   const permissionRequestStarted = useRef(false);
@@ -2335,9 +2479,10 @@ export default function MobileRfKpi({
     waitSeconds: thpWaitSeconds,
     durationSeconds: thpDurationSeconds,
     intervalSeconds: thpIntervalSeconds,
+    warmupSeconds: thpWarmupSeconds,
     downloadUrl: nativeDownloadUrl,
     uploadUrl: nativeUploadUrl,
-  }), [dataDirection, thpIterations, thpWaitSeconds, thpDurationSeconds, thpIntervalSeconds, nativeDownloadUrl, nativeUploadUrl]);
+  }), [dataDirection, thpIterations, thpWaitSeconds, thpDurationSeconds, thpIntervalSeconds, thpWarmupSeconds, nativeDownloadUrl, nativeUploadUrl]);
 
   // Run setup is resolved/clamped only when BabyDragon actually starts the test.
   const currentNativeHttpRunSetup = useMemo(() => ({
@@ -2347,18 +2492,86 @@ export default function MobileRfKpi({
     waitSeconds: resolvedThpWaitSeconds,
     durationSeconds: resolvedThpDurationSeconds,
     intervalSeconds: resolvedThpIntervalSeconds,
+    warmupSeconds: resolvedThpWarmupSeconds,
     downloadUrl: nativeDownloadUrl?.trim() || DEFAULT_NATIVE_HTTP_SETUP.downloadUrl,
     uploadUrl: nativeUploadUrl?.trim() || DEFAULT_NATIVE_HTTP_SETUP.uploadUrl,
-  }), [dataDirection, resolvedThpIterations, resolvedThpWaitSeconds, resolvedThpDurationSeconds, resolvedThpIntervalSeconds, nativeDownloadUrl, nativeUploadUrl]);
+  }), [dataDirection, resolvedThpIterations, resolvedThpWaitSeconds, resolvedThpDurationSeconds, resolvedThpIntervalSeconds, resolvedThpWarmupSeconds, nativeDownloadUrl, nativeUploadUrl]);
 
-  const currentDataTestConfig = useMemo(() => ({
-    ...currentNativeHttpRunSetup,
-    testType: dataTestType,
-    ftp: ftpSetup,
-    iperf: iperfSetup,
-    ookla: ooklaSetup,
-    fcc: fccSetup,
-  }), [currentNativeHttpRunSetup, dataTestType, ftpSetup, iperfSetup, ooklaSetup, fccSetup]);
+  const currentFtpRunSetup = useMemo(() => ({
+    ...DEFAULT_FTP_SETUP,
+    ...(ftpSetup || {}),
+    testType: "ftp",
+    direction: ftpSetup?.direction || DEFAULT_FTP_SETUP.direction,
+    iterations: clampInteger(ftpSetup?.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_FTP_SETUP.iterations),
+    waitSeconds: clampInteger(ftpSetup?.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_FTP_SETUP.waitSeconds),
+    durationSeconds: clampInteger(ftpSetup?.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_FTP_SETUP.durationSeconds),
+    intervalSeconds: clampInteger(ftpSetup?.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_FTP_SETUP.intervalSeconds),
+    warmupSeconds: clampInteger(ftpSetup?.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_FTP_SETUP.warmupSeconds),
+    port: clampInteger(ftpSetup?.port, 1, 65535, DEFAULT_FTP_SETUP.port),
+    uploadFileSizeMb: clampInteger(ftpSetup?.uploadFileSizeMb, 1, 2048, DEFAULT_FTP_SETUP.uploadFileSizeMb),
+    host: String(ftpSetup?.host || "").trim(),
+    username: String(ftpSetup?.username || DEFAULT_FTP_SETUP.username).trim(),
+    password: String(ftpSetup?.password || ""),
+    downloadRemotePath: String(ftpSetup?.downloadRemotePath || "").trim(),
+    uploadRemotePath: String(ftpSetup?.uploadRemotePath || "").trim(),
+    passiveMode: ftpSetup?.passiveMode !== false,
+    secure: Boolean(ftpSetup?.secure),
+  }), [ftpSetup]);
+
+  const currentIperfRunSetup = useMemo(() => ({
+    ...DEFAULT_IPERF_SETUP,
+    ...(iperfSetup || {}),
+    testType: "iperf",
+    direction: iperfSetup?.direction || DEFAULT_IPERF_SETUP.direction,
+    iterations: clampInteger(iperfSetup?.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_IPERF_SETUP.iterations),
+    waitSeconds: clampInteger(iperfSetup?.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_IPERF_SETUP.waitSeconds),
+    durationSeconds: clampInteger(iperfSetup?.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_IPERF_SETUP.durationSeconds),
+    intervalSeconds: clampInteger(iperfSetup?.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_IPERF_SETUP.intervalSeconds),
+    warmupSeconds: clampInteger(iperfSetup?.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_IPERF_SETUP.warmupSeconds),
+    port: clampInteger(iperfSetup?.port, 1, 65535, DEFAULT_IPERF_SETUP.port),
+    streams: clampInteger(iperfSetup?.streams, 1, 64, DEFAULT_IPERF_SETUP.streams),
+    udpBitrateMbps: clampInteger(iperfSetup?.udpBitrateMbps, 1, 100000, DEFAULT_IPERF_SETUP.udpBitrateMbps),
+    server: String(iperfSetup?.server || DEFAULT_IPERF_SETUP.server || "").trim(),
+    protocol: String(iperfSetup?.protocol || DEFAULT_IPERF_SETUP.protocol || "TCP").toUpperCase(),
+    reverseMode: iperfSetup?.reverseMode !== false,
+  }), [iperfSetup]);
+
+  const currentDataTestConfig = useMemo(() => {
+    if (dataTestType === "ftp") {
+      return {
+        ...currentFtpRunSetup,
+        ftp: currentFtpRunSetup,
+        iperf: currentIperfRunSetup,
+        ookla: ooklaSetup,
+        fcc: fccSetup,
+      };
+    }
+    if (dataTestType === "iperf") {
+      return {
+        ...currentIperfRunSetup,
+        ftp: currentFtpRunSetup,
+        iperf: currentIperfRunSetup,
+        ookla: ooklaSetup,
+        fcc: fccSetup,
+      };
+    }
+    return {
+      ...currentNativeHttpRunSetup,
+      testType: dataTestType,
+      ftp: currentFtpRunSetup,
+      iperf: currentIperfRunSetup,
+      ookla: ooklaSetup,
+      fcc: fccSetup,
+    };
+  }, [currentNativeHttpRunSetup, currentFtpRunSetup, currentIperfRunSetup, dataTestType, ooklaSetup, fccSetup]);
+
+  const currentDataTestSummary = useMemo(() => {
+    const label = DATA_TEST_TYPES.find((item) => item.key === dataTestType)?.label || "Data Test";
+    const directionLabel = DATA_DIRECTIONS.find((item) => item.key === currentDataTestConfig.direction)?.label || "DL + UL";
+    const ftpHostText = dataTestType === "ftp" && currentDataTestConfig.host ? ` · ${currentDataTestConfig.host}:${currentDataTestConfig.port}` : "";
+    const iperfHostText = dataTestType === "iperf" && currentDataTestConfig.server ? ` · ${currentDataTestConfig.server}:${currentDataTestConfig.port}` : "";
+    return `${label} · ${directionLabel} · ${currentDataTestConfig.durationSeconds}s + ${currentDataTestConfig.warmupSeconds}s warmup${ftpHostText}${iperfHostText}`;
+  }, [dataTestType, currentDataTestConfig]);
   const modeOptions = selectedMode === "voice" ? VOICE_TEST_OPTIONS : DATA_TEST_OPTIONS;
   const liveRatKey = getRatKeyFromSnapshot(nativeSnapshot);
   const effectiveRatView = ratView === "auto" ? liveRatKey : ratView;
@@ -2436,6 +2649,7 @@ export default function MobileRfKpi({
     setThpWaitSeconds(cleanIntegerDraft(String(setup.waitSeconds ?? ""), 3));
     setThpDurationSeconds(cleanIntegerDraft(String(setup.durationSeconds ?? ""), 3));
     setThpIntervalSeconds(cleanIntegerDraft(String(setup.intervalSeconds ?? ""), 2));
+    setThpWarmupSeconds(cleanIntegerDraft(String(setup.warmupSeconds ?? ""), 2));
     setNativeDownloadUrl(setup.downloadUrl ?? DEFAULT_NATIVE_HTTP_SETUP.downloadUrl);
     setNativeUploadUrl(setup.uploadUrl ?? DEFAULT_NATIVE_HTTP_SETUP.uploadUrl);
   }
@@ -2518,6 +2732,7 @@ export default function MobileRfKpi({
     const waitSeconds = clampInteger(config.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
     const durationSeconds = clampInteger(config.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
     const intervalSeconds = clampInteger(config.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
+    const warmupSeconds = clampInteger(config.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
     const direction = config.direction || DEFAULT_DATA_DIRECTION;
     const runDl = direction !== "ul";
     const runUl = direction !== "dl";
@@ -2544,6 +2759,7 @@ export default function MobileRfKpi({
       waitSeconds,
       durationSeconds,
       intervalSeconds,
+      warmupSeconds,
       downloadUrl: config.downloadUrl || DEFAULT_NATIVE_HTTP_SETUP.downloadUrl,
       uploadUrl: config.uploadUrl || DEFAULT_NATIVE_HTTP_SETUP.uploadUrl,
       currentIteration: 1,
@@ -2553,7 +2769,7 @@ export default function MobileRfKpi({
       startedAt,
       endedAt: null,
       sessionId,
-      message: `Iteration 1/${iterations}: running native ${direction === "ul" ? "upload" : direction === "dl" ? "download" : "DL/UL"} for ${phaseText}...`,
+      message: `Iteration 1/${iterations}: warmup ${warmupSeconds}s, then native ${direction === "ul" ? "upload" : direction === "dl" ? "download" : "DL/UL"} for ${phaseText}...`,
     });
 
     try {
@@ -2567,12 +2783,12 @@ export default function MobileRfKpi({
             status: "running",
             phase: "download",
             currentIteration: iteration,
-            message: `Iteration ${iteration}/${iterations}: native DL for ${dlDurationSeconds}s...`,
+            message: `Iteration ${iteration}/${iterations}: DL warmup ${warmupSeconds}s + measure ${dlDurationSeconds}s...`,
           });
 
           dl = await measureDownloadThroughput({
             signal: controller.signal,
-            config: { ...config, durationSeconds: dlDurationSeconds, intervalSeconds },
+            config: { ...config, durationSeconds: dlDurationSeconds, intervalSeconds, warmupSeconds },
             onProgress: (received) => {
               if (throughputAbortRef.current === controller) {
                 patchDataTest({
@@ -2592,11 +2808,11 @@ export default function MobileRfKpi({
           phase: runUl ? "upload" : "iteration_complete",
           currentIteration: iteration,
           iterationResults: interimDlResults,
-          message: runUl ? `Iteration ${iteration}/${iterations}: native UL for ${ulDurationSeconds}s...` : `Iteration ${iteration}/${iterations}: DL complete.`,
+          message: runUl ? `Iteration ${iteration}/${iterations}: UL warmup ${warmupSeconds}s + measure ${ulDurationSeconds}s...` : `Iteration ${iteration}/${iterations}: DL complete.`,
         });
 
         if (runUl) {
-          ul = await measureUploadThroughput({ signal: controller.signal, config: { ...config, durationSeconds: ulDurationSeconds, intervalSeconds } });
+          ul = await measureUploadThroughput({ signal: controller.signal, config: { ...config, durationSeconds: ulDurationSeconds, intervalSeconds, warmupSeconds } });
           if (throughputAbortRef.current !== controller) return;
         }
 
@@ -2606,6 +2822,10 @@ export default function MobileRfKpi({
           ulMbps: ul?.mbps ?? null,
           dlBytes: dl?.bytes || 0,
           ulBytes: ul?.bytes || 0,
+          dlMeasuredBytes: dl?.measuredBytes || dl?.bytes || 0,
+          ulMeasuredBytes: ul?.measuredBytes || ul?.bytes || 0,
+          dlWarmupBytes: dl?.warmupBytes || 0,
+          ulWarmupBytes: ul?.warmupBytes || 0,
           dlSeconds: dl?.seconds || 0,
           ulSeconds: ul?.seconds || 0,
           dlWallSeconds: dl?.wallSeconds || dl?.seconds || 0,
@@ -2619,6 +2839,7 @@ export default function MobileRfKpi({
           dlDurationSeconds,
           ulDurationSeconds,
           intervalSeconds,
+          warmupSeconds,
           waitSeconds,
           direction,
         };
@@ -2677,6 +2898,259 @@ export default function MobileRfKpi({
     }
   }
 
+
+
+
+  async function runIperfPlaceholderTest(sessionId, options = {}) {
+    if (selectedModeRef.current !== "data") return;
+
+    if (throughputAbortRef.current) {
+      throughputAbortRef.current.abort();
+      throughputAbortRef.current = null;
+    }
+
+    const config = { ...DEFAULT_IPERF_SETUP, ...(options || {}) };
+    const iterations = clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
+    const waitSeconds = clampInteger(config.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
+    const durationSeconds = clampInteger(config.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
+    const intervalSeconds = clampInteger(config.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
+    const warmupSeconds = clampInteger(config.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
+    const direction = config.direction || DEFAULT_DATA_DIRECTION;
+    const protocol = String(config.protocol || "TCP").toUpperCase();
+    const server = String(config.server || DEFAULT_IPERF_SETUP.server || "").trim();
+    const port = clampInteger(config.port, 1, 65535, DEFAULT_IPERF_SETUP.port);
+    const streams = clampInteger(config.streams, 1, 64, DEFAULT_IPERF_SETUP.streams);
+    const udpBitrateMbps = clampInteger(config.udpBitrateMbps, 1, 100000, DEFAULT_IPERF_SETUP.udpBitrateMbps);
+    const reverseMode = config.reverseMode !== false;
+    const startedAt = Date.now();
+
+    patchDataTest({
+      status: "running",
+      phase: "iperf_setup",
+      dlMbps: null,
+      ulMbps: null,
+      downloadBytes: 0,
+      uploadBytes: 0,
+      testType: "iperf",
+      direction,
+      iterationsRequested: iterations,
+      waitSeconds,
+      durationSeconds,
+      intervalSeconds,
+      warmupSeconds,
+      currentIteration: 0,
+      completedIterations: 0,
+      iterationResults: [],
+      error: "",
+      startedAt,
+      endedAt: null,
+      sessionId,
+      setupSnapshot: {
+        ...config,
+        testType: "iperf",
+        server,
+        port,
+        protocol,
+        streams,
+        udpBitrateMbps,
+        reverseMode,
+        iterations,
+        waitSeconds,
+        durationSeconds,
+        intervalSeconds,
+        warmupSeconds,
+        direction,
+      },
+      message: config.commandMode && (config.customerCommand || config.rawCommand)
+        ? `iPerf3 customer CMD captured. ${server || "server"}:${port} · ${protocol} · ${direction.toUpperCase()} · original command saved.`
+        : `iPerf3 setup captured for ${server || "server"}:${port} · ${protocol} · ${direction.toUpperCase()} · ${durationSeconds}s + ${warmupSeconds}s warmup.`,
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+
+    patchDataTest({
+      status: "complete",
+      phase: "iperf_setup_saved",
+      testType: "iperf",
+      completedIterations: 0,
+      currentIteration: 0,
+      endedAt: Date.now(),
+      error: "",
+      message: `iPerf3 setup saved. RF/GPS is recording; binary plugin and asset slots are ready. Real execution wiring comes in Step 1G4B. ${server || "server"}:${port} · ${protocol} · streams ${streams}${reverseMode ? " · reverse DL enabled" : ""}.`,
+    });
+  }
+
+
+  async function runFtpThroughputTest(sessionId, options = {}) {
+    if (selectedModeRef.current !== "data") return;
+
+    if (throughputAbortRef.current) {
+      throughputAbortRef.current.abort();
+      throughputAbortRef.current = null;
+    }
+
+    const config = { ...DEFAULT_FTP_SETUP, ...(options || {}) };
+    const iterations = clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
+    const waitSeconds = clampInteger(config.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
+    const durationSeconds = clampInteger(config.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
+    const intervalSeconds = clampInteger(config.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
+    const warmupSeconds = clampInteger(config.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
+    const direction = config.direction || DEFAULT_DATA_DIRECTION;
+    const { dlDurationSeconds, ulDurationSeconds, phaseText } = splitIterationDuration(durationSeconds, direction);
+    const startedAt = Date.now();
+
+    patchDataTest({
+      status: "running",
+      phase: "ftp",
+      dlMbps: null,
+      ulMbps: null,
+      downloadBytes: 0,
+      uploadBytes: 0,
+      testType: "ftp",
+      direction,
+      iterationsRequested: iterations,
+      waitSeconds,
+      durationSeconds,
+      intervalSeconds,
+      warmupSeconds,
+      currentIteration: 1,
+      completedIterations: 0,
+      iterationResults: [],
+      error: "",
+      startedAt,
+      endedAt: null,
+      sessionId,
+      setupSnapshot: {
+        ...config,
+        iterations,
+        waitSeconds,
+        durationSeconds,
+        intervalSeconds,
+        warmupSeconds,
+      },
+      message: `FTP test starting on ${config.host || "FTP host"} · ${phaseText} · warmup ${warmupSeconds}s.`,
+    });
+
+    try {
+      const ftpResult = await runBabyDragonFtpTest({
+        sessionId,
+        task: activeTask,
+        grid: activeGrid ? { name: activeGrid } : null,
+        ftpConfig: {
+          ...config,
+          iterations,
+          waitSeconds,
+          durationSeconds,
+          intervalSeconds,
+          warmupSeconds,
+          durationSec: durationSeconds,
+          warmupSec: warmupSeconds,
+          intervalSec: intervalSeconds,
+          waitSec: waitSeconds,
+          dlPath: config.downloadRemotePath || config.dlPath || "/readme.txt",
+          ulFolder: config.uploadRemotePath || config.ulFolder || "/",
+          passive: config.passiveMode !== false,
+          secure: Boolean(config.secure),
+        },
+        onProgress: (event) => {
+          if (selectedModeRef.current !== "data") return;
+          patchDataTest({
+            status: "running",
+            phase: event?.status || "ftp",
+            testType: "ftp",
+            currentIteration: event?.iteration || dataTestRef.current.currentIteration || 1,
+            completedIterations: event?.status === "iteration_done"
+              ? Math.max(dataTestRef.current.completedIterations || 0, event?.iteration || 0)
+              : dataTestRef.current.completedIterations || 0,
+            iterationsRequested: event?.iterationsRequested || iterations,
+            message: event?.message || dataTestRef.current.message || "FTP test running.",
+          });
+        },
+      });
+
+      const iterationResults = (ftpResult.iterations || []).map((item) => ({
+        iteration: item.iteration,
+        status: item.dlStatus || item.ulStatus ? (item.dlStatus?.toLowerCase?.().includes("failed") || item.ulStatus?.toLowerCase?.().includes("failed") ? "partial" : "complete") : "complete",
+        direction,
+        dlMbps: item.dlMbps ?? null,
+        ulMbps: item.ulMbps ?? null,
+        dlBytes: item.dlMeasuredBytes || 0,
+        ulBytes: item.ulMeasuredBytes || 0,
+        dlMeasuredBytes: item.dlMeasuredBytes || 0,
+        ulMeasuredBytes: item.ulMeasuredBytes || 0,
+        dlWarmupBytes: item.dlWarmupBytes || 0,
+        ulWarmupBytes: item.ulWarmupBytes || 0,
+        dlSeconds: item.dlDurationMs ? item.dlDurationMs / 1000 : 0,
+        ulSeconds: item.ulDurationMs ? item.ulDurationMs / 1000 : 0,
+        dlWallSeconds: item.dlDurationMs ? item.dlDurationMs / 1000 : 0,
+        ulWallSeconds: item.ulDurationMs ? item.ulDurationMs / 1000 : 0,
+        dlSource: ftpResult.source || "native-ftp-v1g2a",
+        ulSource: ftpResult.source || "native-ftp-v1g2a",
+        source: ftpResult.source || "native-ftp-v1g2a",
+        startedAt: item.startedAtMs || startedAt,
+        endedAt: item.endedAtMs || Date.now(),
+        durationSeconds,
+        dlDurationSeconds,
+        ulDurationSeconds,
+        intervalSeconds,
+        warmupSeconds,
+        waitSeconds,
+        dlStatus: item.dlStatus || "",
+        ulStatus: item.ulStatus || "",
+      }));
+
+      const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(ftpResult.avgDlMbps);
+      const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(ftpResult.avgUlMbps);
+      const totalDlBytes = iterationResults.reduce((sum, item) => sum + (item.dlMeasuredBytes || 0), 0);
+      const totalUlBytes = iterationResults.reduce((sum, item) => sum + (item.ulMeasuredBytes || 0), 0);
+      const totalDlWarmupBytes = iterationResults.reduce((sum, item) => sum + (item.dlWarmupBytes || 0), 0);
+      const totalUlWarmupBytes = iterationResults.reduce((sum, item) => sum + (item.ulWarmupBytes || 0), 0);
+      const needsDlBytes = direction !== "ul";
+      const needsUlBytes = direction !== "dl";
+      const hasRequestedBytes = (!needsDlBytes || totalDlBytes > 0) && (!needsUlBytes || totalUlBytes > 0);
+      const hasAnyMeasuredBytes = totalDlBytes > 0 || totalUlBytes > 0;
+      const finalFtpStatus = ftpResult.ok && hasRequestedBytes ? "complete" : hasAnyMeasuredBytes ? "partial" : "error";
+      const finalFtpPhase = finalFtpStatus;
+      const zeroByteMessage = "FTP completed but no measured bytes were captured. Use a larger FTP file or a controlled FTP server. For Rebex smoke test, try Warmup 0.";
+      const partialMessage = ftpResult?.message || "FTP partial result. One direction completed, another direction failed or captured zero measured bytes.";
+
+      patchDataTest({
+        status: finalFtpStatus,
+        phase: finalFtpPhase,
+        testType: "ftp",
+        dlMbps: avgDl,
+        ulMbps: avgUl,
+        downloadBytes: totalDlBytes,
+        uploadBytes: totalUlBytes,
+        downloadWarmupBytes: totalDlWarmupBytes,
+        uploadWarmupBytes: totalUlWarmupBytes,
+        completedIterations: iterationResults.length,
+        currentIteration: iterationResults.length || 0,
+        iterationResults,
+        endedAt: Date.now(),
+        error: finalFtpStatus === "complete" ? "" : finalFtpStatus === "partial" ? partialMessage : (ftpResult?.message || zeroByteMessage),
+        message: finalFtpStatus === "complete"
+          ? `FTP complete ${iterationResults.length}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
+          : finalFtpStatus === "partial"
+            ? `${partialMessage} · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
+            : (ftpResult?.message || zeroByteMessage),
+      });
+    } catch (error) {
+      const message = error?.message || "FTP test failed.";
+      patchDataTest({
+        status: "error",
+        phase: "error",
+        testType: "ftp",
+        completedIterations: dataTestRef.current.completedIterations || 0,
+        iterationResults: dataTestRef.current.iterationResults || [],
+        endedAt: Date.now(),
+        error: message,
+        message,
+      });
+    }
+  }
+
+
   async function armWorkflow(mode) {
     const now = Date.now();
     const session = {
@@ -2705,6 +3179,10 @@ export default function MobileRfKpi({
     if (mode === "data") {
       if (currentDataTestConfig.testType === "native_http") {
         runInternalThroughputTest(session.id, currentDataTestConfig);
+      } else if (currentDataTestConfig.testType === "ftp") {
+        runFtpThroughputTest(session.id, currentDataTestConfig);
+      } else if (currentDataTestConfig.testType === "iperf") {
+        runIperfPlaceholderTest(session.id, currentDataTestConfig);
       } else {
         const label = DATA_TEST_TYPES.find((item) => item.key === currentDataTestConfig.testType)?.label || currentDataTestConfig.testType;
         patchDataTest({
@@ -2716,6 +3194,8 @@ export default function MobileRfKpi({
           waitSeconds: currentDataTestConfig.waitSeconds,
           durationSeconds: currentDataTestConfig.durationSeconds,
           intervalSeconds: currentDataTestConfig.intervalSeconds,
+          warmupSeconds: currentDataTestConfig.warmupSeconds,
+          setupSnapshot: currentDataTestConfig,
           sessionId: session.id,
           startedAt: now,
           endedAt: null,
@@ -2899,7 +3379,7 @@ export default function MobileRfKpi({
             <div className="bd-rf-data-setup-head">
               <div>
                 <b>Data Test Setup</b>
-                <span>{DATA_TEST_TYPES.find((item) => item.key === dataTestType)?.label || "Native Android HTTP"} · {DATA_DIRECTIONS.find((item) => item.key === dataDirection)?.label || "DL + UL"} · {resolvedThpDurationSeconds}s</span>
+                <span>{currentDataTestSummary}</span>
               </div>
               <button type="button" onClick={() => setDataSetupOpen((current) => !current)}>
                 {dataSetupOpen ? "Hide" : "Setup"}
@@ -2930,7 +3410,7 @@ export default function MobileRfKpi({
                   <FtpTestCard setup={ftpSetup} onChange={setFtpSetup} disabled={dataTest.status === "running"} />
                 )}
                 {dataTestType === "iperf" && (
-                  <IperfTestCard setup={iperfSetup} onChange={setIperfSetup} disabled={dataTest.status === "running"} />
+                  <Iperf3TestPage setup={iperfSetup} onChange={setIperfSetup} disabled={dataTest.status === "running"} />
                 )}
                 {dataTestType === "ookla_app" && (
                   <OoklaTestCard setup={ooklaSetup} onChange={setOoklaSetup} disabled={dataTest.status === "running"} />
@@ -2991,21 +3471,6 @@ export default function MobileRfKpi({
           </p>
         )}
 
-        <p className={`bd-rf-inline-note ${nativeSnapshot?.ok ? "success" : ""}`}>
-          {servingTechnology} · {collectorMessage}
-        </p>
-
-        <div className="bd-rf-serving-compact">
-          <div className="bd-rf-serving-main">
-            <span>Current RAT</span>
-            <strong>{servingTechnology}</strong>
-          </div>
-          <div className="bd-rf-serving-grid">
-            <span><b>LTE Anchor</b>{describeLteAnchor(nativeSnapshot)}</span>
-            <span className={getCardStatus(nativeSnapshot, "nr")}><b>NR Secondary</b>{describeNrSecondary(nativeSnapshot)}</span>
-            <span><b>RF Source</b>{describeRfSource(nativeSnapshot)}</span>
-          </div>
-        </div>
 
         {visibleSession && (
           <div className={`bd-rf-session-card ${collectorRunning ? "recording" : "saved"}`}>
@@ -3040,10 +3505,13 @@ export default function MobileRfKpi({
           <div className={`bd-rf-thp-card ${dataTest.status || "idle"}`}>
             <div className="bd-rf-thp-head">
               <div>
-                <b>Internal DL / UL Throughput</b>
+                <b>{dataTestMonitorTitle(dataTest)}</b>
                 <span>{dataTest.message || visibleSession?.appTestMessage || "Avg values are from completed iterations. Details are listed below."}</span>
               </div>
-              <em>{throughputStatus("dl", { dataTest, savedSession: visibleSession })}</em>
+              {(() => {
+                const badge = throughputStatusBadge({ dataTest, savedSession: visibleSession });
+                return <em className={`bd-rf-status ${statusClassName(badge)}`}>{badge}</em>;
+              })()}
             </div>
             <div className="bd-rf-thp-grid bd-rf-thp-grid-d2">
               <span><b>Avg DL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("dl", { dataTest, savedSession: visibleSession }))}</strong></span>
@@ -3051,6 +3519,18 @@ export default function MobileRfKpi({
               <span><b>Iterations</b><strong>{dataTest.completedIterations || visibleSession?.appCompletedIterations || 0}/{dataTest.iterationsRequested || visibleSession?.appIterationsRequested || resolvedThpIterations}</strong></span>
               <span><b>Wait</b><strong>{dataTest.waitSeconds ?? visibleSession?.appWaitSeconds ?? resolvedThpWaitSeconds}s</strong></span>
             </div>
+            {dataTest.testType === "ftp" ? (
+              <div className="bd-rf-thp-iteration-list">
+                <span><b>Measured Bytes</b><strong>DL {formatBytesCompact(dataTest.downloadBytes)} / UL {formatBytesCompact(dataTest.uploadBytes)}</strong></span>
+                <span><b>Warmup Bytes</b><strong>DL {formatBytesCompact(dataTest.downloadWarmupBytes)} / UL {formatBytesCompact(dataTest.uploadWarmupBytes)}</strong></span>
+              </div>
+            ) : null}
+            {ftpFinalPolishNote(dataTest) ? (
+              <p className="bd-rf-ftp-final-note">{ftpFinalPolishNote(dataTest)}</p>
+            ) : null}
+            {iperfPlaceholderNote(dataTest) ? (
+              <p className="bd-rf-iperf-final-note">{iperfPlaceholderNote(dataTest)}</p>
+            ) : null}
             {thpIterationRows.length ? (
               <div className="bd-rf-thp-iteration-list">
                 {thpIterationRows.map((row) => (

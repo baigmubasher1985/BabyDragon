@@ -8,14 +8,14 @@ export const DATA_TEST_TYPES = [
   {
     key: "ftp",
     label: "FTP",
-    status: "planned",
-    description: "Planned FTP DL/UL workflow with server, credentials, path, and duration/file-size settings.",
+    status: "active",
+    description: "Native Android FTP DL/UL runner is wired. Use public servers for smoke testing only and controlled FTP for final throughput.",
   },
   {
     key: "iperf",
-    label: "iPerf",
-    status: "planned",
-    description: "Planned TCP/UDP iPerf workflow with server, port, streams, duration, and interval settings.",
+    label: "iPerf3",
+    status: "setup",
+    description: "iPerf3 clean page with form mode and carrier command parsing. RF/GPS is recorded now; real iPerf3 execution comes in Step 1G4B.",
   },
   {
     key: "ookla_app",
@@ -37,15 +37,147 @@ export const DATA_DIRECTIONS = [
   { key: "ul", label: "UL only" },
 ];
 
+export const DATA_TEST_STORAGE_KEYS = {
+  nativeHttp: "bd_rf_native_http_setup_v1",
+  ftp: "bd_rf_ftp_setup_v1",
+  iperf: "bd_rf_iperf_setup_v1",
+};
+
+export const NATIVE_HTTP_PRESETS = [
+  {
+    key: "cloudflare_demo",
+    label: "Cloudflare demo",
+    hint: "Default BabyDragon HTTP DL/UL preset",
+    values: {
+      testType: "native_http",
+      presetKey: "cloudflare_demo",
+      direction: "dl_ul",
+      durationSeconds: 10,
+      warmupSeconds: 3,
+      intervalSeconds: 1,
+      iterations: 1,
+      waitSeconds: 5,
+      downloadUrl: "https://speed.cloudflare.com/__down",
+      uploadUrl: "https://speed.cloudflare.com/__up",
+    },
+  },
+  {
+    key: "custom",
+    label: "Custom HTTP server",
+    hint: "Keep fields editable for customer/project URLs",
+    values: {
+      testType: "native_http",
+      presetKey: "custom",
+    },
+  },
+];
+
+export const FTP_PRESETS = [
+  {
+    key: "rebex_dl_demo",
+    label: "Rebex DL demo",
+    hint: "Read-only FTP demo for download/list testing",
+    values: {
+      testType: "ftp",
+      presetKey: "rebex_dl_demo",
+      direction: "dl",
+      durationSeconds: 10,
+      warmupSeconds: 3,
+      intervalSeconds: 1,
+      iterations: 1,
+      waitSeconds: 5,
+      host: "test.rebex.net",
+      port: "21",
+      username: "demo",
+      password: "password",
+      passiveMode: true,
+      secure: false,
+      downloadRemotePath: "/readme.txt",
+      uploadRemotePath: "/",
+      uploadFileSizeMb: 10,
+      notes: "Rebex is DL smoke only. It is read-only, speed-limited, and /readme.txt is tiny, so it is not valid for final throughput.",
+    },
+  },
+  {
+    key: "dlptest_ul_demo",
+    label: "DLPTest UL demo",
+    hint: "Public FTP upload demo; password may rotate",
+    values: {
+      testType: "ftp",
+      presetKey: "dlptest_ul_demo",
+      direction: "ul",
+      durationSeconds: 10,
+      warmupSeconds: 3,
+      intervalSeconds: 1,
+      iterations: 1,
+      waitSeconds: 5,
+      host: "ftp.dlptest.com",
+      port: "21",
+      username: "dlpuser",
+      password: "rNrKYTX9g7z3RgJRmxWuGHbeu",
+      passiveMode: true,
+      secure: false,
+      downloadRemotePath: "/",
+      uploadRemotePath: "/",
+      uploadFileSizeMb: 10,
+      notes: "DLPTest is UL smoke only. It stores files temporarily and the password may rotate. Verify before field use.",
+    },
+  },
+  {
+    key: "custom",
+    label: "Custom FTP server",
+    hint: "Use customer/project FTP server details",
+    values: {
+      testType: "ftp",
+      presetKey: "custom",
+    },
+  },
+];
+
+export const IPERF_PRESETS = [
+  {
+    key: "iperf_fr_ping_online",
+    label: "Public iPerf3 demo",
+    hint: "ping.online.net, port 5201",
+    values: {
+      testType: "iperf",
+      presetKey: "iperf_fr_ping_online",
+      direction: "dl_ul",
+      server: "ping.online.net",
+      port: "5201",
+      protocol: "TCP",
+      streams: "1",
+      durationSeconds: "10",
+      warmupSeconds: "3",
+      intervalSeconds: "1",
+      iterations: "1",
+      waitSeconds: "5",
+      reverseMode: true,
+      udpBitrateMbps: "10",
+      notes: "Public iPerf3 demo only. ping.online.net uses public iPerf3 ports and may be busy or refuse parallel sessions. Use a customer-controlled iPerf3 server for final throughput.",
+    },
+  },
+  {
+    key: "custom",
+    label: "Custom iPerf server",
+    hint: "Use your own iPerf3 server/IP and port",
+    values: {
+      testType: "iperf",
+      presetKey: "custom",
+    },
+  },
+];
+
 export const DEFAULT_NATIVE_HTTP_SETUP = {
-  testType: "native_http",
-  direction: "dl_ul",
-  durationSeconds: 10,
-  intervalSeconds: 1,
-  iterations: 1,
-  waitSeconds: 5,
-  downloadUrl: "https://speed.cloudflare.com/__down",
-  uploadUrl: "https://speed.cloudflare.com/__up",
+  ...NATIVE_HTTP_PRESETS[0].values,
+};
+
+export const DEFAULT_FTP_SETUP = {
+  ...FTP_PRESETS[0].values,
+};
+
+export const DEFAULT_IPERF_SETUP = {
+  ...IPERF_PRESETS[0].values,
 };
 
 export const DEFAULT_FCC_IMPORT_SETUP = {

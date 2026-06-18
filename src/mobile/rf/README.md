@@ -22,3 +22,13 @@ Acceptance:
 4. Live RF/AVG continue updating.
 
 No DB changes. No new permissions. No new test behavior in this step.
+
+
+Step 1G adds the FTP setup coding page and a safe placeholder engine. It does not run FTP bytes yet; Step 1G2 wires the native FTP transfer runner.
+
+Step 1G1A adds demo presets and last-used setup memory for Native HTTP, FTP, and iPerf cards.
+- Native HTTP default: Cloudflare speed test endpoints.
+- FTP defaults: Rebex read-only DL demo, DLPTest UL demo, and Custom FTP.
+- iPerf default: public iPerf demo preset plus Custom iPerf.
+- Each setup remains editable and saves last-used values in browser/WebView localStorage.
+- Native HTTP test behavior is unchanged.

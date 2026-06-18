@@ -1,0 +1,10 @@
+Place the executable iperf3 binary for ABI x86_64 in this folder.
+
+Required final filename:
+iperf3
+
+Example final path:
+android/app/src/main/assets/iperf3/x86_64/iperf3
+
+Do not rename it to iperf3.exe, iperf3.bin, or iperf3.txt.
+The file must be a real Android/Linux executable for x86_64.

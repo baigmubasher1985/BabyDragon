@@ -5615,3 +5615,466 @@
   border-radius: 12px;
   padding: 8px 9px;
 }
+
+
+/* Step 1G FTP setup polish */
+.bd-rf-test-card-ftp header em { color: #9de8ff; }
+.bd-rf-test-card-ftp .bd-rf-full-input { display: grid; gap: 6px; margin-top: 10px; }
+.bd-rf-test-card-ftp .bd-rf-full-input span { color: #78d9ff; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.bd-rf-test-card-ftp input[type="password"] { letter-spacing: 0.12em; }
+.bd-rf-check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.bd-rf-check-grid label { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 8px 10px; border: 1px solid rgba(81, 210, 255, 0.18); border-radius: 12px; background: rgba(5, 15, 34, 0.54); color: #dff7ff; font-size: 0.72rem; font-weight: 800; }
+.bd-rf-mini-note { margin: 10px 0 0; padding: 10px; border: 1px solid rgba(245, 183, 70, 0.25); border-radius: 12px; color: #ffe9b5; background: rgba(245, 183, 70, 0.08); font-size: 0.72rem; font-weight: 800; line-height: 1.35; }
+
+
+/* ------------------------------------------------------------
+   BabyDragon v1.1.0 Step 1G2B: FTP final badge + server notes
+   ------------------------------------------------------------ */
+.bd-rf-thp-head em.bd-rf-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 54px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.bd-rf-thp-head em.bd-rf-status.saved,
+.bd-rf-thp-head em.bd-rf-status.complete {
+  background: rgba(34, 197, 94, 0.22);
+  color: #bbf7d0;
+}
+
+.bd-rf-thp-head em.bd-rf-status.partial {
+  background: rgba(251, 191, 36, 0.24);
+  color: #fde68a;
+}
+
+.bd-rf-thp-head em.bd-rf-status.error {
+  background: rgba(248, 113, 113, 0.22);
+  color: #fecaca;
+}
+
+.bd-rf-thp-head em.bd-rf-status.testing,
+.bd-rf-thp-head em.bd-rf-status.starting {
+  background: rgba(59, 130, 246, 0.24);
+  color: #bfdbfe;
+}
+
+.bd-rf-thp-head em.bd-rf-status.ready {
+  background: rgba(37, 99, 235, 0.20);
+  color: #dbeafe;
+}
+
+.bd-rf-ftp-final-note {
+  border: 1px solid rgba(251, 191, 36, 0.20);
+  background: rgba(120, 53, 15, 0.20) !important;
+  color: #fde68a !important;
+}
+
+.bd-rf-ftp-server-note {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid rgba(251, 191, 36, 0.24);
+  border-radius: 12px;
+  background: rgba(120, 53, 15, 0.18);
+}
+
+.bd-rf-ftp-server-note span {
+  color: #fde68a;
+  font-size: 9.5px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.bd-rf-ftp-server-note b {
+  color: #f8fafc;
+  font-weight: 950;
+}
+
+
+/* ------------------------------------------------------------
+   BabyDragon v1.1.0 Step 1G3: iPerf setup + placeholder monitor
+   ------------------------------------------------------------ */
+.bd-rf-test-card-iperf header em {
+  color: #bfdbfe;
+}
+
+.bd-rf-test-card-setup {
+  border-color: rgba(96, 165, 250, 0.34) !important;
+  background: linear-gradient(135deg, rgba(30, 64, 175, 0.16), rgba(15, 23, 42, 0.92)) !important;
+}
+
+.bd-rf-iperf-server-note {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid rgba(96, 165, 250, 0.24);
+  border-radius: 12px;
+  background: rgba(30, 64, 175, 0.16);
+}
+
+.bd-rf-iperf-server-note span {
+  color: #bfdbfe;
+  font-size: 9.5px;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.bd-rf-iperf-server-note b {
+  color: #f8fafc;
+  font-weight: 950;
+}
+
+.bd-rf-iperf-final-note {
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  background: rgba(30, 64, 175, 0.18) !important;
+  color: #bfdbfe !important;
+}
+
+.bd-rf-thp-head em.bd-rf-status.setup {
+  background: rgba(96, 165, 250, 0.24);
+  color: #dbeafe;
+}
+
+
+/* ------------------------------------------------------------
+   BabyDragon v1.1.0 Step 1G4A: separate iPerf3 binary plugin page
+   ------------------------------------------------------------ */
+.bd-rf-test-card-iperf3 {
+  border-color: rgba(56, 189, 248, 0.36) !important;
+  background: linear-gradient(135deg, rgba(14, 116, 144, 0.14), rgba(15, 23, 42, 0.94)) !important;
+}
+
+.bd-rf-test-card-iperf3 header em {
+  background: rgba(56, 189, 248, 0.18);
+  color: #cffafe;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+}
+
+.bd-rf-iperf3-status {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  background: rgba(8, 47, 73, 0.28);
+}
+
+.bd-rf-iperf3-status b {
+  display: block;
+  color: #e0f2fe;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bd-rf-iperf3-status span {
+  display: block;
+  margin-top: 4px;
+  color: #bfdbfe;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.bd-rf-iperf3-status small {
+  display: block;
+  margin-top: 3px;
+  color: #67e8f9;
+  font-size: 9px;
+  font-weight: 750;
+  word-break: break-word;
+}
+
+.bd-rf-iperf3-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.bd-rf-iperf3-actions button {
+  min-height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  background: rgba(14, 165, 233, 0.15);
+  color: #e0f2fe;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bd-rf-iperf-server-note code {
+  color: #e0f2fe;
+  font-weight: 950;
+  font-size: 9px;
+  word-break: break-word;
+}
+
+
+/* ------------------------------------------------------------
+   BabyDragon v1.1.0 Step 1G4A1: iPerf3 customer command mode
+   ------------------------------------------------------------ */
+.bd-rf-iperf3-command-mode {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  background: rgba(8, 47, 73, 0.24);
+}
+
+.bd-rf-iperf3-command-head b {
+  display: block;
+  color: #e0f2fe;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bd-rf-iperf3-command-head span {
+  display: block;
+  margin-top: 4px;
+  color: #bfdbfe;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.bd-rf-iperf3-command-mode textarea {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  border-radius: 12px;
+  border: 1px solid rgba(96, 165, 250, 0.24);
+  background: rgba(2, 6, 23, 0.64);
+  color: #e0f2fe;
+  padding: 9px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.35;
+  outline: none;
+}
+
+.bd-rf-iperf3-command-mode textarea:focus {
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.12);
+}
+
+.bd-rf-iperf3-command-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+
+.bd-rf-iperf3-command-actions button {
+  min-height: 32px;
+  border-radius: 11px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  background: rgba(14, 165, 233, 0.14);
+  color: #e0f2fe;
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.bd-rf-iperf3-command-mode em {
+  color: #bae6fd;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.bd-rf-iperf3-command-mode em.bd-rf-iperf3-parse-error {
+  color: #fecaca;
+}
+
+/* ------------------------------------------------------------
+   BabyDragon v1.1.0 Step 1G4A2: Clean iPerf3 page + CMD parser fix
+   ------------------------------------------------------------ */
+.bd-rf-iperf3-clean-page {
+  display: grid;
+  gap: 10px;
+}
+
+.bd-rf-iperf3-clean-header span {
+  max-width: 210px;
+}
+
+.bd-rf-iperf3-status-compact {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border-radius: 14px;
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  background: rgba(8, 47, 73, 0.28);
+}
+
+.bd-rf-iperf3-status-compact b {
+  display: block;
+  color: #e0f2fe;
+  font-size: 10px;
+  font-weight: 950;
+  line-height: 1.25;
+}
+
+.bd-rf-iperf3-status-compact span {
+  display: block;
+  margin-top: 3px;
+  color: #67e8f9;
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.bd-rf-iperf3-status-compact .bd-rf-iperf3-actions {
+  grid-template-columns: 1fr;
+  width: 74px;
+}
+
+.bd-rf-iperf3-status-compact .bd-rf-iperf3-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 8.5px;
+}
+
+.bd-rf-iperf3-quick-strip {
+  display: grid;
+  grid-template-columns: 1fr 0.55fr 1fr;
+  gap: 7px;
+}
+
+.bd-rf-iperf3-quick-strip span {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  background: rgba(15, 23, 42, 0.62);
+  color: #dbeafe;
+  font-size: 9px;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bd-rf-iperf3-quick-strip b {
+  display: block;
+  color: #67e8f9;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+}
+
+.bd-rf-iperf3-preset-row {
+  grid-template-columns: 1fr 76px;
+  margin: 0;
+}
+
+.bd-rf-iperf3-preset-row button {
+  min-height: 34px;
+  align-self: end;
+}
+
+.bd-rf-iperf3-card-block {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  background: rgba(2, 6, 23, 0.30);
+}
+
+.bd-rf-iperf3-block-title b,
+.bd-rf-iperf3-command-head b {
+  display: block;
+  color: #e0f2fe;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bd-rf-iperf3-block-title span,
+.bd-rf-iperf3-command-head span {
+  display: block;
+  margin-top: 3px;
+  color: #bfdbfe;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.bd-rf-iperf3-command-head code {
+  color: #e0f2fe;
+  font-weight: 950;
+}
+
+.bd-rf-iperf3-command-mode {
+  margin: 0;
+}
+
+.bd-rf-iperf3-command-mode textarea {
+  min-height: 54px;
+  max-height: 92px;
+}
+
+.bd-rf-iperf3-command-actions button {
+  min-height: 30px;
+}
+
+.bd-rf-iperf3-grid-clean {
+  gap: 8px;
+}
+
+.bd-rf-iperf3-reverse-row span b {
+  color: #e0f2fe;
+  font-weight: 950;
+}
+
+.bd-rf-iperf3-simple-note {
+  margin-top: 0;
+}
+
+.bd-rf-iperf3-simple-note span {
+  font-size: 9px;
+}
+
+.bd-rf-iperf3-simple-note code {
+  display: inline;
+  padding: 1px 4px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.65);
+  color: #e0f2fe;
+  word-break: break-word;
+}
+
+@media (max-width: 390px) {
+  .bd-rf-iperf3-status-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .bd-rf-iperf3-status-compact .bd-rf-iperf3-actions {
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .bd-rf-iperf3-quick-strip {
+    grid-template-columns: 1fr;
+  }
+}
+

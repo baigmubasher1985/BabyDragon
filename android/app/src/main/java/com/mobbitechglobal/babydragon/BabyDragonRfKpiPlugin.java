@@ -411,8 +411,10 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         Integer requestedTimeout = call.getInt("timeoutMs");
         Integer requestedDuration = call.getInt("durationSeconds");
         Integer requestedInterval = call.getInt("intervalSeconds");
+        Integer requestedWarmup = call.getInt("warmupSeconds");
         final int durationSeconds = clampInt(requestedDuration != null ? requestedDuration.intValue() : 0, 0, 300);
         final int intervalSeconds = clampInt(requestedInterval != null ? requestedInterval.intValue() : 1, 1, 10);
+        final int warmupSeconds = clampInt(requestedWarmup != null ? requestedWarmup.intValue() : 0, 0, 30);
         final int baseBytes = requestedBytes != null ? requestedBytes.intValue() : (upload ? DEFAULT_UPLOAD_BYTES : DEFAULT_DOWNLOAD_BYTES);
         final int bytes = Math.max(256 * 1024, baseBytes);
         final int requestedTimeoutMs = requestedTimeout != null ? requestedTimeout.intValue() : DEFAULT_THP_TIMEOUT_MS;
@@ -427,21 +429,22 @@ public class BabyDragonRfKpiPlugin extends Plugin {
                 JSObject result = new JSObject();
                 result.put("ok", false);
                 result.put("phase", upload ? "upload" : "download");
-                result.put("source", "native-httpurlconnection-v1.1.0-step-1f7-duration-truth");
+                result.put("source", "native-httpurlconnection-v1.1.0-step-1f10-warmup");
                 result.put("requestedBytes", bytes);
                 result.put("durationSeconds", durationSeconds);
+                result.put("warmupSeconds", warmupSeconds);
                 result.put("intervalSeconds", intervalSeconds);
                 result.put("urlHost", hostOnly(url));
                 result.put("timestamp", System.currentTimeMillis());
 
                 try {
                     JSObject measured = upload
-                        ? measureNativeUpload(url, bytes, timeoutMs, durationSeconds)
-                        : measureNativeDownload(url, bytes, timeoutMs, durationSeconds);
+                        ? measureNativeUpload(url, bytes, timeoutMs, durationSeconds, warmupSeconds)
+                        : measureNativeDownload(url, bytes, timeoutMs, durationSeconds, warmupSeconds);
 
                     measured.put("ok", true);
                     measured.put("phase", upload ? "upload" : "download");
-                    measured.put("source", "native-httpurlconnection-v1.1.0-step-1f7-duration-truth");
+                    measured.put("source", "native-httpurlconnection-v1.1.0-step-1f10-warmup");
                     measured.put("timestamp", System.currentTimeMillis());
                     resolveOnMain(call, measured);
                 } catch (Exception exception) {
@@ -705,11 +708,118 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         return appendQueryParam(url, "cacheBust", String.valueOf(System.currentTimeMillis()));
     }
 
-    private JSObject measureNativeDownload(String url, int bytes, int timeoutMs, int durationSeconds) throws Exception {
+
+    private long measureDownloadWarmupBytes(String url, int requestBytes, int timeoutMs, int warmupSeconds) throws Exception {
+        long startedNanos = System.nanoTime();
+        long targetNanos = warmupSeconds * 1000000000L;
+        long received = 0L;
+
+        do {
+            HttpURLConnection connection = null;
+            InputStream input = null;
+            try {
+                URL target = new URL(prepareDownloadUrl(url, requestBytes));
+                connection = (HttpURLConnection) target.openConnection();
+                connection.setRequestMethod("GET");
+                int effectiveTimeoutMs = clampInt(warmupSeconds * 1000 + 1500, 1500, timeoutMs);
+                connection.setConnectTimeout(effectiveTimeoutMs);
+                connection.setReadTimeout(effectiveTimeoutMs);
+                connection.setUseCaches(false);
+                connection.setRequestProperty("User-Agent", "BabyDragon-Mobile/1.1 Android NativeTHP Warmup");
+                connection.setRequestProperty("Cache-Control", "no-cache");
+                connection.setRequestProperty("Accept", "application/octet-stream,*/*");
+                connection.connect();
+
+                int statusCode = connection.getResponseCode();
+                if (statusCode < 200 || statusCode >= 400) {
+                    throw new Exception("DL warmup native HTTP " + statusCode);
+                }
+
+                input = new BufferedInputStream(connection.getInputStream());
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    received += read;
+                    if ((System.nanoTime() - startedNanos) >= targetNanos) break;
+                }
+            } finally {
+                if (input != null) {
+                    try { input.close(); } catch (Exception ignored) {}
+                }
+                if (connection != null) connection.disconnect();
+            }
+        } while ((System.nanoTime() - startedNanos) < targetNanos);
+
+        return received;
+    }
+
+    private long measureUploadWarmupBytes(String url, int timeoutMs, int warmupSeconds) throws Exception {
+        long startedNanos = System.nanoTime();
+        long targetNanos = warmupSeconds * 1000000000L;
+        long sent = 0L;
+        HttpURLConnection connection = null;
+        OutputStream output = null;
+        InputStream responseStream = null;
+
+        try {
+            URL target = new URL(prepareUploadUrl(url));
+            connection = (HttpURLConnection) target.openConnection();
+            connection.setRequestMethod("POST");
+            int effectiveTimeoutMs = clampInt(warmupSeconds * 1000 + 1500, 1500, timeoutMs);
+            connection.setConnectTimeout(effectiveTimeoutMs);
+            connection.setReadTimeout(effectiveTimeoutMs);
+            connection.setDoOutput(true);
+            connection.setUseCaches(false);
+            connection.setChunkedStreamingMode(64 * 1024);
+            connection.setRequestProperty("User-Agent", "BabyDragon-Mobile/1.1 Android NativeTHP Warmup");
+            connection.setRequestProperty("Content-Type", "application/octet-stream");
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            connection.setRequestProperty("Accept", "application/json,text/plain,*/*");
+
+            output = new BufferedOutputStream(connection.getOutputStream());
+            byte[] buffer = new byte[64 * 1024];
+            for (int index = 0; index < buffer.length; index += 1) {
+                buffer[index] = (byte) (index % 251);
+            }
+
+            while ((System.nanoTime() - startedNanos) < targetNanos) {
+                output.write(buffer, 0, buffer.length);
+                sent += buffer.length;
+            }
+            output.flush();
+
+            try {
+                int statusCode = connection.getResponseCode();
+                responseStream = statusCode >= 400 ? connection.getErrorStream() : connection.getInputStream();
+                if (responseStream != null) {
+                    byte[] drain = new byte[4096];
+                    while (responseStream.read(drain) != -1) {}
+                }
+                if (statusCode < 200 || statusCode >= 400) {
+                    throw new Exception("UL warmup native HTTP " + statusCode);
+                }
+            } catch (SocketTimeoutException ignored) {
+                // Upload bytes were already written. Warmup response confirmation is helpful, not required.
+            }
+        } finally {
+            if (responseStream != null) {
+                try { responseStream.close(); } catch (Exception ignored) {}
+            }
+            if (output != null) {
+                try { output.close(); } catch (Exception ignored) {}
+            }
+            if (connection != null) connection.disconnect();
+        }
+
+        return sent;
+    }
+
+    private JSObject measureNativeDownload(String url, int bytes, int timeoutMs, int durationSeconds, int warmupSeconds) throws Exception {
+        int requestBytes = durationSeconds > 0 ? DEFAULT_DOWNLOAD_BYTES : Math.max(256 * 1024, bytes);
+        long warmupBytes = warmupSeconds > 0 ? measureDownloadWarmupBytes(url, requestBytes, timeoutMs, warmupSeconds) : 0L;
         long startedNanos = System.nanoTime();
         long received = 0L;
         int lastStatusCode = 0;
-        int requestBytes = durationSeconds > 0 ? DEFAULT_DOWNLOAD_BYTES : Math.max(256 * 1024, bytes);
         long targetNanos = durationSeconds > 0 ? durationSeconds * 1000000000L : 0L;
 
         do {
@@ -757,6 +867,9 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         result.put("status", "complete");
         result.put("httpStatus", lastStatusCode);
         result.put("bytes", received);
+        result.put("measuredBytes", received);
+        result.put("warmupBytes", warmupBytes);
+        result.put("warmupSeconds", warmupSeconds);
         result.put("seconds", seconds);
         result.put("wallSeconds", seconds);
         result.put("durationTargetSeconds", durationSeconds);
@@ -765,7 +878,8 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         return result;
     }
 
-    private JSObject measureNativeUpload(String url, int bytes, int timeoutMs, int durationSeconds) throws Exception {
+    private JSObject measureNativeUpload(String url, int bytes, int timeoutMs, int durationSeconds, int warmupSeconds) throws Exception {
+        long warmupBytes = warmupSeconds > 0 ? measureUploadWarmupBytes(url, timeoutMs, warmupSeconds) : 0L;
         long startedNanos = System.nanoTime();
         long sent = 0L;
         HttpURLConnection connection = null;
@@ -844,6 +958,9 @@ public class BabyDragonRfKpiPlugin extends Plugin {
             result.put("httpStatus", statusCode);
             result.put("responseConfirmed", responseConfirmed);
             result.put("bytes", sent);
+            result.put("measuredBytes", sent);
+            result.put("warmupBytes", warmupBytes);
+            result.put("warmupSeconds", warmupSeconds);
             result.put("seconds", transferSeconds);
             result.put("wallSeconds", wallSeconds);
             result.put("durationTargetSeconds", durationSeconds);

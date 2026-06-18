@@ -1,0 +1,309 @@
+# iPerf3 page cleanup and parser verification
+
+## User
+
+You are working on the BabyDragon Mobile APK project.
+
+Important rules:
+
+1. Do not make large blind rewrites.
+2. First inspect the codebase and identify exact files.
+3. Preserve existing working features:
+
+   * RF KPI live/avg table
+   * Native Android HTTP test
+   * FTP engine and FTP final polish
+   * Report export
+   * RF/GPS recording
+4. Focus only on the iPerf3 page and parser cleanup unless I approve more changes.
+5. Before editing, show a short plan with exact file paths.
+6. After editing, run:
+   npm run build
+   npx cap sync android
+7. Report every file changed and any build errors.
+
+Current task:
+Clean and verify Step 1G4A2 iPerf3 page.
+
+Fix/check:
+
+* iPerf3 page should be user friendly and compact.
+* Command mode should parse carrier/customer commands.
+* Parser must support:
+  iperf3 -c 10.10.10.20 -p 5201 -t 15 -P 4 -R -J
+  iperf3 -c 10.10.10.20 -p5201 -t15 -P4 -R -J
+  iperf3 -c customer.server.com --port 5202 --time 30 --parallel 8 --reverse --json
+* Never allow Port to become NaN.
+* If parse fails, show a clear user message and keep previous valid settings.
+* Start Data should still save iPerf3 setup + RF/GPS only.
+* Real iPerf3 execution is NOT part of this step. That comes in Step 1G4B.
+* Keep binary status section clear:
+  Missing = no ABI binary found
+  Ready = ABI binary copied and executable
+* Keep notes short:
+  Customer server: run iperf3 -s -p 5201
+  Place ABI binary under android/app/src/main/assets/iperf3/<abi>/iperf3
+
+Files likely involved:
+
+* mobile/rf/pages/Iperf3TestPage.jsx
+* mobile/testEngines/iperf3CommandParser.js
+* mobile/rf/config/dataTestConfig.js
+* mobile/rf/MobileRfKpiCore.jsx
+* mobile/mobile.css
+
+First, inspect these files and give me a plan. Do not edit until I approve.
+
+## Assistant
+
+Inspecting the iPerf3-related files to understand the current implementation and draft a focused plan.
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\pages\\Iperf3TestPage.jsx"}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\testEngines\\iperf3CommandParser.js"}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\config\\dataTestConfig.js"}
+```
+
+### Tool Ripgrep Raw Search
+
+```
+{"pattern":"Iperf3|iperf3","path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","caseInsensitive":false,"multiline":false,"toolCallId":"tool_05fa8624-69b7-4162-99d1-a6ad3892f4b","offset":0}
+```
+
+### Tool Ripgrep Raw Search
+
+```
+{"pattern":"iperf|Iperf","path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\mobile.css","caseInsensitive":false,"multiline":false,"toolCallId":"tool_556b1756-44b1-4c22-93e1-0189122e4d0","offset":0}
+```
+
+### Tool Ripgrep Raw Search
+
+```
+{"pattern":"iperfSetup|iperf|Start Data|DATA_TEST","path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","caseInsensitive":false,"headLimit":80,"multiline":false,"toolCallId":"tool_fc6922b9-c3a6-453e-80b4-8bbbea6c837","offset":0}
+```
+
+### Tool Glob File Search
+
+```
+{"targetDirectory":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon","globPattern":"**/*iperf*"}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\mobile.css","offset":5745,"limit":340}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","offset":280,"limit":90}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","offset":2510,"limit":80}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","offset":2910,"limit":90}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","offset":3170,"limit":40}
+```
+
+### Tool Ripgrep Raw Search
+
+```
+{"pattern":"clampInteger|parseIperf3|iperf3CommandParser","path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile","caseInsensitive":false,"multiline":false,"toolCallId":"tool_e5618525-41ea-4fbe-9d8a-ced5e0eaca8","offset":0}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","offset":368,"limit":30}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\MobileRfKpiCore.jsx","offset":2895,"limit":50}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\components\\testcards\\IperfTestCard.jsx"}
+```
+
+### Tool Ripgrep Raw Search
+
+```
+{"pattern":"parseIperf3|tokenizeIperf3|buildIperf3","path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon","caseInsensitive":false,"multiline":false,"toolCallId":"tool_41613aab-4c60-4d16-aa53-79effcf126e","offset":0}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\plugins\\babyDragonIperf.js"}
+```
+
+### Tool Ripgrep Raw Search
+
+```
+{"pattern":"status|binary_missing|ok","path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\android\\app\\src\\main\\java\\com\\mobbitechglobal\\babydragon\\BabyDragonIperfPlugin.java","caseInsensitive":false,"multiline":false,"toolCallId":"tool_fb13cc0f-a2a5-44ac-8226-2d7acbbdd93","offset":0}
+```
+
+### Tool Read File V2
+
+```
+{"path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\README.md","limit":80}
+```
+
+### Tool Ripgrep Raw Search
+
+```
+{"pattern":"1G4|iperf","path":"C:\\Users\\Mubasher\\Desktop\\Mubasher\\BabyDragon\\babydragon\\src\\mobile\\rf\\README.md","caseInsensitive":false,"multiline":false,"toolCallId":"tool_e3e4a445-e68a-4ba1-8e2f-295674b9400","offset":0}
+```
+
+## Assistant
+
+## Inspection summary
+
+Step **1G4A2** is largely in place: a dedicated `Iperf3TestPage`, a command parser with compact-flag support, compact CSS, and `runIperfPlaceholderTest` in `MobileRfKpiCore` (setup + RF/GPS only — no real iPerf3 run).
+
+The main gaps are **parse failure handling**, **port display safety**, **binary badge clarity**, and **overlong UI copy**.
+
+---
+
+## Current state (by file)
+
+### `src/mobile/rf/pages/Iperf3TestPage.jsx`
+- Full setup UI: binary Check/Prepare, presets, command textarea, connection/timing form, reverse checkbox, notes.
+- **Issue — parse always applies:** `applyCustomerCommand()` calls `update({ ...parsed.values })` even when `parsed.ok === false`, so a bad command can overwrite good form settings.
+- **Issue — success vs warning messaging:** parse “success” is shown via `warnings.join(" ")`, so a valid command without `-J` still reads like a failure.
+- **Issue — port display:** quick strip uses `current.port || "5201"`; empty string is OK, but there is no dedicated guard against invalid/`NaN` values in display paths.
+- **Issue — verbose copy:** header, command help, and footer notes are longer than your spec (includes Step 1G4B / “Now/Next” text).
+- **Issue — binary badge:** returns `Check`, `Plugin`, `Setup`, `Missing`, `Ready` — not strictly the two-state Missing/Ready model you want.
+
+### `src/mobile/testEngines/iperf3CommandParser.js`
+- Tokenizer + compact flags (`-p5201`, `-t15`, `-P4`) already implemented.
+- Long forms supported: `--port`, `--time`, `--parallel`, `--reverse`, `--json`.
+- Port uses `stripNonNumeric(..., "5201")` with fallbacks — generally safe.
+- **Issue:** single `warnings[]` array mixes hard failures (empty command, no `-c`) with soft info (missing `-J`).
+- **Issue:** `ok` is only `sawClient`; partial values still returned on failure (page currently applies them).
+- **Likely OK for your 3 examples** — should parse correctly as-is; verify manually after edits.
+
+### `src/mobile/rf/config/dataTestConfig.js`
+- `IPERF_PRESETS`, `DEFAULT_IPERF_SETUP`, storage key, and test-type description are wired.
+- **Minor only:** description text could be shortened to match 1G4A2 scope (optional).
+
+### `src/mobile/rf/MobileRfKpiCore.jsx`
+- Renders `<Iperf3TestPage setup={iperfSetup} onChange={setIperfSetup} />`.
+- `currentIperfRunSetup` clamps port via `clampInteger` → no `NaN` in Start Data path.
+- `runIperfPlaceholderTest()` saves setup snapshot + RF/GPS; **does not execute iPerf3** — correct for 1G4A2.
+- `customerCommand` / `rawCommand` / `commandMode` pass through via spread — **no change expected** unless we want them explicitly listed in `setupSnapshot`.
+- **Touch only if needed** during verification.
+
+### `src/mobile/mobile.css`
+- Step 1G4A2 compact styles exist (`.bd-rf-iperf3-clean-page`, status strip, quick strip, card blocks).
+- **Minor:** add error styling for failed parse messages; optional spacing tweaks for shorter notes.
+
+### Out of scope (do not edit in 1G4A2)
+- `BabyDragonIperfPlugin.java`, `babyDragonIperf.js`, `iperf3Runner.js` — execution is Step **1G4B**.
+- FTP, Native HTTP, export, RF table logic.
+
+---
+
+## Proposed plan (awaiting your approval)
+
+### 1. Parser hardening — `src/mobile/testEngines/iperf3CommandParser.js`
+- Split **`errors`** (block apply) vs **`warnings`** (info only).
+- Hard errors: empty command, missing `-c` / `--client`, port token with no digits (after normalize).
+- Add **`normalizePort(value, fallback = "5201")`** — always returns a valid numeric string; never `NaN`/empty in output.
+- Keep compact + long-flag support; manually verify these three commands:
+  1. `iperf3 -c 10.10.10.20 -p 5201 -t 15 -P 4 -R -J`
+  2. `iperf3 -c 10.10.10.20 -p5201 -t15 -P4 -R -J`
+  3. `iperf3 -c customer.server.com --port 5202 --time 30 --parallel 8 --reverse --json`
+- Set `ok: true` only when no hard errors and client host is present.
+- Missing `-J` → soft warning only (BabyDragon adds JSON at execution in 1G4B).
+
+### 2. Page behavior + compact UI — `src/mobile/rf/pages/Iperf3TestPage.jsx`
+- **`applyCustomerCommand`:**
+  - If `parsed.ok` → merge parsed values + show green/success message.
+  - If fail → show clear error message; **do not call `update()`** (keep previous valid settings).
+  - Keep command textarea text as typed.
+- Add **`displayPort(port)`** helper for quick strip + server note (never show `NaN`).
+- **Binary badge:** map plugin statuses to:
+  - **Ready** = `status.ok === true`
+  - **Missing** = `binary_missing`, `binary_missing_or_copy_failed`, or not yet checked
+  - (Optional: treat `plugin_error` as “Missing” with a one-line plugin hint in summary.)
+- **Shorten copy:**
+  - Header subtitle → one line about setup-only (no execution).
+  - Footer notes → exactly:
+    - `Customer server: iperf3 -s -p 5201`
+    - `Place ABI binary under android/app/src/main/assets/iperf3/<abi>/iperf3`
+  - Remove “Now/Next Step 1G4B” from the page body (monitor note in Core can stay).
+- Optional: add `bd-rf-iperf3-parse-error` class on failed parse message.
+
+### 3. CSS polish — `src/mobile/mobile.css`
+- Style parse error vs success messages.
+- Tighten note/footer spacing if needed after copy trim.
+- No broad RF/CSS rewrites.
+
+### 4. Config touch (optional) — `src/mobile/rf/config/dataTestConfig.js`
+- Shorten iPerf test-type description only if you want UI consistency.
+
+### 5. Core verification only — `src/mobile/rf/MobileRfKpiCore.jsx`
+- Read-only check that Start Data still calls `runIperfPlaceholderTest`.
+- Edit only if snapshot loses `customerCommand` / `commandMode` during testing.
+
+### 6. Post-edit verification (after your approval)
+```bash
+npm run build
+npx cap sync android
+```
+- Manual checks: Parse success/fail, port never `NaN`, binary Missing/Ready, Start Data saves setup without running iPerf3.
+
+---
+
+## Files expected to change
+
+| File | Change level |
+|------|----------------|
+| `src/mobile/testEngines/iperf3CommandParser.js` | **Primary** |
+| `src/mobile/rf/pages/Iperf3TestPage.jsx` | **Primary** |
+| `src/mobile/mobile.css` | Minor |
+| `src/mobile/rf/config/dataTestConfig.js` | Optional copy |
+| `src/mobile/rf/MobileRfKpiCore.jsx` | Verify only / no change unless bug found |
+
+---
+
+## Risk controls (per your rules)
+
+- No changes to FTP, Native HTTP, export, or RF KPI table logic.
+- No iPerf3 execution wiring (1G4B).
+- Small, targeted diffs — no blind rewrites.
+- Existing localStorage save/load for iPerf setup preserved.
+
+---
+
+**Approve this plan** (or note adjustments — e.g. keep Step 1G4B hint in monitor only, or stricter binary badge rules), and I’ll implement in Agent mode. In Ask mode I can only plan and review, not edit or run builds.
