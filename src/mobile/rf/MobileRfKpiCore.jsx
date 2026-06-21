@@ -9,6 +9,9 @@ import Iperf3TestPage from "./pages/Iperf3TestPage";
 import OoklaTestCard from "./components/testcards/OoklaTestCard";
 import FccTestCard from "./components/testcards/FccTestCard";
 import { runBabyDragonFtpTest } from "../testEngines/ftpTestEngine";
+import { cancelIperf3, runIperf3ThroughputTest } from "../testEngines/iperf3Runner";
+import { buildIperf3CommandFromSetup } from "../testEngines/iperf3CommandParser";
+import { buildIperf3ReportFiles, isIperf3Session, mapIperfExportStatus, resolveIperfExportModes } from "./reports/iperf3ReportExport";
 
 
 const BabyDragonRfKpi = registerPlugin("BabyDragonRfKpi");
@@ -284,13 +287,18 @@ function ftpFinalPolishNote(dataTest = {}) {
 }
 
 
-function iperfPlaceholderNote(dataTest = {}) {
+function iperfRunNote(dataTest = {}) {
   if (dataTest.testType !== "iperf") return "";
-  if (dataTest.status === "running") return "iPerf3 setup is being captured. RF/GPS recording continues in parallel.";
-  if (dataTest.status === "complete" || dataTest.status === "external_ready") {
-    return "iPerf3 setup saved. Command/form settings are stored with RF/GPS; real execution wiring comes in Step 1G4B.";
+  if (dataTest.status === "running") return "iPerf3 running natively. RF/GPS recording continues in parallel.";
+  if (dataTest.status === "complete") return "iPerf3 result saved. Interval samples are listed under each completed run.";
+  if (dataTest.status === "partial") {
+    if (String(dataTest.direction || "").toLowerCase() === "dl_ul" || dataTest.setupSnapshot?.bidirMode) {
+      return "Partial bidirectional iPerf3 result. DL+UL requires --bidir and a server that supports bidirectional mode.";
+    }
+    return "Partial iPerf3 result: one or more iterations failed or returned unparseable JSON.";
   }
-  if (dataTest.status === "error") return "iPerf3 setup needs a server, port, protocol, and direction.";
+  if (dataTest.status === "error") return "iPerf3 needs a reachable server, valid port, and prepared binary. Check stderr/exit code in the monitor message.";
+  if (dataTest.status === "stopped") return "iPerf3 test stopped. Completed iterations are kept.";
   return "";
 }
 
@@ -345,8 +353,13 @@ function throughputStatusBadge(dataContext = {}) {
   }
 
   if (active.testType === "iperf") {
-    if (active.status === "running") return "Setup";
-    if (active.status === "complete" || active.status === "external_ready") return "Saved";
+    if (active.status === "running") {
+      if (active.phase === "wait") return "Waiting";
+      if (active.phase === "iperf") return "Testing";
+      return "Testing";
+    }
+    if (active.status === "complete") return "Saved";
+    if (active.status === "partial") return "Partial";
     if (active.status === "error") return "Error";
     if (active.status === "stopped") return "Stopped";
     return "Ready";
@@ -409,6 +422,73 @@ function formatThpIterationSummary(row) {
   const dlBytes = row.dlMeasuredBytes ?? row.dlBytes ?? 0;
   const ulBytes = row.ulMeasuredBytes ?? row.ulBytes ?? 0;
   return `${base} · DL ${formatBytesCompact(dlBytes)} / UL ${formatBytesCompact(ulBytes)}`;
+}
+
+function formatIperfIntervalSeconds(value) {
+  const n = getNumber(value);
+  if (n === null) return "N/A";
+  return `${n.toFixed(2)}s`;
+}
+
+function formatIperfIntervalLine(parentIteration, sample = {}) {
+  const iterLabel = `#${parentIteration}.${sample.index || "?"}`;
+  const secondsText = formatIperfIntervalSeconds(sample.seconds);
+  const dl = getNumber(sample.dlMbps);
+  const ul = getNumber(sample.ulMbps);
+  const segments = [iterLabel, secondsText];
+  if (dl !== null) segments.push(`DL ${formatThroughputValue(dl)} Mbps`);
+  if (ul !== null) segments.push(`UL ${formatThroughputValue(ul)} Mbps`);
+  const missingNote = (dl === null || ul === null) && (dl !== null || ul !== null)
+    ? "missing from iperf JSON"
+    : (dl === null && ul === null ? "missing from iperf JSON" : "");
+  if (dl === null && ul === null) segments.push("no throughput parsed");
+  return { line: segments.join(" • "), missingNote };
+}
+
+function flattenIperfIntervalRows(iterationRows = []) {
+  const flat = [];
+  for (const row of iterationRows) {
+    if (!Array.isArray(row.intervalSamples)) continue;
+    for (const sample of row.intervalSamples) {
+      flat.push({ parentIteration: row.iteration, sample });
+    }
+  }
+  return flat;
+}
+
+function iperfMonitorHeadline(dataTest = {}, visibleSession = {}) {
+  const completed = dataTest.completedIterations || visibleSession?.appCompletedIterations || 0;
+  const requested = dataTest.iterationsRequested || visibleSession?.appIterationsRequested || 1;
+  const statusWord = dataTest.status === "running"
+    ? "running"
+    : dataTest.status === "complete"
+      ? "complete"
+      : dataTest.status === "partial"
+        ? "partial"
+        : dataTest.status === "error"
+          ? "failed"
+          : dataTest.status === "stopped"
+            ? "stopped"
+            : "ready";
+  return `iPerf3 ${statusWord} ${completed}/${requested}`;
+}
+
+function iperfMonitorInfoLine(dataTest = {}) {
+  const dlBytes = formatBytesCompact(dataTest.downloadBytes || 0);
+  const ulBytes = formatBytesCompact(dataTest.uploadBytes || 0);
+  const durationMs = dataTest.startedAt && dataTest.endedAt ? dataTest.endedAt - dataTest.startedAt : null;
+  const durationText = durationMs ? formatDuration(durationMs) : `${dataTest.durationSeconds || "?"}s per iter`;
+  return `DL ${dlBytes} / UL ${ulBytes} / ${durationText}`;
+}
+
+function iperfIntervalsShouldOpen(dataTest = {}) {
+  if (dataTest.status === "running") return true;
+  if (dataTest.status === "error" || dataTest.status === "partial") return true;
+  return false;
+}
+
+function formatIperfIntervalSummary(parentIteration, sample = {}) {
+  return formatIperfIntervalLine(parentIteration, sample).line;
 }
 
 function waitForThroughputPause(waitSeconds, signal, onTick) {
@@ -749,6 +829,7 @@ function buildSummaryCsv(session, user, activeTask) {
   const voice = buildVoiceSummary(session);
   const stats = session?.stats || {};
   const thpWindow = getThpWindow(session);
+  const iperfSession = isIperf3Session(session);
   const headers = [
     "report_type", "session_id", "mode", "fe", "task", "grid", "grid_internal_id",
     "session_started_local", "session_ended_local", "session_duration", "session_duration_ms", "samples", "gps_points", "rat",
@@ -797,8 +878,12 @@ function buildSummaryCsv(session, user, activeTask) {
     thp_wait_between_iterations_sec: session?.appWaitSeconds ?? "",
     thp_direction: session?.appDirection ?? "",
     thp_status: session?.appCompletedIterations && session?.appCompletedIterations === session?.appIterationsRequested ? "complete" : session?.appCompletedIterations ? "partial" : "not_run",
-    thp_summary_rule: "Avg DL/UL THP is the arithmetic average of completed THP iterations only.",
-    report_scope: "Summary has one row. THP iteration details are in THP_Iterations CSV. RF/GPS sample rows are in RF_GPS_Trace CSV.",
+    thp_summary_rule: iperfSession
+      ? "Avg DL/UL THP is the arithmetic average of completed iPerf3 iteration rows only."
+      : "Avg DL/UL THP is the arithmetic average of completed THP iterations only.",
+    report_scope: iperfSession
+      ? "Summary has one row. iPerf3 summary and interval details are in dedicated iPerf3 CSV/JSON files. RF/GPS sample rows are in RF_GPS_Trace CSV."
+      : "Summary has one row. THP iteration details are in THP_Iterations CSV. RF/GPS sample rows are in RF_GPS_Trace CSV.",
     avg_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.avg ?? session?.avgLteRsrp, 1),
     min_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.min, 1),
     max_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.max, 1),
@@ -829,7 +914,9 @@ function buildSummaryCsv(session, user, activeTask) {
     voice_monitor_status: voice.voice_monitor_status,
     final_call_state: voice.final_call_state,
     offhook_samples: voice.offhook_samples,
-    remarks: "One clean session summary row. Iteration details are in the THP_Iterations CSV.",
+    remarks: iperfSession
+      ? "One clean session summary row. iPerf3 evidence is exported in dedicated iPerf3 CSV/JSON files."
+      : "One clean session summary row. Iteration details are in the THP_Iterations CSV.",
   };
 
   return makeCsv(headers, [row]);
@@ -1138,11 +1225,75 @@ function buildJsonThpIterations(session) {
   }));
 }
 
+function buildJsonDataTest(session) {
+  const thpWindow = getThpWindow(session);
+  const thpRows = session?.appIterationResults || [];
+  const windowBlock = {
+    started_at_local: formatLocalDateTime(thpWindow.startedAt),
+    started_at_iso: jsonTimestamp(thpWindow.startedAt),
+    ended_at_local: formatLocalDateTime(thpWindow.endedAt),
+    ended_at_iso: jsonTimestamp(thpWindow.endedAt),
+    duration_ms: jsonNumber(thpWindow.durationMs),
+    duration_text: thpWindow.duration || null,
+  };
+  const averagesBlock = {
+    dl_mbps: jsonNumber(session?.appDlMbps, 2),
+    ul_mbps: jsonNumber(session?.appUlMbps, 2),
+  };
+
+  if (isIperf3Session(session)) {
+    const iperfModes = resolveIperfExportModes(session?.appCommand || "", session?.appSetupSnapshot || {});
+    return {
+      type: "iperf3_native",
+      label: "iPerf3 Native",
+      direction: session?.appDirectionLabel || session?.appDirection || null,
+      status: session?.appExportStatus || mapIperfExportStatus(session?.appTestStatus) || null,
+      summary_rule: "Average DL/UL THP is the arithmetic average of completed iPerf3 iteration rows only.",
+      note: "Primary iPerf3 evidence is exported in dedicated iPerf3 CSV/JSON files.",
+      requested: {
+        server: jsonText(session?.appServer),
+        port: jsonNumber(session?.appPort),
+        protocol: jsonText(session?.appProtocol),
+        streams: jsonNumber(session?.appStreams),
+        iterations: jsonNumber(session?.appIterationsRequested ?? thpRows.length),
+        duration_sec: jsonNumber(session?.appDurationSeconds),
+        warmup_sec: jsonNumber(session?.appWarmupSeconds || 0),
+        interval_sec: jsonNumber(session?.appIntervalSeconds),
+        wait_between_iterations_sec: jsonNumber(session?.appWaitSeconds),
+        reverse_mode: iperfModes.reverseMode,
+        bidir_mode: iperfModes.bidirMode,
+        command: jsonText(session?.appCommand),
+      },
+      window: windowBlock,
+      averages: averagesBlock,
+      completed_iterations: jsonNumber(session?.appCompletedIterations ?? thpRows.length),
+      iterations: buildJsonThpIterations(session),
+    };
+  }
+
+  return {
+    type: "native_android_http",
+    direction: session?.appDirection || null,
+    status: session?.appTestStatus || null,
+    summary_rule: "Average DL/UL THP is the arithmetic average of completed iteration rows only.",
+    requested: {
+      iterations: jsonNumber(session?.appIterationsRequested ?? session?.appIterations ?? thpRows.length),
+      duration_sec: jsonNumber(session?.appDurationSeconds),
+      warmup_sec: jsonNumber(session?.appWarmupSeconds || 0),
+      interval_sec: jsonNumber(session?.appIntervalSeconds),
+      wait_between_iterations_sec: jsonNumber(session?.appWaitSeconds),
+    },
+    window: windowBlock,
+    averages: averagesBlock,
+    completed_iterations: jsonNumber(session?.appCompletedIterations ?? thpRows.length),
+    iterations: buildJsonThpIterations(session),
+  };
+}
+
 function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
   const voice = buildVoiceSummary(session);
-  const thpWindow = getThpWindow(session);
   const samples = session?.exportSamples || session?.traceSamples || [];
-  const thpRows = session?.appIterationResults || [];
+  const iperfSession = isIperf3Session(session);
   return JSON.stringify({
     schema: {
       name: "BabyDragon Android Info RF Report",
@@ -1155,7 +1306,9 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
       display_name: baseName,
       generated_at_local: formatLocalDateTime(generatedAt),
       generated_at_iso: jsonTimestamp(generatedAt),
-      files_expected: ["summary_csv", "rf_gps_trace_csv", "thp_iterations_csv", "voice_kpis_csv", "json"],
+      files_expected: iperfSession
+        ? ["summary_csv", "rf_gps_trace_csv", "iperf3_csv", "iperf3_json", "voice_kpis_csv", "json"]
+        : ["summary_csv", "rf_gps_trace_csv", "thp_iterations_csv", "voice_kpis_csv", "json"],
     },
     session: {
       session_id: session?.id || null,
@@ -1175,33 +1328,7 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
       rat: session?.rat || null,
     },
     rf_summary: buildJsonRfSummary(session),
-    data_test: {
-      type: "native_android_http",
-      direction: session?.appDirection || null,
-      status: session?.appTestStatus || null,
-      summary_rule: "Average DL/UL THP is the arithmetic average of completed iteration rows only.",
-      requested: {
-        iterations: jsonNumber(session?.appIterationsRequested ?? session?.appIterations ?? thpRows.length),
-        duration_sec: jsonNumber(session?.appDurationSeconds),
-        warmup_sec: jsonNumber(session?.appWarmupSeconds || 0),
-        interval_sec: jsonNumber(session?.appIntervalSeconds),
-        wait_between_iterations_sec: jsonNumber(session?.appWaitSeconds),
-      },
-      window: {
-        started_at_local: formatLocalDateTime(thpWindow.startedAt),
-        started_at_iso: jsonTimestamp(thpWindow.startedAt),
-        ended_at_local: formatLocalDateTime(thpWindow.endedAt),
-        ended_at_iso: jsonTimestamp(thpWindow.endedAt),
-        duration_ms: jsonNumber(thpWindow.durationMs),
-        duration_text: thpWindow.duration || null,
-      },
-      averages: {
-        dl_mbps: jsonNumber(session?.appDlMbps, 2),
-        ul_mbps: jsonNumber(session?.appUlMbps, 2),
-      },
-      completed_iterations: jsonNumber(session?.appCompletedIterations ?? thpRows.length),
-      iterations: buildJsonThpIterations(session),
-    },
+    data_test: buildJsonDataTest(session),
     voice: {
       monitor_status: voice.voice_monitor_status,
       final_call_state: voice.final_call_state,
@@ -1229,17 +1356,40 @@ function buildReportPackage({ session, user, activeTask }) {
   const generatedAt = Date.now();
   const baseName = buildProfessionalReportName(session, activeTask);
   const sessionId = cleanFilePart(baseName, `bd-rf-${generatedAt}`);
+  const iperfSession = isIperf3Session(session);
+  const files = [
+    { fileName: `${baseName}_Summary.csv`, reportLabel: "Summary CSV", mimeType: "text/csv", content: buildSummaryCsv(session, user, activeTask) },
+    { fileName: `${baseName}_RF_GPS_Trace.csv`, reportLabel: "RF/GPS Trace CSV", mimeType: "text/csv", content: buildTraceCsv(session) },
+  ];
+
+  if (iperfSession) {
+    files.push(...buildIperf3ReportFiles({
+      session,
+      user,
+      activeTask,
+      getTaskLabel,
+      getTaskGrid,
+    }));
+  } else {
+    files.push({
+      fileName: `${baseName}_THP_Iterations.csv`,
+      reportLabel: "THP Iterations CSV",
+      mimeType: "text/csv",
+      content: buildThpCsv(session),
+    });
+  }
+
+  files.push(
+    { fileName: `${baseName}_Voice_KPIs.csv`, reportLabel: "Voice KPI CSV", mimeType: "text/csv", content: buildVoiceCsv(session, activeTask) },
+    { fileName: `${baseName}_Report.json`, reportLabel: "FCC-style JSON", mimeType: "application/json", content: buildJsonReport(session, user, activeTask, baseName, generatedAt) },
+  );
+
   return {
     sessionId,
     displayName: baseName,
     generatedAt,
-    files: [
-      { fileName: `${baseName}_Summary.csv`, reportLabel: "Summary CSV", mimeType: "text/csv", content: buildSummaryCsv(session, user, activeTask) },
-      { fileName: `${baseName}_RF_GPS_Trace.csv`, reportLabel: "RF/GPS Trace CSV", mimeType: "text/csv", content: buildTraceCsv(session) },
-      { fileName: `${baseName}_THP_Iterations.csv`, reportLabel: "THP Iterations CSV", mimeType: "text/csv", content: buildThpCsv(session) },
-      { fileName: `${baseName}_Voice_KPIs.csv`, reportLabel: "Voice KPI CSV", mimeType: "text/csv", content: buildVoiceCsv(session, activeTask) },
-      { fileName: `${baseName}_Report.json`, reportLabel: "FCC-style JSON", mimeType: "application/json", content: buildJsonReport(session, user, activeTask, baseName, generatedAt) },
-    ],
+    files,
+    iperfSession,
   };
 }
 
@@ -1523,7 +1673,10 @@ function getLiveForRow(row, snapshot, selectedRatKey = "auto", activeFamily = tr
 
   const value = getMetricValue(row, snapshot);
   const cell = getCellForRow(row, snapshot);
-  if (kpi.includes("sinr")) return displayWithSource(value, cell?.sinrSource);
+  if (kpi.includes("sinr")) {
+    if (group.includes("nr")) return displayValue(value);
+    return displayWithSource(value, cell?.sinrSource);
+  }
   return displayValue(value);
 }
 
@@ -1919,6 +2072,48 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
   const appIntervalSeconds = clampInteger(appSource.intervalSeconds ?? DEFAULT_THP_INTERVAL_SECONDS, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
   const appWarmupSeconds = clampInteger(appSource.warmupSeconds ?? DEFAULT_THP_WARMUP_SECONDS, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
   const appDirection = appSource.direction || DEFAULT_DATA_DIRECTION;
+  const isIperf = appSource.testType === "iperf";
+  const setupSnapshot = isIperf ? (appSource.setupSnapshot || {}) : null;
+  const lastIperfIter = isIperf && appIterationResults.length ? appIterationResults[appIterationResults.length - 1] : null;
+  const failedIperfIter = isIperf
+    ? appIterationResults.find((row) => row?.status === "error" || row?.jsonParseFailed)
+    : null;
+  const diagnosticIperfIter = failedIperfIter || lastIperfIter;
+
+  function resolveSavedIperfCommand() {
+    const customer = String(setupSnapshot?.customerCommand || setupSnapshot?.rawCommand || "").trim();
+    if (customer) return customer;
+    if (Array.isArray(diagnosticIperfIter?.command) && diagnosticIperfIter.command.length) {
+      return diagnosticIperfIter.command.join(" ");
+    }
+    try {
+      return buildIperf3CommandFromSetup(setupSnapshot || {});
+    } catch {
+      return "";
+    }
+  }
+
+  const savedIperfCommand = isIperf ? resolveSavedIperfCommand() : "";
+  const iperfExportModes = isIperf ? resolveIperfExportModes(savedIperfCommand, setupSnapshot || {}) : null;
+
+  const iperfMetadata = isIperf ? {
+    appTestType: "iperf",
+    appSource: lastIperfIter?.source || "native-iperf3-v1g4b",
+    appSetupSnapshot: setupSnapshot,
+    appServer: String(setupSnapshot?.server || "").trim(),
+    appPort: clampInteger(setupSnapshot?.port, 1, 65535, DEFAULT_IPERF_SETUP.port),
+    appProtocol: String(setupSnapshot?.protocol || "TCP").toUpperCase(),
+    appStreams: clampInteger(setupSnapshot?.streams, 1, 64, DEFAULT_IPERF_SETUP.streams),
+    appReverseMode: iperfExportModes.reverseMode,
+    appBidirMode: iperfExportModes.bidirMode,
+    appCommand: savedIperfCommand,
+    appStdoutSummary: String(diagnosticIperfIter?.stdout || "").trim().slice(0, 1200),
+    appStderrSummary: String(diagnosticIperfIter?.stderr || "").trim().slice(0, 1200),
+    appTestStartedAt: appSource.startedAt || null,
+    appTestEndedAt: appSource.endedAt || end,
+    appExportStatus: mapIperfExportStatus(appSource.status),
+    appDirectionLabel: DATA_DIRECTIONS.find((item) => item.key === appDirection)?.label || appDirection,
+  } : {};
 
   return {
     id: session?.id || `bd-rf-${start}`,
@@ -1960,6 +2155,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     appTestPhase: appSource.phase || "idle",
     appTestMessage: appSource.message || "Internal DL/UL test ready.",
     appTestError: appSource.error || "",
+    ...iperfMetadata,
     stats: {
       lteRsrp: lteRsrpStats,
       lteRsrq: lteRsrqStats,
@@ -2445,6 +2641,7 @@ export default function MobileRfKpi({
   const [nativeUploadUrl, setNativeUploadUrl] = useState(DEFAULT_NATIVE_HTTP_SETUP.uploadUrl);
   const [ftpSetup, setFtpSetup] = useState(DEFAULT_FTP_SETUP);
   const [iperfSetup, setIperfSetup] = useState(DEFAULT_IPERF_SETUP);
+  const [iperfBinaryStatus, setIperfBinaryStatus] = useState(null);
   const [ooklaSetup, setOoklaSetup] = useState(DEFAULT_OOKLA_SETUP);
   const [fccSetup, setFccSetup] = useState(DEFAULT_FCC_IMPORT_SETUP);
   const resolvedThpIterations = clampInteger(thpIterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
@@ -2533,7 +2730,11 @@ export default function MobileRfKpi({
     udpBitrateMbps: clampInteger(iperfSetup?.udpBitrateMbps, 1, 100000, DEFAULT_IPERF_SETUP.udpBitrateMbps),
     server: String(iperfSetup?.server || DEFAULT_IPERF_SETUP.server || "").trim(),
     protocol: String(iperfSetup?.protocol || DEFAULT_IPERF_SETUP.protocol || "TCP").toUpperCase(),
-    reverseMode: iperfSetup?.reverseMode !== false,
+    reverseMode: iperfSetup?.reverseMode === true,
+    bidirMode: iperfSetup?.bidirMode === true
+      || (String(iperfSetup?.direction || "").toLowerCase() === "dl_ul"
+        && String(iperfSetup?.protocol || "TCP").toUpperCase() === "TCP"
+        && iperfSetup?.reverseMode !== true),
   }), [iperfSetup]);
 
   const currentDataTestConfig = useMemo(() => {
@@ -2569,9 +2770,15 @@ export default function MobileRfKpi({
     const label = DATA_TEST_TYPES.find((item) => item.key === dataTestType)?.label || "Data Test";
     const directionLabel = DATA_DIRECTIONS.find((item) => item.key === currentDataTestConfig.direction)?.label || "DL + UL";
     const ftpHostText = dataTestType === "ftp" && currentDataTestConfig.host ? ` · ${currentDataTestConfig.host}:${currentDataTestConfig.port}` : "";
-    const iperfHostText = dataTestType === "iperf" && currentDataTestConfig.server ? ` · ${currentDataTestConfig.server}:${currentDataTestConfig.port}` : "";
-    return `${label} · ${directionLabel} · ${currentDataTestConfig.durationSeconds}s + ${currentDataTestConfig.warmupSeconds}s warmup${ftpHostText}${iperfHostText}`;
-  }, [dataTestType, currentDataTestConfig]);
+    if (dataTestType === "iperf") {
+      const hostPort = currentDataTestConfig.server
+        ? `${currentDataTestConfig.server}:${currentDataTestConfig.port || 5201}`
+        : "server pending";
+      const binaryLabel = iperfBinaryStatus?.ok ? "Binary Ready" : "Binary Check";
+      return `${label} • ${directionLabel} • ${hostPort} • ${currentDataTestConfig.durationSeconds}s • ${currentDataTestConfig.intervalSeconds}s interval • ${currentDataTestConfig.iterations} iter • ${binaryLabel}`;
+    }
+    return `${label} · ${directionLabel} · ${currentDataTestConfig.durationSeconds}s + ${currentDataTestConfig.warmupSeconds}s warmup${ftpHostText}`;
+  }, [dataTestType, currentDataTestConfig, iperfBinaryStatus]);
   const modeOptions = selectedMode === "voice" ? VOICE_TEST_OPTIONS : DATA_TEST_OPTIONS;
   const liveRatKey = getRatKeyFromSnapshot(nativeSnapshot);
   const effectiveRatView = ratView === "auto" ? liveRatKey : ratView;
@@ -2609,6 +2816,11 @@ export default function MobileRfKpi({
   );
   const traceMap = useMemo(() => buildTraceMapModel(traceSamples, 80), [traceSamples]);
   const thpIterationRows = dataTest.iterationResults?.length ? dataTest.iterationResults : (visibleSession?.appIterationResults || []);
+  const iperfFlatIntervals = useMemo(
+    () => (dataTest.testType === "iperf" || visibleSession?.appTestType === "iperf" ? flattenIperfIntervalRows(thpIterationRows) : []),
+    [dataTest.testType, visibleSession?.appTestType, thpIterationRows],
+  );
+  const kpiTableCollapsed = selectedMode === "data" && dataTest.status !== "idle";
 
   useEffect(() => {
     testStateRef.current = testState;
@@ -2901,7 +3113,7 @@ export default function MobileRfKpi({
 
 
 
-  async function runIperfPlaceholderTest(sessionId, options = {}) {
+  async function runIperfThroughputTest(sessionId, options = {}) {
     if (selectedModeRef.current !== "data") return;
 
     if (throughputAbortRef.current) {
@@ -2921,12 +3133,18 @@ export default function MobileRfKpi({
     const port = clampInteger(config.port, 1, 65535, DEFAULT_IPERF_SETUP.port);
     const streams = clampInteger(config.streams, 1, 64, DEFAULT_IPERF_SETUP.streams);
     const udpBitrateMbps = clampInteger(config.udpBitrateMbps, 1, 100000, DEFAULT_IPERF_SETUP.udpBitrateMbps);
-    const reverseMode = config.reverseMode !== false;
+    const reverseMode = config.reverseMode === true;
+    const bidirMode = config.bidirMode === true
+      || (String(direction).toLowerCase() === "dl_ul" && protocol === "TCP" && !reverseMode);
     const startedAt = Date.now();
+    const controller = new AbortController();
+    throughputAbortRef.current = controller;
+    const sequenceTimeoutMs = ((durationSeconds * 1000 + 30000) * iterations) + (waitSeconds * 1000 * Math.max(0, iterations - 1)) + 10000;
+    const clearTimeout = buildTimedSignal(controller, sequenceTimeoutMs);
 
     patchDataTest({
       status: "running",
-      phase: "iperf_setup",
+      phase: "iperf",
       dlMbps: null,
       ulMbps: null,
       downloadBytes: 0,
@@ -2938,7 +3156,7 @@ export default function MobileRfKpi({
       durationSeconds,
       intervalSeconds,
       warmupSeconds,
-      currentIteration: 0,
+      currentIteration: 1,
       completedIterations: 0,
       iterationResults: [],
       error: "",
@@ -2954,6 +3172,7 @@ export default function MobileRfKpi({
         streams,
         udpBitrateMbps,
         reverseMode,
+        bidirMode,
         iterations,
         waitSeconds,
         durationSeconds,
@@ -2961,23 +3180,95 @@ export default function MobileRfKpi({
         warmupSeconds,
         direction,
       },
-      message: config.commandMode && (config.customerCommand || config.rawCommand)
-        ? `iPerf3 customer CMD captured. ${server || "server"}:${port} · ${protocol} · ${direction.toUpperCase()} · original command saved.`
-        : `iPerf3 setup captured for ${server || "server"}:${port} · ${protocol} · ${direction.toUpperCase()} · ${durationSeconds}s + ${warmupSeconds}s warmup.`,
+      message: `iPerf3 starting on ${server || "server"}:${port} · ${protocol} · ${reverseMode ? "reverse DL" : bidirMode ? "bidirectional" : "client UL"} · ${durationSeconds}s.`,
     });
 
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    try {
+      const iperfResult = await runIperf3ThroughputTest({
+        config,
+        signal: controller.signal,
+        onProgress: (event) => {
+          if (selectedModeRef.current !== "data") return;
+          patchDataTest({
+            status: "running",
+            phase: event?.phase || "iperf",
+            testType: "iperf",
+            currentIteration: event?.currentIteration || dataTestRef.current.currentIteration || 1,
+            completedIterations: event?.completedIterations ?? dataTestRef.current.completedIterations ?? 0,
+            iterationsRequested: event?.iterationsRequested || iterations,
+            dlMbps: event?.dlMbps ?? dataTestRef.current.dlMbps,
+            ulMbps: event?.ulMbps ?? dataTestRef.current.ulMbps,
+            iterationResults: event?.iterationResults || dataTestRef.current.iterationResults || [],
+            message: event?.message || dataTestRef.current.message || "iPerf3 test running.",
+          });
+        },
+      });
 
-    patchDataTest({
-      status: "complete",
-      phase: "iperf_setup_saved",
-      testType: "iperf",
-      completedIterations: 0,
-      currentIteration: 0,
-      endedAt: Date.now(),
-      error: "",
-      message: `iPerf3 setup saved. RF/GPS is recording; binary plugin and asset slots are ready. Real execution wiring comes in Step 1G4B. ${server || "server"}:${port} · ${protocol} · streams ${streams}${reverseMode ? " · reverse DL enabled" : ""}.`,
-    });
+      const iterationResults = (iperfResult.iterationResults || []).map((item) => ({
+        ...item,
+        direction,
+        durationSeconds,
+        intervalSeconds,
+        warmupSeconds,
+        waitSeconds,
+      }));
+
+      const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(iperfResult.avgDlMbps);
+      const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(iperfResult.avgUlMbps);
+      const totalDlBytes = iterationResults.reduce((sum, item) => sum + (item.dlMeasuredBytes || 0), 0);
+      const totalUlBytes = iterationResults.reduce((sum, item) => sum + (item.ulMeasuredBytes || 0), 0);
+      const hasAnyMbps = getNumber(avgDl) !== null || getNumber(avgUl) !== null;
+      const bidirRequested = bidirMode || String(direction).toLowerCase() === "dl_ul";
+      const bidirIncomplete = bidirRequested && (getNumber(avgDl) === null || getNumber(avgUl) === null);
+      const finalStatus = iperfResult.ok && !bidirIncomplete
+        ? "complete"
+        : hasAnyMbps
+          ? "partial"
+          : "error";
+      const finalMessage = iperfResult.ok
+        ? `iPerf3 complete ${iterationResults.length}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
+        : (iperfResult.message || iperfResult.lastMapped?.message || "iPerf3 test failed.");
+
+      patchDataTest({
+        status: finalStatus,
+        phase: finalStatus,
+        testType: "iperf",
+        dlMbps: avgDl,
+        ulMbps: avgUl,
+        downloadBytes: totalDlBytes,
+        uploadBytes: totalUlBytes,
+        completedIterations: iterationResults.length,
+        currentIteration: iterationResults.length || 0,
+        iterationResults,
+        endedAt: Date.now(),
+        error: finalStatus === "complete" ? "" : finalMessage,
+        message: finalMessage,
+      });
+    } catch (error) {
+      if (throughputAbortRef.current === controller) {
+        await cancelIperf3();
+      }
+      if (throughputAbortRef.current !== controller) return;
+      const message = makeAbortErrorMessage(error);
+      const iterationResults = dataTestRef.current.iterationResults || [];
+      const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(dataTestRef.current.dlMbps);
+      const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(dataTestRef.current.ulMbps);
+      patchDataTest({
+        status: error?.name === "AbortError" ? "stopped" : "error",
+        phase: error?.name === "AbortError" ? "stopped" : "error",
+        testType: "iperf",
+        dlMbps: avgDl,
+        ulMbps: avgUl,
+        completedIterations: iterationResults.length,
+        iterationResults: [...iterationResults],
+        endedAt: Date.now(),
+        error: error?.name === "AbortError" ? "" : message,
+        message,
+      });
+    } finally {
+      clearTimeout();
+      if (throughputAbortRef.current === controller) throughputAbortRef.current = null;
+    }
   }
 
 
@@ -3182,7 +3473,7 @@ export default function MobileRfKpi({
       } else if (currentDataTestConfig.testType === "ftp") {
         runFtpThroughputTest(session.id, currentDataTestConfig);
       } else if (currentDataTestConfig.testType === "iperf") {
-        runIperfPlaceholderTest(session.id, currentDataTestConfig);
+        runIperfThroughputTest(session.id, currentDataTestConfig);
       } else {
         const label = DATA_TEST_TYPES.find((item) => item.key === currentDataTestConfig.testType)?.label || currentDataTestConfig.testType;
         patchDataTest({
@@ -3218,6 +3509,9 @@ export default function MobileRfKpi({
     const sessionList = recorded.length ? recorded : samplesRef.current;
     if (throughputAbortRef.current && dataTestRef.current?.status === "running") {
       throughputAbortRef.current.abort();
+      if (dataTestRef.current?.testType === "iperf") {
+        cancelIperf3();
+      }
     }
     const finalDataTest = dataTestRef.current?.status === "running"
       ? { ...dataTestRef.current, status: "stopped", phase: "stopped", message: "Throughput test stopped by Stop / Save.", endedAt }
@@ -3272,8 +3566,8 @@ export default function MobileRfKpi({
       setExportPackageName(reportPackage.displayName || result?.displayName || reportPackage.sessionId);
       setExportBasePath(result?.basePath || "Downloads/BabyDragon/Reports");
       setExportStatus(result?.fallback
-        ? `Report package downloaded: ${files.length} files.`
-        : `Report package saved successfully: ${files.length} files.`);
+        ? `Report package downloaded: ${files.length} files.${reportPackage.iperfSession ? " iPerf3 CSV + JSON included." : ""}`
+        : `Report package saved successfully: ${files.length} files.${reportPackage.iperfSession ? " iPerf3 CSV + JSON included." : ""}`);
     } catch (error) {
       setExportStatus(error?.message || "Report export failed.");
     }
@@ -3375,11 +3669,11 @@ export default function MobileRfKpi({
         </div>
 
         {selectedMode === "data" && (
-          <section className={`bd-rf-data-setup-card ${dataSetupOpen ? "open" : "collapsed"}`}>
-            <div className="bd-rf-data-setup-head">
+          <section className={`bd-rf-data-setup-card ${dataSetupOpen ? "open" : "collapsed"} ${dataTestType === "iperf" ? "iperf-setup" : ""}`}>
+            <div className="bd-rf-data-setup-head bd-rf-data-setup-head-compact">
               <div>
                 <b>Data Test Setup</b>
-                <span>{currentDataTestSummary}</span>
+                <span className="bd-rf-data-setup-summary-oneline">{currentDataTestSummary}</span>
               </div>
               <button type="button" onClick={() => setDataSetupOpen((current) => !current)}>
                 {dataSetupOpen ? "Hide" : "Setup"}
@@ -3388,7 +3682,7 @@ export default function MobileRfKpi({
 
             {dataSetupOpen && (
               <>
-                <div className="bd-rf-test-type-grid">
+                <div className="bd-rf-test-type-grid bd-rf-test-type-grid-compact">
                   {DATA_TEST_TYPES.map((item) => (
                     <button
                       type="button"
@@ -3410,7 +3704,12 @@ export default function MobileRfKpi({
                   <FtpTestCard setup={ftpSetup} onChange={setFtpSetup} disabled={dataTest.status === "running"} />
                 )}
                 {dataTestType === "iperf" && (
-                  <Iperf3TestPage setup={iperfSetup} onChange={setIperfSetup} disabled={dataTest.status === "running"} />
+                  <Iperf3TestPage
+                    setup={iperfSetup}
+                    onChange={setIperfSetup}
+                    onBinaryStatusChange={setIperfBinaryStatus}
+                    disabled={dataTest.status === "running"}
+                  />
                 )}
                 {dataTestType === "ookla_app" && (
                   <OoklaTestCard setup={ooklaSetup} onChange={setOoklaSetup} disabled={dataTest.status === "running"} />
@@ -3422,21 +3721,6 @@ export default function MobileRfKpi({
             )}
           </section>
         )}
-
-        <div className="bd-rf-action-grid">
-          <button type="button" className="bd-mobile-primary" onClick={() => armWorkflow(selectedMode)}>
-            {collectorRunning ? "Restart" : selectedMode === "voice" ? "Start Voice" : "Start Data"}
-          </button>
-          <button type="button" className="bd-mobile-secondary" onClick={stopWorkflow} disabled={!collectorRunning && !samples.length}>
-            {collectorRunning ? "Stop / Save" : savedSession ? "Saved" : "Stop / Save"}
-          </button>
-          <button type="button" className="bd-mobile-secondary" onClick={refreshGpsAndRf}>
-            {gpsChecking || collectorBusy ? "Checking..." : "GPS + RF"}
-          </button>
-          <button type="button" className="bd-mobile-secondary" disabled={!canExportSession || exportStatus?.startsWith("Building")} onClick={exportSavedSession}>
-            {exportStatus?.startsWith("Building") ? "Exporting..." : thpIsRunning ? "Finish Test" : savedSession ? "Export" : "Save First"}
-          </button>
-        </div>
 
         {exportStatus ? (
           <p className={`bd-rf-inline-note ${exportFiles.length ? "success" : exportStatus.toLowerCase().includes("failed") || exportStatus.toLowerCase().includes("error") ? "warning" : ""}`}>
@@ -3502,23 +3786,51 @@ export default function MobileRfKpi({
         )}
 
         {selectedMode === "data" && (dataTest.status !== "idle" || getNumber(visibleSession?.appDlMbps) !== null || getNumber(visibleSession?.appUlMbps) !== null) && (
-          <div className={`bd-rf-thp-card ${dataTest.status || "idle"}`}>
-            <div className="bd-rf-thp-head">
+          <div className={`bd-rf-thp-card bd-rf-thp-monitor-compact ${dataTest.status || "idle"}`}>
+            <div className="bd-rf-thp-head bd-rf-thp-head-compact">
               <div>
                 <b>{dataTestMonitorTitle(dataTest)}</b>
-                <span>{dataTest.message || visibleSession?.appTestMessage || "Avg values are from completed iterations. Details are listed below."}</span>
+                <span className="bd-rf-thp-headline">
+                  {dataTest.testType === "iperf"
+                    ? iperfMonitorHeadline(dataTest, visibleSession)
+                    : (dataTest.message || visibleSession?.appTestMessage || "Avg values are from completed iterations.")}
+                </span>
               </div>
               {(() => {
                 const badge = throughputStatusBadge({ dataTest, savedSession: visibleSession });
                 return <em className={`bd-rf-status ${statusClassName(badge)}`}>{badge}</em>;
               })()}
             </div>
-            <div className="bd-rf-thp-grid bd-rf-thp-grid-d2">
+            <div className="bd-rf-thp-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">
               <span><b>Avg DL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("dl", { dataTest, savedSession: visibleSession }))}</strong></span>
               <span><b>Avg UL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("ul", { dataTest, savedSession: visibleSession }))}</strong></span>
               <span><b>Iterations</b><strong>{dataTest.completedIterations || visibleSession?.appCompletedIterations || 0}/{dataTest.iterationsRequested || visibleSession?.appIterationsRequested || resolvedThpIterations}</strong></span>
               <span><b>Wait</b><strong>{dataTest.waitSeconds ?? visibleSession?.appWaitSeconds ?? resolvedThpWaitSeconds}s</strong></span>
             </div>
+            {dataTest.testType === "iperf" ? (
+              <>
+                <p className="bd-rf-iperf-info-line">{iperfMonitorInfoLine(dataTest)}</p>
+                {iperfRunNote(dataTest) ? (
+                  <p className="bd-rf-iperf-final-note">{iperfRunNote(dataTest)}</p>
+                ) : null}
+                {iperfFlatIntervals.length ? (
+                  <details className="bd-rf-iperf-intervals-panel" open={iperfIntervalsShouldOpen(dataTest)}>
+                    <summary>Intervals ({iperfFlatIntervals.length})</summary>
+                    <div className="bd-rf-thp-iteration-list bd-rf-iperf-interval-list">
+                      {iperfFlatIntervals.map(({ parentIteration, sample }) => {
+                        const formatted = formatIperfIntervalLine(parentIteration, sample);
+                        return (
+                          <span key={`${parentIteration}-int-${sample.index || sample.start || "sample"}`} className="bd-rf-iperf-interval-row">
+                            <strong>{formatted.line}</strong>
+                            {formatted.missingNote ? <small>{formatted.missingNote}</small> : null}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </details>
+                ) : null}
+              </>
+            ) : null}
             {dataTest.testType === "ftp" ? (
               <div className="bd-rf-thp-iteration-list">
                 <span><b>Measured Bytes</b><strong>DL {formatBytesCompact(dataTest.downloadBytes)} / UL {formatBytesCompact(dataTest.uploadBytes)}</strong></span>
@@ -3528,10 +3840,7 @@ export default function MobileRfKpi({
             {ftpFinalPolishNote(dataTest) ? (
               <p className="bd-rf-ftp-final-note">{ftpFinalPolishNote(dataTest)}</p>
             ) : null}
-            {iperfPlaceholderNote(dataTest) ? (
-              <p className="bd-rf-iperf-final-note">{iperfPlaceholderNote(dataTest)}</p>
-            ) : null}
-            {thpIterationRows.length ? (
+            {dataTest.testType !== "iperf" && thpIterationRows.length ? (
               <div className="bd-rf-thp-iteration-list">
                 {thpIterationRows.map((row) => (
                   <span key={`${row.iteration}-${row.startedAt || row.endedAt || "row"}`}>
@@ -3541,7 +3850,7 @@ export default function MobileRfKpi({
                 ))}
               </div>
             ) : null}
-            {dataTest.error ? <p>{dataTest.error}</p> : null}
+            {dataTest.error ? <p className="bd-rf-thp-error-note">{dataTest.error}</p> : null}
           </div>
         )}
 
@@ -3575,10 +3884,16 @@ export default function MobileRfKpi({
         </section>
       )}
 
-      <section className="bd-mobile-card bd-rf-table-card-compact">
-        <div className="bd-rf-panel-head">
-          <p><b>Live KPI Table</b><span>CellInfo + SignalStrength, rolling avg · RF Poll {rfPollCount ? `#${nativeSnapshot?.snapshotSequence || rfPollCount}` : "waiting"} · Last {formatTime(lastRfReadTime)}</span></p>
-          <em>{nativeSnapshot?.ok ? "Native live" : collectorBusy ? "Reading..." : "Waiting"}</em>
+      <details className={`bd-mobile-card bd-rf-table-card-compact bd-rf-kpi-table-collapsible ${kpiTableCollapsed ? "is-collapsed" : ""}`} open={!kpiTableCollapsed}>
+        <summary className="bd-rf-kpi-table-summary">
+          <span>
+            <b>Live KPI Table</b>
+            <small>RF Poll {rfPollCount ? `#${nativeSnapshot?.snapshotSequence || rfPollCount}` : "waiting"} · {nativeSnapshot?.ok ? "Native live" : collectorBusy ? "Reading..." : "Waiting"}</small>
+          </span>
+        </summary>
+        <div className="bd-rf-kpi-table-body">
+        <div className="bd-rf-panel-head bd-rf-panel-head-inline">
+          <p><span>CellInfo + SignalStrength rolling avg · Last {formatTime(lastRfReadTime)}</span></p>
         </div>
 
         <div className="bd-rf-rat-toggle" role="group" aria-label="Select KPI technology view">
@@ -3628,7 +3943,8 @@ export default function MobileRfKpi({
         <p className="bd-rf-inline-note success">
           RF Poll confirms BabyDragon reads every second. Android may repeat cached RSRP/RSRQ/RSSI values; BabyDragon does not invent RF changes.
         </p>
-      </section>
+        </div>
+      </details>
 
       {openPanel === "legend" && (
         <section className="bd-mobile-card bd-rf-hidden-panel">
@@ -3698,6 +4014,23 @@ export default function MobileRfKpi({
           </div>
         </section>
       )}
+
+      <div className="bd-rf-sticky-action-bar" aria-label="Session actions">
+        <div className="bd-rf-action-grid bd-rf-action-grid-safe">
+          <button type="button" className="bd-mobile-primary" onClick={() => armWorkflow(selectedMode)}>
+            {collectorRunning ? "Restart" : selectedMode === "voice" ? "Start Voice" : "Start Data"}
+          </button>
+          <button type="button" className="bd-mobile-secondary" onClick={stopWorkflow} disabled={!collectorRunning && !samples.length}>
+            {collectorRunning ? "Stop / Save" : savedSession ? "Saved" : "Stop / Save"}
+          </button>
+          <button type="button" className="bd-mobile-secondary" onClick={refreshGpsAndRf}>
+            {gpsChecking || collectorBusy ? "Checking..." : "GPS + RF"}
+          </button>
+          <button type="button" className="bd-mobile-secondary" disabled={!canExportSession || exportStatus?.startsWith("Building")} onClick={exportSavedSession}>
+            {exportStatus?.startsWith("Building") ? "Exporting..." : thpIsRunning ? "Finish Test" : savedSession ? "Export" : "Save First"}
+          </button>
+        </div>
+      </div>
     </section>
   );
 }

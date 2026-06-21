@@ -14,8 +14,8 @@ export const DATA_TEST_TYPES = [
   {
     key: "iperf",
     label: "iPerf3",
-    status: "setup",
-    description: "iPerf3 clean page with form mode and carrier command parsing. RF/GPS is recorded now; real iPerf3 execution comes in Step 1G4B.",
+    status: "active",
+    description: "Native iPerf3 client with form mode, carrier command parsing, and real bundled binary execution while RF/GPS records.",
   },
   {
     key: "ookla_app",
@@ -152,7 +152,7 @@ export const IPERF_PRESETS = [
       intervalSeconds: "1",
       iterations: "1",
       waitSeconds: "5",
-      reverseMode: true,
+      reverseMode: false,
       udpBitrateMbps: "10",
       notes: "Public iPerf3 demo only. ping.online.net uses public iPerf3 ports and may be busy or refuse parallel sessions. Use a customer-controlled iPerf3 server for final throughput.",
     },

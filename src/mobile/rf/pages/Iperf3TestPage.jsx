@@ -40,9 +40,9 @@ function safeWriteJson(key, value) {
   }
 }
 
-function InputBox({ label, unit, value, onChange, disabled, maxDigits = 4 }) {
+function InputBox({ label, unit, value, onChange, disabled, maxDigits = 4, className = "" }) {
   return (
-    <label>
+    <label className={className || undefined}>
       <span>{label}</span>
       <input
         disabled={disabled}
@@ -64,14 +64,19 @@ function binaryBadge(status) {
   return "Setup";
 }
 
-function binarySummary(status) {
-  if (!status) return "Press Check to verify the iPerf3 plugin and ABI binary.";
-  if (status.status === "plugin_error") return "Plugin is not registered. Rebuild Android and confirm BabyDragonIperfPlugin is included.";
-  if (status.ok) return "iPerf3 binary is ready.";
-  return "Binary missing. Place the ABI file, rebuild, then press Prepare.";
+function binarySummaryShort(status) {
+  if (!status) return "Check binary";
+  if (status.status === "plugin_error") return "Plugin not registered";
+  if (status.ok) return "Binary Ready";
+  return "Needs Prepare";
 }
 
-export default function Iperf3TestPage({ setup = DEFAULT_IPERF_SETUP, onChange, disabled = false }) {
+export default function Iperf3TestPage({
+  setup = DEFAULT_IPERF_SETUP,
+  onChange,
+  onBinaryStatusChange,
+  disabled = false,
+}) {
   const loadedLastUsedRef = useRef(false);
   const skipFirstSaveRef = useRef(true);
   const [binaryStatus, setBinaryStatus] = useState(null);
@@ -93,6 +98,11 @@ export default function Iperf3TestPage({ setup = DEFAULT_IPERF_SETUP, onChange, 
       ...patch,
     });
   };
+
+  function publishBinaryStatus(status) {
+    setBinaryStatus(status);
+    onBinaryStatusChange?.(status);
+  }
 
   function applyCustomerCommand(commandText = commandDraft) {
     const trimmed = String(commandText || "").trim();
@@ -141,11 +151,12 @@ export default function Iperf3TestPage({ setup = DEFAULT_IPERF_SETUP, onChange, 
     setBinaryBusy(true);
     try {
       const status = await BabyDragonIperf.getIperfStatus();
-      setBinaryStatus(status);
+      publishBinaryStatus(status);
       return status;
     } catch (error) {
       const message = error?.message || "BabyDragonIperf plugin is not registered yet. Rebuild Android after adding plugin.";
-      setBinaryStatus({ ok: false, status: "plugin_error", message });
+      const status = { ok: false, status: "plugin_error", message };
+      publishBinaryStatus(status);
       return null;
     } finally {
       setBinaryBusy(false);
@@ -156,11 +167,11 @@ export default function Iperf3TestPage({ setup = DEFAULT_IPERF_SETUP, onChange, 
     setBinaryBusy(true);
     try {
       const status = await BabyDragonIperf.prepareIperfBinary();
-      setBinaryStatus(status);
+      publishBinaryStatus(status);
       return status;
     } catch (error) {
       const message = error?.message || "Unable to prepare iPerf3 binary.";
-      setBinaryStatus({ ok: false, status: "prepare_error", message });
+      publishBinaryStatus({ ok: false, status: "prepare_error", message });
       return null;
     } finally {
       setBinaryBusy(false);
@@ -208,19 +219,16 @@ export default function Iperf3TestPage({ setup = DEFAULT_IPERF_SETUP, onChange, 
   }
 
   return (
-    <section className="bd-rf-test-card bd-rf-test-card-iperf3 bd-rf-test-card-setup bd-rf-iperf3-clean-page">
-      <header className="bd-rf-iperf3-clean-header">
-        <div>
-          <b>iPerf3 Native</b>
-          <span>Customer command mode + clean setup page. Real execution comes in Step 1G4B after binary placement.</span>
-        </div>
-        <em>{binaryBadge(binaryStatus)}</em>
+    <section className="bd-rf-test-card bd-rf-test-card-iperf3 bd-rf-test-card-setup bd-rf-iperf3-clean-page bd-rf-iperf3-compact-page bd-rf-iperf3-layout-1g4d">
+      <header className="bd-rf-iperf3-clean-header bd-rf-iperf3-compact-header bd-rf-iperf3-native-head">
+        <b>iPerf3 Native</b>
+        <em className={binaryStatus?.ok ? "ready" : ""}>{binaryBadge(binaryStatus)}</em>
       </header>
 
-      <div className="bd-rf-iperf3-status-compact">
+      <div className="bd-rf-iperf3-status-compact bd-rf-iperf3-binary-row bd-rf-iperf3-binary-row-slim">
         <div>
-          <b>{binarySummary(binaryStatus)}</b>
-          <span>{binaryStatus?.abi ? `ABI ${binaryStatus.abi}` : "ABI will be detected from device."}</span>
+          <b>{binarySummaryShort(binaryStatus)}</b>
+          <span>{binaryStatus?.abi ? `ABI ${binaryStatus.abi}` : "ABI auto-detected"}</span>
         </div>
         <div className="bd-rf-iperf3-actions">
           <button type="button" disabled={disabled || binaryBusy} onClick={checkBinaryStatus}>{binaryBusy ? "Checking" : "Check"}</button>
@@ -228,118 +236,102 @@ export default function Iperf3TestPage({ setup = DEFAULT_IPERF_SETUP, onChange, 
         </div>
       </div>
 
-      <div className="bd-rf-iperf3-quick-strip">
-        <span><b>Server</b>{current.server || "N/A"}</span>
-        <span><b>Port</b>{displayPort}</span>
-        <span><b>Mode</b>{current.protocol || "TCP"} · {DATA_DIRECTIONS.find((item) => item.key === current.direction)?.label || current.direction || "UL"}</span>
-      </div>
-
-      <div className="bd-rf-preset-row bd-rf-iperf3-preset-row">
-        <label>
-          <span>Preset</span>
-          <select disabled={disabled} value={activePreset.key} onChange={(event) => applyPreset(event.target.value)}>
-            {IPERF_PRESETS.map((preset) => <option key={preset.key} value={preset.key}>{preset.label}</option>)}
-          </select>
-          <em>{activePreset.hint}</em>
-        </label>
-        <button type="button" disabled={disabled} onClick={resetDemo}>Reset</button>
-      </div>
-
-      <div className="bd-rf-iperf3-command-mode bd-rf-iperf3-card-block">
-        <div className="bd-rf-iperf3-command-head">
-          <b>Paste customer / carrier command</b>
-          <span>Supports Verizon, AT&amp;T, T-Mobile, or customer commands. Compact flags like <code>-t15</code>, <code>-P4</code>, and <code>-p5201</code> are accepted.</span>
+      <div className="bd-rf-iperf3-card-block bd-rf-iperf3-setup-card">
+        <div className="bd-rf-iperf3-block-title bd-rf-iperf3-block-title-slim">
+          <b>Current iPerf3 Setup</b>
         </div>
-        <textarea
-          disabled={disabled}
-          value={commandDraft}
-          onChange={(event) => {
-            setCommandDraft(event.target.value);
-            update({ commandMode: true, customerCommand: event.target.value, rawCommand: event.target.value }, false);
-          }}
-          placeholder="iperf3 -c 10.10.10.20 -p 5201 -t 15 -P 4 -R -J"
-          rows={2}
-        />
-        <div className="bd-rf-iperf3-command-actions">
-          <button type="button" disabled={disabled} onClick={() => applyCustomerCommand(commandDraft)}>Parse</button>
-          <button type="button" disabled={disabled} onClick={generateCommandFromForm}>Build</button>
-          <button type="button" disabled={disabled} onClick={clearCommandMode}>Clear</button>
-        </div>
-        {commandParseMessage ? (
-          <em className={commandParseMessage.toLowerCase().includes("unchanged") ? "bd-rf-iperf3-parse-error" : undefined}>
-            {commandParseMessage}
-          </em>
-        ) : null}
-      </div>
-
-      <div className="bd-rf-iperf3-card-block">
-        <div className="bd-rf-iperf3-block-title">
-          <b>Connection</b>
-          <span>Use customer-controlled iPerf3 server for final acceptance.</span>
-        </div>
-        <label>
-          <span>Customer iPerf3 server host/IP</span>
-          <input
-            disabled={disabled}
-            value={current.server || ""}
-            onFocus={selectOnFocus}
-            onChange={(event) => update({ server: event.target.value })}
-            placeholder="10.10.10.20 or iperf.customer.net"
-          />
-        </label>
-        <div className="bd-rf-test-card-grid bd-rf-iperf3-grid-clean">
-          <InputBox label="Port" unit="tcp/udp" value={displayPort} onChange={(port) => update({ port: resolvePort(port, displayPort) })} disabled={disabled} maxDigits={5} />
-          <label>
+        <div className="bd-rf-iperf3-setup-tiles">
+          <label className="bd-rf-iperf3-tile bd-rf-iperf3-tile-wide">
+            <span>Server Host / IP</span>
+            <input
+              disabled={disabled}
+              value={current.server || ""}
+              onFocus={selectOnFocus}
+              onChange={(event) => update({ server: event.target.value })}
+              placeholder="10.10.10.20 or iperf.customer.net"
+            />
+          </label>
+          <InputBox className="bd-rf-iperf3-tile" label="Port" unit="tcp/udp" value={displayPort} onChange={(port) => update({ port: resolvePort(port, displayPort) })} disabled={disabled} maxDigits={5} />
+          <label className="bd-rf-iperf3-tile">
             <span>Protocol</span>
             <select disabled={disabled} value={current.protocol || "TCP"} onChange={(event) => update({ protocol: event.target.value })}>
               <option value="TCP">TCP</option>
               <option value="UDP">UDP</option>
             </select>
-            <em>mode</em>
           </label>
-          <InputBox label="Streams" unit="parallel" value={current.streams} onChange={(streams) => update({ streams })} disabled={disabled} maxDigits={2} />
-          <label>
+          <label className="bd-rf-iperf3-tile">
             <span>Direction</span>
             <select disabled={disabled} value={current.direction || DEFAULT_IPERF_SETUP.direction} onChange={(event) => update({ direction: event.target.value })}>
               {DATA_DIRECTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
             </select>
-            <em>mode</em>
           </label>
+          <InputBox className="bd-rf-iperf3-tile" label="Streams" unit="parallel" value={current.streams} onChange={(streams) => update({ streams })} disabled={disabled} maxDigits={2} />
+          <InputBox className="bd-rf-iperf3-tile" label="Duration" unit="sec" value={current.durationSeconds} onChange={(durationSeconds) => update({ durationSeconds })} disabled={disabled} maxDigits={3} />
+          <InputBox className="bd-rf-iperf3-tile" label="Interval" unit="sec" value={current.intervalSeconds} onChange={(intervalSeconds) => update({ intervalSeconds })} disabled={disabled} maxDigits={2} />
+          <InputBox className="bd-rf-iperf3-tile" label="Iterations" unit="count" value={current.iterations} onChange={(iterations) => update({ iterations })} disabled={disabled} maxDigits={2} />
+          <InputBox className="bd-rf-iperf3-tile" label="Wait" unit="sec" value={current.waitSeconds} onChange={(waitSeconds) => update({ waitSeconds })} disabled={disabled} maxDigits={3} />
         </div>
       </div>
 
-      <div className="bd-rf-iperf3-card-block">
-        <div className="bd-rf-iperf3-block-title">
-          <b>Timing</b>
-          <span>Warmup is BabyDragon metadata for reports. iPerf3 execution uses duration and interval.</span>
+      <details className="bd-rf-iperf3-collapsible bd-rf-iperf3-command-panel">
+        <summary>Paste customer / carrier command</summary>
+        <div className="bd-rf-iperf3-command-mode">
+          <span className="bd-rf-iperf3-command-hint">Compact flags like <code>-t15</code>, <code>-P4</code>, and <code>-p5201</code> are accepted.</span>
+          <textarea
+            disabled={disabled}
+            value={commandDraft}
+            onChange={(event) => {
+              setCommandDraft(event.target.value);
+              update({ commandMode: true, customerCommand: event.target.value, rawCommand: event.target.value }, false);
+            }}
+            placeholder="iperf3 -c 10.10.10.20 -p 5201 -t 15 -P 4 -R -J"
+            rows={2}
+          />
+          <div className="bd-rf-iperf3-command-actions">
+            <button type="button" disabled={disabled} onClick={() => applyCustomerCommand(commandDraft)}>Parse</button>
+            <button type="button" disabled={disabled} onClick={generateCommandFromForm}>Build</button>
+            <button type="button" disabled={disabled} onClick={clearCommandMode}>Clear</button>
+          </div>
+          {commandParseMessage ? (
+            <em className={commandParseMessage.toLowerCase().includes("unchanged") ? "bd-rf-iperf3-parse-error" : undefined}>
+              {commandParseMessage}
+            </em>
+          ) : null}
         </div>
-        <div className="bd-rf-test-card-grid bd-rf-iperf3-grid-clean">
-          <InputBox label="Duration" unit="sec" value={current.durationSeconds} onChange={(durationSeconds) => update({ durationSeconds })} disabled={disabled} maxDigits={3} />
-          <InputBox label="Warmup" unit="sec" value={current.warmupSeconds} onChange={(warmupSeconds) => update({ warmupSeconds })} disabled={disabled} maxDigits={2} />
-          <InputBox label="Interval" unit="sec" value={current.intervalSeconds} onChange={(intervalSeconds) => update({ intervalSeconds })} disabled={disabled} maxDigits={2} />
-          <InputBox label="Iterations" unit="count" value={current.iterations} onChange={(iterations) => update({ iterations })} disabled={disabled} maxDigits={2} />
-          <InputBox label="Wait" unit="sec" value={current.waitSeconds} onChange={(waitSeconds) => update({ waitSeconds })} disabled={disabled} maxDigits={3} />
-          <InputBox label="UDP bitrate" unit="Mbps" value={current.udpBitrateMbps} onChange={(udpBitrateMbps) => update({ udpBitrateMbps })} disabled={disabled} maxDigits={5} />
+      </details>
+
+      <details className="bd-rf-iperf3-collapsible bd-rf-iperf3-advanced-panel">
+        <summary>Advanced options</summary>
+        <div className="bd-rf-iperf3-advanced-body">
+          <div className="bd-rf-preset-row bd-rf-iperf3-preset-row">
+            <label>
+              <span>Preset</span>
+              <select disabled={disabled} value={activePreset.key} onChange={(event) => applyPreset(event.target.value)}>
+                {IPERF_PRESETS.map((preset) => <option key={preset.key} value={preset.key}>{preset.label}</option>)}
+              </select>
+              <em>{activePreset.hint}</em>
+            </label>
+            <button type="button" disabled={disabled} onClick={resetDemo}>Reset</button>
+          </div>
+          <div className="bd-rf-test-card-grid bd-rf-iperf3-grid-clean">
+            <InputBox label="Warmup" unit="sec" value={current.warmupSeconds} onChange={(warmupSeconds) => update({ warmupSeconds })} disabled={disabled} maxDigits={2} />
+            <InputBox label="UDP bitrate" unit="Mbps" value={current.udpBitrateMbps} onChange={(udpBitrateMbps) => update({ udpBitrateMbps })} disabled={disabled} maxDigits={5} />
+          </div>
+          <label className="bd-rf-check-row bd-rf-iperf3-reverse-row">
+            <input
+              disabled={disabled}
+              type="checkbox"
+              checked={Boolean(current.reverseMode)}
+              onChange={(event) => update({ reverseMode: event.target.checked })}
+            />
+            <span>Use reverse mode <b>-R</b> for downlink.</span>
+          </label>
+          <div className="bd-rf-iperf-server-note bd-rf-iperf3-simple-note">
+            <span><b>Server side:</b> <code>iperf3 -s -p {displayPort}</code></span>
+          </div>
+          {current.notes ? <p className="bd-rf-mini-note">{current.notes}</p> : null}
         </div>
-      </div>
-
-      <label className="bd-rf-check-row bd-rf-iperf3-reverse-row">
-        <input
-          disabled={disabled}
-          type="checkbox"
-          checked={Boolean(current.reverseMode)}
-          onChange={(event) => update({ reverseMode: event.target.checked })}
-        />
-        <span>Use reverse mode <b>-R</b> for downlink when customer server supports it.</span>
-      </label>
-
-      <div className="bd-rf-iperf-server-note bd-rf-iperf3-simple-note">
-        <span><b>Server side:</b> <code>iperf3 -s -p {displayPort}</code></span>
-        <span><b>Binary slot:</b> <code>assets/iperf3/&lt;abi&gt;/iperf3</code></span>
-        <span><b>Now:</b> command + setup are saved with RF/GPS. <b>Next:</b> Step 1G4B executes the command.</span>
-      </div>
-
-      {current.notes ? <p className="bd-rf-mini-note">{current.notes}</p> : null}
+      </details>
     </section>
   );
 }

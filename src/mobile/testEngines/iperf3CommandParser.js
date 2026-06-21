@@ -328,12 +328,14 @@ export function buildIperf3CommandFromSetup(setup = {}) {
   const streams = resolveDigits(String(setup.streams ?? ""), "1");
   const protocol = String(setup.protocol || "TCP").toUpperCase();
   const direction = String(setup.direction || "").toLowerCase();
-  const reverse = setup.reverseMode === true || direction === "dl";
+  const reverse = setup.reverseMode === true;
+  const bidir = setup.bidirMode === true || (isDlUlDirection(direction) && protocol === "TCP");
   const udpBitrateMbps = resolveDigits(String(setup.udpBitrateMbps ?? ""), "10");
   const parts = ["iperf3", "-c", server, "-p", port, "-t", duration, "-i", interval];
   if (Number(streams) > 1) parts.push("-P", streams);
   if (protocol === "UDP") parts.push("-u", "-b", `${udpBitrateMbps}M`);
-  if (reverse) parts.push("-R");
+  if (bidir) parts.push("--bidir");
+  else if (reverse) parts.push("-R");
   parts.push("-J");
   return parts.join(" ");
 }
@@ -353,5 +355,122 @@ export function sanitizeIperfSetup(setup = {}, fallback = {}) {
     server: String(base.server ?? "").trim(),
     protocol: String(base.protocol || "TCP").toUpperCase() === "UDP" ? "UDP" : "TCP",
     direction: String(base.direction || fallback.direction || "ul"),
+    reverseMode: base.reverseMode === true,
+    bidirMode: base.bidirMode === true,
   };
+}
+
+const DANGEROUS_SHELL_PATTERN = /;|&&|\|\||\$\(|`|\|>|>>|<<|(?<![=<>!])>(?!=)|(?<![=<>!])<(?!=)/;
+
+export function isDlUlDirection(direction = "") {
+  return String(direction || "").toLowerCase() === "dl_ul";
+}
+
+function applyDlUlBidirPolicy(setup = {}, { usedParsedCommand = false } = {}) {
+  if (!isDlUlDirection(setup.direction)) {
+    return setup;
+  }
+
+  const protocol = String(setup.protocol || "TCP").toUpperCase();
+
+  if (usedParsedCommand) {
+    if (setup.bidirMode !== true) {
+      return {
+        ...setup,
+        _bidirError: "Bidirectional requires --bidir and server support.",
+      };
+    }
+    return { ...setup, bidirMode: true, reverseMode: false };
+  }
+
+  if (protocol === "UDP") {
+    return {
+      ...setup,
+      _bidirError: "UDP bidirectional (DL+UL) is not supported from form settings. Use TCP or paste a command with --bidir if your server supports it.",
+    };
+  }
+
+  return { ...setup, bidirMode: true, reverseMode: false };
+}
+
+export function hasDangerousShellOperators(commandText = "") {
+  return DANGEROUS_SHELL_PATTERN.test(String(commandText || ""));
+}
+
+export function resolveIperf3RunSetup(setup = {}, fallback = {}) {
+  const base = sanitizeIperfSetup(setup, fallback);
+  const result = {
+    ok: false,
+    error: "",
+    warnings: [],
+    setup: { ...base },
+  };
+
+  const commandText = String(setup.customerCommand || setup.rawCommand || "").trim();
+  let usedParsedCommand = false;
+
+  if (setup.commandMode === true && commandText) {
+    if (hasDangerousShellOperators(commandText)) {
+      result.error = "Command contains unsupported shell operators. Use plain iPerf3 flags only.";
+      return result;
+    }
+
+    const parsed = parseIperf3Command(commandText, base);
+    result.warnings = parsed.warnings || [];
+    if (parsed.ok) {
+      usedParsedCommand = true;
+      result.setup = sanitizeIperfSetup({
+        ...base,
+        ...parsed.values,
+        reverseMode: parsed.values.reverseMode === true,
+        bidirMode: parsed.values.bidirMode === true,
+      }, base);
+    }
+  }
+
+  if (!String(result.setup.server || "").trim()) {
+    result.error = "iPerf3 server host is required.";
+    return result;
+  }
+
+  result.setup = applyDlUlBidirPolicy(result.setup, { usedParsedCommand });
+  if (result.setup._bidirError) {
+    result.error = result.setup._bidirError;
+    const { _bidirError, ...cleanSetup } = result.setup;
+    result.setup = cleanSetup;
+    return result;
+  }
+
+  result.setup.reverseMode = result.setup.reverseMode === true;
+  result.setup.bidirMode = result.setup.bidirMode === true;
+  result.ok = true;
+  return result;
+}
+
+export function buildIperf3ArgListFromSetup(setup = {}) {
+  const resolved = sanitizeIperfSetup(setup);
+  const server = String(resolved.server || "").trim();
+  const port = resolvePort(resolved.port, "5201");
+  const duration = resolveDigits(String(resolved.durationSeconds ?? ""), "10");
+  const interval = resolveDigits(String(resolved.intervalSeconds ?? ""), "1");
+  const streams = resolveDigits(String(resolved.streams ?? ""), "1");
+  const protocol = String(resolved.protocol || "TCP").toUpperCase();
+  const udpBitrateMbps = resolveDigits(String(resolved.udpBitrateMbps ?? ""), "10");
+  const bidir = resolved.bidirMode === true
+    || (isDlUlDirection(resolved.direction) && protocol === "TCP" && resolved.reverseMode !== true);
+  const args = ["-c", server, "-p", port, "-t", duration, "-i", interval];
+
+  if (Number(streams) > 1) {
+    args.push("-P", streams);
+  }
+  if (protocol === "UDP") {
+    args.push("-u", "-b", `${udpBitrateMbps}M`);
+  }
+  if (bidir) {
+    args.push("--bidir");
+  } else if (resolved.reverseMode === true) {
+    args.push("-R");
+  }
+  args.push("-J");
+  return args;
 }
