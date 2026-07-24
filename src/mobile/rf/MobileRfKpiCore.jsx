@@ -5382,23 +5382,18 @@ export default function MobileRfKpi({
 
   return (
     <section className="bd-mobile-rf-view bd-mobile-rf-compact bd-rf-ux-simplified">
-      <section className="bd-mobile-card bd-rf-control-card bd-rf-top-summary">
+      <section className="bd-mobile-card bd-rf-control-card bd-rf-top-summary bd-rf-cockpit-compact">
         <div className="bd-rf-compact-head">
           <div>
-            <p className="bd-mobile-eyebrow">Android Info RF KPI</p>
+            <p className="bd-mobile-eyebrow">Field RF</p>
             <h2>RF Cockpit</h2>
-            <span>
-              {recordingStateLabel}
-              {selectedMode === "data" ? ` · ${selectedTestLabel}` : " · Voice"}
-              {" · "}Samples {sampleCount}
-            </span>
           </div>
           <button type="button" onClick={() => togglePanel("about")}>Info</button>
         </div>
 
         {openPanel === "about" && (
           <p className="bd-rf-inline-note">
-            BabyDragon reads public Android CellInfo plus SignalStrength fallback. Missing values stay blank unless Android exposes them.
+            Select a test, start recording, capture evidence, then Stop / Save and Export.
           </p>
         )}
 
@@ -5420,8 +5415,6 @@ export default function MobileRfKpi({
             onChange={(event) => handleReportLogNameChange(event.target.value)}
           />
         </label>
-
-        <p className="bd-rf-helper-line">Select a test type, then press Start Data.</p>
 
         {(testState === "paused" || testState === "recording") && collectorRunning ? (
           <p className="bd-rf-inline-note bd-rf-pause-note">
@@ -5632,19 +5625,20 @@ export default function MobileRfKpi({
                 {(() => {
                   const iterations = resolveOoklaEvidenceIterations({ dataTest, savedSession: visibleSession });
                   const evidence = resolveOoklaEvidence({ dataTest, savedSession: visibleSession }) || iterations[iterations.length - 1];
+                  const summary = buildOoklaIterationSummary(iterations, dataTest?.ooklaCsvImportDebug || visibleSession?.appOoklaCsvImportDebug || null);
                   const resultIdOnly = resolveOoklaDisplayResultId(evidence);
                   return (
                     <>
-                      <span><b>Saved iterations</b><strong>{iterations.length}</strong></span>
-                      <span><b>Evidence source</b><strong>{displayValue(evidence?.evidenceSource || evidence?.source || "N/A")}</strong></span>
-                      <span><b>OOKLA DL Mbps</b><strong>{displayValue(evidence?.dlMbps, " Mbps")}</strong></span>
-                      <span><b>OOKLA UL Mbps</b><strong>{displayValue(evidence?.ulMbps, " Mbps")}</strong></span>
-                      <span><b>OOKLA Ping ms</b><strong>{displayValue(evidence?.pingMs, " ms")}</strong></span>
-                      <span><b>OOKLA Jitter ms</b><strong>{displayValue(evidence?.jitterMs, " ms")}</strong></span>
-                      <span><b>Result ID</b><strong>{displayValue(resultIdOnly)}</strong></span>
-                      <span><b>Server</b><strong>{displayValue(evidence?.serverName || evidence?.serverLocation)}</strong></span>
-                      <span><b>Latest iteration</b><strong>{evidence?.iterationNumber ?? (iterations.length || "N/A")}</strong></span>
-                      <span><b>Confirmation</b><strong>{evidence?.confirmation === "fe_confirmed" ? "FE Confirmed" : evidence ? "Draft" : "N/A"}</strong></span>
+                      <span><b>Saved Iterations</b><strong>{iterations.length}</strong></span>
+                      <span><b>Evidence Source</b><strong>{displayValue(evidence?.evidenceSource || evidence?.source || "N/A")}</strong></span>
+                      <span><b>Avg OOKLA DL Mbps</b><strong>{displayValue(summary.avgDlMbps, " Mbps")}</strong></span>
+                      <span><b>Avg OOKLA UL Mbps</b><strong>{displayValue(summary.avgUlMbps, " Mbps")}</strong></span>
+                      <span><b>Avg Ping ms</b><strong>{displayValue(summary.avgPingMs, " ms")}</strong></span>
+                      <span><b>Avg Jitter ms</b><strong>{displayValue(summary.avgJitterMs, " ms")}</strong></span>
+                      <span><b>Latest Result ID</b><strong>{displayValue(resultIdOnly)}</strong></span>
+                      <span><b>Latest Server</b><strong>{displayValue(evidence?.serverName || evidence?.serverLocation)}</strong></span>
+                      <span><b>Latest Iteration</b><strong>{evidence?.iterationNumber ?? (iterations.length || "N/A")}</strong></span>
+                      <span><b>Confirmation</b><strong>{evidence?.confirmation === "fe_confirmed" ? "Confirmed" : evidence ? "Draft" : "N/A"}</strong></span>
                       <span className="bd-rf-ookla-span-2"><b>Captured At</b><strong>{evidence?.capturedAt ? formatLocalDateTime(evidence.capturedAt) : "N/A"}</strong></span>
                     </>
                   );
@@ -5714,11 +5708,11 @@ export default function MobileRfKpi({
 
       </section>
 
-      <section className="bd-mobile-card bd-rf-live-summary-card">
-        <div className="bd-rf-live-summary-head">
+      <details className="bd-mobile-card bd-rf-live-summary-card bd-rf-live-summary-collapsible">
+        <summary className="bd-rf-live-summary-head">
           <b>Live RF Summary</b>
-          <small>Advanced RF details are available below.</small>
-        </div>
+          <small>{servingTechnology} · tap to expand live KPIs</small>
+        </summary>
         <div className="bd-rf-live-summary-grid">
           <span><b>RAT</b><strong>{servingTechnology}</strong></span>
           <span><b>LTE RSRP</b><strong>{kpiLive("RSRP")}</strong></span>
@@ -5733,7 +5727,7 @@ export default function MobileRfKpi({
           <span><b>TrafficStats UL</b><strong>{summaryTrafficUl}</strong></span>
           <span><b>Call State</b><strong>{summaryCallState}</strong></span>
         </div>
-      </section>
+      </details>
 
       <details
         className={`bd-mobile-card bd-rf-table-card-compact bd-rf-kpi-table-collapsible ${advancedRfOpen ? "" : "is-collapsed"}`}
@@ -5804,7 +5798,7 @@ export default function MobileRfKpi({
       <details
         key={mapHasGpsSamples ? "rf-map-with-gps" : "rf-map-empty"}
         className="bd-mobile-card bd-rf-map-collapsible"
-        defaultOpen={mapHasGpsSamples}
+        defaultOpen={false}
       >
         <summary className="bd-rf-kpi-table-summary">
           <span>
@@ -5921,9 +5915,16 @@ export default function MobileRfKpi({
           <button type="button" className="bd-mobile-secondary" onClick={refreshGpsAndRf}>
             {gpsChecking || collectorBusy ? "Checking..." : "GPS + RF"}
           </button>
-          <button type="button" className="bd-mobile-secondary" disabled={!canExportSession || exportStatus?.startsWith("Building")} onClick={exportSavedSession}>
-            {exportStatus?.startsWith("Building") ? "Exporting..." : thpIsRunning ? "Finish Test" : savedSession ? "Export" : "Save First"}
-          </button>
+          {(canExportSession || exportStatus?.startsWith("Building")) ? (
+            <button
+              type="button"
+              className="bd-mobile-secondary"
+              disabled={!canExportSession || exportStatus?.startsWith("Building")}
+              onClick={exportSavedSession}
+            >
+              {exportStatus?.startsWith("Building") ? "Exporting..." : "Export"}
+            </button>
+          ) : null}
         </div>
       </div>
     </section>

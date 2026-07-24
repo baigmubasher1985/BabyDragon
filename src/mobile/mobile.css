@@ -4052,8 +4052,8 @@
    BabyDragon v1.1.0 Step 1B2: RAT isolation, AVG visibility, and compact table fit
    ------------------------------------------------------------ */
 .bd-mobile-rf-compact {
-  padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px));
-  scroll-padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px));
 }
 
 .bd-mobile-rf-kpi-table-wrap.compact {
@@ -5712,7 +5712,38 @@
 .bd-rf-ookla-ocr-panel,
 .bd-rf-ookla-url-panel { margin-top: 10px; padding: 10px; border-radius: 10px; border: 1px solid rgba(96, 165, 250, 0.25); background: rgba(15, 23, 42, 0.45); }
 .bd-rf-ookla-url-panel { border-color: rgba(167, 139, 250, 0.25); }
-.bd-rf-ookla-ocr-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; margin-bottom: 8px; }
+.bd-rf-ookla-ocr-head {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+
+.bd-rf-ookla-ocr-head strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bd-rf-ookla-ocr-status {
+  flex: 0 0 auto;
+  max-width: 46%;
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  font-weight: 750;
+  line-height: 1.2;
+  white-space: nowrap;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  writing-mode: horizontal-tb;
+  text-orientation: mixed;
+}
 .bd-rf-ookla-suggestions { margin-top: 8px; display: grid; gap: 6px; }
 .bd-rf-ookla-suggestions strong { font-size: 0.72rem; color: #e2e8f0; }
 .bd-rf-ookla-suggestions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
@@ -6791,5 +6822,551 @@
   .bd-rf-context-strip-compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* ------------------------------------------------------------
+   Step 1H3G — RF page final GUI polish (field workflow)
+   ------------------------------------------------------------ */
+.bd-rf-cockpit-compact.bd-rf-top-summary {
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.bd-rf-cockpit-compact .bd-rf-compact-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.15;
+}
+
+.bd-rf-cockpit-compact .bd-mobile-eyebrow {
+  margin: 0 0 2px;
+  font-size: 0.62rem;
+}
+
+.bd-rf-cockpit-compact .bd-rf-report-name-field {
+  margin: 0;
+}
+
+.bd-rf-cockpit-compact .bd-rf-report-name-field span {
+  font-size: 0.68rem;
+}
+
+.bd-rf-cockpit-compact .bd-rf-mode-toggle {
+  margin-top: 2px;
+}
+
+.bd-rf-live-summary-collapsible > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.bd-rf-live-summary-collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bd-rf-live-summary-collapsible .bd-rf-live-summary-grid {
+  margin-top: 8px;
+}
+
+.bd-rf-ookla-step {
+  padding: 0;
+  overflow: hidden;
+}
+
+.bd-rf-ookla-step > summary.bd-rf-ookla-step-head {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 0;
+}
+
+.bd-rf-ookla-step > summary.bd-rf-ookla-step-head::-webkit-details-marker {
+  display: none;
+}
+
+.bd-rf-ookla-step-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+  min-width: 0;
+}
+
+.bd-rf-ookla-saved-iterations {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.28);
+}
+
+.bd-rf-ookla-saved-iterations > summary {
+  cursor: pointer;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.bd-rf-ookla-saved-iterations > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bd-rf-ookla-saved-iterations > summary strong {
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.bd-rf-ookla-saved-iterations > summary small {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.bd-rf-ookla-iteration-cards {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.bd-rf-ookla-iteration-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.bd-rf-ookla-iteration-card > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.bd-rf-ookla-iteration-card > header b {
+  color: #f8fafc;
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.bd-rf-ookla-iteration-card > header em {
+  font-style: normal;
+  font-size: 0.66rem;
+  font-weight: 850;
+  color: #93c5fd;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.bd-rf-ookla-iteration-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.bd-rf-ookla-iteration-card-grid span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bd-rf-ookla-iteration-card-grid b {
+  color: #94a3b8;
+  font-size: 0.64rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.bd-rf-ookla-iteration-card-grid strong {
+  color: #f8fafc;
+  font-size: 0.78rem;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.bd-rf-ookla-suggestions-grid-compact {
+  gap: 4px;
+}
+
+.bd-rf-ookla-suggestion-item {
+  padding: 5px 7px;
+  gap: 1px;
+}
+
+.bd-rf-ookla-suggestion-item.is-empty {
+  padding: 4px 7px;
+  opacity: 0.72;
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.bd-rf-ookla-suggestion-item.is-empty b {
+  font-size: 0.66rem;
+  font-weight: 650;
+  color: #94a3b8;
+}
+
+.bd-rf-ookla-suggestion-confidence {
+  font-style: normal;
+  font-weight: 700;
+  color: #64748b;
+  font-size: 0.58rem;
+}
+
+.bd-rf-ookla-advanced-debug > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.bd-rf-ookla-advanced-debug > summary strong {
+  color: #94a3b8;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bd-rf-ookla-advanced-debug > summary span {
+  color: #cbd5e1;
+  font-size: 0.7rem;
+}
+
+.bd-rf-ookla-url-assist-secondary {
+  padding: 8px 10px;
+}
+
+.bd-rf-ookla-url-assist-secondary > summary {
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: 0;
+}
+
+.bd-rf-ookla-url-assist-secondary > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bd-rf-ookla-url-assist-secondary[open] > summary {
+  margin-bottom: 8px;
+}
+
+.bd-rf-ookla-csv-table-wrap {
+  max-height: 320px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.bd-rf-ookla-csv-table tr.is-added {
+  opacity: 0.55;
+}
+
+.bd-rf-ookla-capture-url-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.bd-rf-ookla-capture-url-grid {
+  margin: 0;
+}
+
+.bd-rf-ookla-url-actions-compact {
+  grid-template-columns: 1fr 1fr;
+}
+
+.bd-rf-ookla-developer-diagnostics {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.28);
+  background: rgba(2, 6, 23, 0.35);
+  opacity: 0.82;
+}
+
+.bd-rf-ookla-developer-diagnostics > summary {
+  cursor: pointer;
+  list-style: none;
+  color: #64748b;
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.bd-rf-ookla-developer-diagnostics > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bd-rf-ookla-developer-diagnostics-body {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.bd-rf-ookla-developer-diagnostics-body .bd-rf-ookla-ocr-debug-body {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.bd-rf-ookla-developer-diagnostics-body pre {
+  margin: 4px 0 0;
+  max-height: 110px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.64rem;
+  color: #cbd5e1;
+}
+
+.bd-rf-ookla-ocr-panel-compact {
+  padding: 8px 10px;
+  margin-top: 0;
+}
+
+.bd-rf-ookla-ocr-compact-status {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.bd-rf-ookla-ocr-status-line {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1.35;
+}
+
+.bd-rf-ookla-ocr-details-toggle {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.bd-rf-ookla-ocr-details-toggle > summary {
+  cursor: pointer;
+  list-style: none;
+  color: #7dd3fc;
+  font-size: 0.7rem;
+  font-weight: 850;
+  padding: 2px 0;
+}
+
+.bd-rf-ookla-ocr-details-toggle > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bd-rf-ookla-ocr-details-toggle[open] > summary {
+  margin-bottom: 6px;
+}
+
+.bd-rf-ookla-ocr-details-toggle .bd-rf-ookla-suggestions {
+  margin-top: 0;
+}
+
+.bd-rf-ux-simplified.bd-mobile-rf-compact {
+  padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px)) !important;
+  scroll-padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ------------------------------------------------------------
+   Step 1H3G-F4 — OOKLA mobile width + sticky footer clearance
+   ------------------------------------------------------------ */
+.bd-rf-ux-simplified .bd-rf-control-card,
+.bd-rf-ux-simplified .bd-rf-selected-workflow,
+.bd-rf-ux-simplified .bd-rf-data-setup-card,
+.bd-rf-ux-simplified .bd-rf-thp-card {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.bd-rf-ookla-workflow,
+.bd-rf-ookla-workflow .bd-rf-ookla-step,
+.bd-rf-ookla-workflow .bd-rf-ookla-step-body,
+.bd-rf-ookla-workflow .bd-rf-ookla-ocr-panel,
+.bd-rf-ookla-workflow .bd-rf-ookla-capture-url-panel,
+.bd-rf-ookla-workflow .bd-rf-ookla-screenshot-picker,
+.bd-rf-ookla-workflow .bd-rf-ookla-evidence-grid,
+.bd-rf-ookla-workflow .bd-rf-ookla-batch-import,
+.bd-rf-ookla-workflow .bd-rf-ookla-saved-iterations,
+.bd-rf-ookla-workflow .bd-rf-ookla-action-row {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.bd-rf-ookla-workflow {
+  overflow-x: hidden;
+  width: 100%;
+}
+
+.bd-rf-ookla-step-body {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.bd-rf-ookla-workflow .bd-mobile-evidence-picker-v7c {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 10px;
+  overflow: hidden;
+}
+
+.bd-rf-ookla-workflow .bd-mobile-evidence-actions-v7c {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.bd-rf-ookla-workflow .bd-mobile-evidence-action-v7c {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 8px 6px;
+  font-size: 11px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bd-rf-ookla-workflow .bd-rf-ookla-url-actions {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.bd-rf-ookla-workflow .bd-rf-ookla-url-actions-compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.bd-rf-ookla-workflow .bd-rf-ookla-secondary-btn,
+.bd-rf-ookla-workflow .bd-rf-ookla-danger-btn,
+.bd-rf-ookla-workflow .bd-rf-ookla-save-btn {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.bd-rf-ookla-workflow .bd-rf-ookla-evidence-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+}
+
+.bd-rf-ookla-workflow .bd-rf-ookla-evidence-grid input,
+.bd-rf-ookla-workflow .bd-rf-ookla-evidence-grid textarea,
+.bd-rf-ookla-workflow .bd-rf-ookla-capture-url-panel input {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+}
+
+.bd-rf-ookla-capture-url-panel {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.bd-rf-ookla-ocr-panel,
+.bd-rf-ookla-ocr-panel-compact {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.bd-rf-thp-grid.bd-rf-ookla-evidence-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.bd-rf-thp-grid.bd-rf-ookla-evidence-grid span,
+.bd-rf-thp-grid.bd-rf-ookla-evidence-grid strong {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.bd-rf-ookla-csv-panel,
+.bd-rf-ookla-csv-panel-nested,
+.bd-rf-ookla-csv-actions,
+.bd-rf-ookla-csv-controls {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.bd-rf-ookla-csv-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+@media (max-width: 430px) {
+  .bd-rf-ookla-workflow .bd-mobile-evidence-actions-v7c {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bd-rf-ookla-workflow .bd-rf-ookla-url-actions-compact {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bd-rf-ookla-workflow .bd-rf-ookla-evidence-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.bd-rf-ookla-scroll-clearance {
+  width: 100%;
+  max-width: 100%;
+  height: calc(240px + env(safe-area-inset-bottom, 0px));
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.bd-rf-sticky-action-bar {
+  padding: 8px 9px;
+  gap: 0;
+}
+
+.bd-rf-sticky-action-bar .bd-rf-action-grid {
+  gap: 7px;
+}
+
+.bd-rf-sticky-action-bar .bd-rf-action-grid button {
+  min-height: 38px;
+  font-size: 10.5px;
+  padding: 6px 8px;
+}
+
+.bd-rf-ux-simplified .bd-rf-data-setup-card:not(.open) .bd-rf-selected-workflow {
+  display: none;
+}
+
+.bd-rf-ux-simplified .bd-rf-selected-workflow > .bd-rf-test-card {
+  min-width: 0;
 }
 

@@ -4,7 +4,6 @@ import {
   applyOoklaEvidenceSuggestionsToDraft,
   applySuggestionsToDraft,
   buildHighConfidenceOcrSuggestions,
-  buildHybridApplyMessage,
   buildOcrSuggestionsForDraft,
   buildOoklaOcrDebugPayload,
   canFeConfirmOoklaDraft,
@@ -33,7 +32,6 @@ import { recognizeOoklaScreenshotText } from "../../utils/ooklaNativeOcr";
 import {
   extractOoklaResultId,
   fetchOoklaResultFromUrl,
-  OOKLA_URL_FALLBACK_NOTE,
   OOKLA_URL_IDENTITY_ONLY_MESSAGE,
   openOoklaResultUrl,
 } from "../../utils/ooklaResultUrlAssist";
@@ -147,7 +145,61 @@ function screenshotMetadataFromFile(file, storageKey = null, role = "main") {
 
 function formatSuggestionValue(value) {
   const safe = sanitizeOoklaDraftFieldValue(value);
-  return safe === "" ? "—" : safe;
+  return safe === "" ? "Not detected." : safe;
+}
+
+const OCR_STATUS_SHORT_LABELS = {
+  dlMbps: "DL",
+  ulMbps: "UL",
+  pingMs: "Ping",
+  jitterMs: "Jitter",
+  resultId: "Result ID",
+  testDateTime: "Date/Time",
+  connectionType: "Connection",
+  deviceName: "Device",
+  serverName: "Server",
+  serverLocation: "Location",
+  providerName: "Provider",
+  connectionsMode: "Connections Mode",
+  packetLossPercent: "Packet Loss",
+  ooklaUserLatitude: "Lat",
+  ooklaUserLongitude: "Lon",
+  resultUrl: "Result URL",
+};
+
+function listDetectedOcrLabels(suggestions = {}, keys = []) {
+  const safeSuggestions = suggestions && typeof suggestions === "object" ? suggestions : {};
+  return (Array.isArray(keys) ? keys : []).filter((key) => {
+    const raw = safeSuggestions?.[key];
+    return !(raw === null || raw === undefined || String(raw).trim() === "");
+  }).map((key) => OCR_STATUS_SHORT_LABELS[key] || formatSuggestionLabel(key));
+}
+
+function renderOcrCompactStatus({
+  title,
+  suggestions = {},
+  keys = [],
+  keyPrefix,
+  fieldMeta = {},
+  emptyText = "No values detected yet",
+}) {
+  const found = listDetectedOcrLabels(suggestions, keys);
+  const summary = found.length
+    ? `${title}: ${found.join(", ")} found`
+    : `${title}: ${emptyText}`;
+  return (
+    <div className="bd-rf-ookla-ocr-compact-status">
+      <p className="bd-rf-ookla-ocr-status-line">{summary}</p>
+      {found.length ? (
+        <details className="bd-rf-ookla-ocr-details-toggle">
+          <summary>Review OCR Details</summary>
+          <div className="bd-rf-ookla-suggestions">
+            {renderSuggestionsGrid(suggestions, keyPrefix, keys, fieldMeta)}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 function safeMetaConfidence(meta) {
@@ -161,18 +213,28 @@ function renderSuggestionsGrid(suggestions = {}, keyPrefix, keys = OOKLA_SUGGEST
   const safeKeys = Array.isArray(keys) ? keys : [];
   const safeSuggestions = suggestions && typeof suggestions === "object" ? suggestions : {};
   const safeMeta = fieldMeta && typeof fieldMeta === "object" ? fieldMeta : {};
+  const detectedKeys = safeKeys.filter((key) => {
+    const raw = safeSuggestions?.[key];
+    return !(raw === null || raw === undefined || String(raw).trim() === "");
+  });
+  if (!detectedKeys.length) {
+    return (
+      <small className="bd-rf-ookla-screenshot-meta">No OCR values detected yet.</small>
+    );
+  }
   return (
-    <div className="bd-rf-ookla-suggestions-grid">
-      {safeKeys.map((key) => {
+    <div className="bd-rf-ookla-suggestions-grid bd-rf-ookla-suggestions-grid-compact">
+      {detectedKeys.map((key) => {
         const meta = safeMeta?.[key];
         const confidence = safeMetaConfidence(meta);
+        const raw = safeSuggestions?.[key];
         return (
           <div key={`${keyPrefix}-${key}`} className="bd-rf-ookla-suggestion-item">
             <span>
               {formatSuggestionLabel(key)}
-              {confidence ? ` · ${confidence}` : ""}
+              {confidence ? <em className="bd-rf-ookla-suggestion-confidence"> · {confidence}</em> : null}
             </span>
-            <b>{formatSuggestionValue(safeSuggestions?.[key])}</b>
+            <b>{formatSuggestionValue(raw)}</b>
           </div>
         );
       })}
@@ -180,21 +242,28 @@ function renderSuggestionsGrid(suggestions = {}, keyPrefix, keys = OOKLA_SUGGEST
   );
 }
 
-function formatIterationLabel(iteration) {
-  const parts = [`#${iteration.iterationNumber || "?"}`];
-  if (iteration.dlMbps !== null && iteration.dlMbps !== undefined && iteration.dlMbps !== "") {
-    parts.push(`DL ${iteration.dlMbps}`);
-  }
-  if (iteration.ulMbps !== null && iteration.ulMbps !== undefined && iteration.ulMbps !== "") {
-    parts.push(`UL ${iteration.ulMbps}`);
-  }
-  parts.push(iteration.confirmation === "fe_confirmed" ? "FE confirmed" : "draft");
-  if (iteration.evidenceCompleteness === "complete") parts.push("complete");
-  else if (iteration.evidenceCompleteness === "partial") parts.push("partial");
-  if (iteration.mainOcrAssistUsed || iteration.ocrAssistUsed) parts.push("main OCR");
-  if (iteration.detailedOcrAssistUsed) parts.push("detailed OCR");
-  if (iteration.urlAssistUsed) parts.push("URL assist");
-  return parts.join(" · ");
+function resolveIterationSourceLabel(iteration = {}) {
+  const source = String(iteration.evidenceSource || iteration.source || "").toLowerCase();
+  if (source.includes("csv")) return "CSV";
+  if (iteration.mainScreenshot || iteration.detailedScreenshot || iteration.screenshot) return "Screenshot";
+  if (iteration.mainOcrAssistUsed || iteration.detailedOcrAssistUsed || iteration.ocrAssistUsed) return "Screenshot";
+  return source ? String(iteration.evidenceSource || iteration.source) : "Manual";
+}
+
+function resolveIterationStatusLabel(iteration = {}) {
+  const confirmation = iteration.confirmation === "fe_confirmed" ? "Confirmed" : "Draft";
+  const completeness = iteration.evidenceCompleteness === "complete"
+    ? "Complete"
+    : (iteration.evidenceCompleteness === "partial" ? "Partial" : null);
+  return completeness ? `${confirmation} · ${completeness}` : confirmation;
+}
+
+function formatIterationMetric(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const number = Number(value);
+  if (Number.isFinite(number)) return String(number);
+  const text = String(value).trim();
+  return text || "—";
 }
 
 async function resolveScreenshotFile(meta, file) {
@@ -228,90 +297,88 @@ function renderOcrDebug(debug, title) {
     : (Array.isArray(debug.sortedLines) ? debug.sortedLines : []);
 
   return (
-    <details className="bd-rf-ookla-ocr-preview bd-rf-ookla-ocr-debug">
-      <summary>{title}</summary>
-      <div className="bd-rf-ookla-ocr-debug-body">
-        <small className="bd-rf-ookla-screenshot-meta">
-          Accepted: {accepted.length}
-          {" · "}
-          Rejected: {rejected.length}
-          {" · "}
-          Warnings: {warnings.length}
-        </small>
-        {warnings.length ? <pre>{warnings.map((item) => String(item ?? "")).join("\n")}</pre> : null}
-        {errors.length ? <pre className="bd-rf-ookla-warning">{errors.map((item) => String(item ?? "")).join("\n")}</pre> : null}
-        <strong>Field confidence / reason</strong>
-        <pre>
-          {Object.entries(fieldMeta).map(([key, meta]) => {
-            if (!meta || typeof meta !== "object") return `${key}: N/A`;
-            const value = meta.value == null ? "N/A" : String(meta.value);
-            const confidence = meta.confidence == null ? "N/A" : String(meta.confidence);
-            const reason = meta.reason == null ? "N/A" : String(meta.reason);
-            return `${key}: ${value} · ${confidence} · ${reason}`;
-          }).join("\n") || "(none)"}
-        </pre>
-        {Object.keys(detectedLabels).length ? (
-          <>
-            <strong>Detected labels</strong>
-            <pre>
-              {Object.entries(detectedLabels).map(([key, label]) => {
-                if (!label) return `${key}: N/A`;
-                if (typeof label === "string") return `${key}: ${label}`;
-                return `${key}: ${label.text || "N/A"}`;
-              }).join("\n") || "(none)"}
-            </pre>
-          </>
-        ) : null}
-        {decisions.length ? (
-          <>
-            <strong>Label-value decisions</strong>
-            <pre>
-              {decisions.map((item) => {
-                if (!item || typeof item !== "object") return "N/A";
-                const valueText = item.valueText == null ? "(blank)" : `"${item.valueText}"`;
-                return `${item.labelKey || "field"}: "${item.labelText || ""}" → ${valueText} [${item.strategy || "N/A"}] — ${item.reason || "N/A"}`;
-              }).join("\n") || "(none)"}
-            </pre>
-          </>
-        ) : null}
-        {Object.keys(detectedZones).length ? (
-          <>
-            <strong>Detected zones</strong>
-            <pre>
-              {Object.entries(detectedZones).map(([key, zone]) => (
-                `${key}: ${formatZoneRange(zone)}`
-              )).join("\n") || "(none)"}
-            </pre>
-          </>
-        ) : null}
-        {sortedLines.length ? (
-          <>
-            <strong>Sorted OCR lines</strong>
-            <pre>
-              {sortedLines.map((line, index) => (
-                `${index}: ${line?.text ?? "N/A"}`
-              )).join("\n")}
-            </pre>
-          </>
-        ) : null}
-        <strong>Accepted</strong>
-        <pre>
-          {accepted.map((item) => {
-            if (!item || typeof item !== "object") return "N/A";
-            return `${item.fieldName || "field"}: ${item.candidateText ?? "N/A"} · ${item.confidence || "?"} — ${item.reason || "N/A"}`;
-          }).join("\n") || "(none)"}
-        </pre>
-        <strong>Rejected</strong>
-        <pre>
-          {rejected.map((item) => {
-            if (!item || typeof item !== "object") return "N/A";
-            return `${item.fieldName || "field"}: ${item.candidateText ?? "N/A"} — ${item.reason || "N/A"}`;
-          }).join("\n") || "(none)"}
-        </pre>
-        <strong>OCR raw text</strong>
-        <pre>{debug.rawText || "(none)"}</pre>
-      </div>
-    </details>
+    <div className="bd-rf-ookla-ocr-debug-body">
+      <strong>{title}</strong>
+      <small className="bd-rf-ookla-screenshot-meta">
+        Accepted: {accepted.length}
+        {" · "}
+        Rejected: {rejected.length}
+        {" · "}
+        Warnings: {warnings.length}
+      </small>
+      {warnings.length ? <pre>{warnings.map((item) => String(item ?? "")).join("\n")}</pre> : null}
+      {errors.length ? <pre className="bd-rf-ookla-warning">{errors.map((item) => String(item ?? "")).join("\n")}</pre> : null}
+      <strong>Field confidence / reason</strong>
+      <pre>
+        {Object.entries(fieldMeta).map(([key, meta]) => {
+          if (!meta || typeof meta !== "object") return `${key}: N/A`;
+          const value = meta.value == null ? "N/A" : String(meta.value);
+          const confidence = meta.confidence == null ? "N/A" : String(meta.confidence);
+          const reason = meta.reason == null ? "N/A" : String(meta.reason);
+          return `${key}: ${value} · ${confidence} · ${reason}`;
+        }).join("\n") || "(none)"}
+      </pre>
+      {Object.keys(detectedLabels).length ? (
+        <>
+          <strong>Detected labels</strong>
+          <pre>
+            {Object.entries(detectedLabels).map(([key, label]) => {
+              if (!label) return `${key}: N/A`;
+              if (typeof label === "string") return `${key}: ${label}`;
+              return `${key}: ${label.text || "N/A"}`;
+            }).join("\n") || "(none)"}
+          </pre>
+        </>
+      ) : null}
+      {decisions.length ? (
+        <>
+          <strong>Label-value decisions</strong>
+          <pre>
+            {decisions.map((item) => {
+              if (!item || typeof item !== "object") return "N/A";
+              const valueText = item.valueText == null ? "(blank)" : `"${item.valueText}"`;
+              return `${item.labelKey || "field"}: "${item.labelText || ""}" → ${valueText} [${item.strategy || "N/A"}] — ${item.reason || "N/A"}`;
+            }).join("\n") || "(none)"}
+          </pre>
+        </>
+      ) : null}
+      {Object.keys(detectedZones).length ? (
+        <>
+          <strong>Detected zones</strong>
+          <pre>
+            {Object.entries(detectedZones).map(([key, zone]) => (
+              `${key}: ${formatZoneRange(zone)}`
+            )).join("\n") || "(none)"}
+          </pre>
+        </>
+      ) : null}
+      {sortedLines.length ? (
+        <>
+          <strong>Sorted OCR lines</strong>
+          <pre>
+            {sortedLines.map((line, index) => (
+              `${index}: ${line?.text ?? "N/A"}`
+            )).join("\n")}
+          </pre>
+        </>
+      ) : null}
+      <strong>Accepted</strong>
+      <pre>
+        {accepted.map((item) => {
+          if (!item || typeof item !== "object") return "N/A";
+          return `${item.fieldName || "field"}: ${item.candidateText ?? "N/A"} · ${item.confidence || "?"} — ${item.reason || "N/A"}`;
+        }).join("\n") || "(none)"}
+      </pre>
+      <strong>Rejected</strong>
+      <pre>
+        {rejected.map((item) => {
+          if (!item || typeof item !== "object") return "N/A";
+          return `${item.fieldName || "field"}: ${item.candidateText ?? "N/A"} — ${item.reason || "N/A"}`;
+        }).join("\n") || "(none)"}
+      </pre>
+      <strong>OCR raw text</strong>
+      <pre>{debug.rawText || "(none)"}</pre>
+    </div>
   );
 }
 
@@ -711,12 +778,13 @@ export default function OoklaTestCard({
       warnings.push("Enter or apply OOKLA DL/UL before saving as FE-confirmed.");
     }
     if (!draft.ulMbps) warnings.push("UL not confidently read. Please enter manually.");
-    if (!draft.detailedScreenshot) warnings.push("Detailed screenshot not provided. Extra OOKLA details will be missing.");
 
     const evidenceStatus = buildOoklaEvidenceStatus(draft);
     const valueSource = resolveOoklaValueSource(draft);
     const partialWarning = getPartialEvidenceWarning(draft);
-    if (partialWarning) warnings.push(partialWarning);
+    if (partialWarning) {
+      warnings.push("Missing optional fields can be entered manually.");
+    }
     if (warnings.length) setSaveWarning(warnings.join(" "));
 
     onSaveEvidence?.({
@@ -775,47 +843,80 @@ export default function OoklaTestCard({
 
   const mainLabel = draft.mainScreenshotFile?.name || draft.mainScreenshot?.fileName || "No main screenshot selected";
   const detailedLabel = draft.detailedScreenshotFile?.name || draft.detailedScreenshot?.fileName || "No detailed screenshot selected";
+  const hasOcrSuggestions = Object.keys(mainSuggestions || {}).length > 0
+    || Object.keys(detailedSuggestions || {}).length > 0;
+  const hasDlUl = String(draft.dlMbps ?? "").trim() !== "" && String(draft.ulMbps ?? "").trim() !== "";
+  const step1DefaultOpen = iterationCount === 0;
+  const step2DefaultOpen = hasOcrSuggestions;
+  const step3DefaultOpen = hasDlUl;
+  const showDeveloperDiagnostics = (() => {
+    try {
+      if (typeof window === "undefined") return false;
+      if (window.localStorage?.getItem("bdOoklaDevDiagnostics") === "1") return true;
+      return /(?:\?|&)ooklaDev=1(?:&|$)/.test(String(window.location?.search || ""));
+    } catch {
+      return false;
+    }
+  })();
 
   return (
     <section className="bd-rf-test-card bd-rf-ookla-evidence-card bd-rf-ookla-workflow">
       <header>
         <div>
           <b>OOKLA App</b>
-          <span>3-step external evidence workflow</span>
+          <span>Capture → Review → Save</span>
         </div>
-        <em>ACTIVE - EXTERNAL</em>
+        <em>EXTERNAL</em>
       </header>
 
       <p className="bd-rf-ookla-evidence-note">
-        OOKLA App values are external evidence. BabyDragon records RF/GPS/TrafficStats separately.
-        Report-only KPI warmup estimate uses Total TrafficStats (default 3s; not official OOKLA warmup).
+        Enter OOKLA results as external evidence. BabyDragon records RF/GPS separately.
       </p>
 
-      <div className="bd-rf-ookla-iteration-meta">
-        <strong>Saved iterations: {iterationCount}</strong>
+      <details className="bd-rf-ookla-saved-iterations">
+        <summary>
+          <strong>Saved OOKLA Iterations</strong>
+          <small>
+            {iterationCount
+              ? `${iterationCount} iteration${iterationCount === 1 ? "" : "s"} saved`
+              : "No iterations saved yet"}
+          </small>
+        </summary>
         {iterationCount ? (
-          <ul className="bd-rf-ookla-iteration-list">
+          <div className="bd-rf-ookla-iteration-cards">
             {savedIterations.map((iteration) => (
-              <li key={`ookla-iter-${iteration.iterationNumber}-${iteration.savedAt || iteration.capturedAt}`}>
-                {formatIterationLabel(iteration)}
-              </li>
+              <article
+                key={`ookla-iter-${iteration.iterationNumber}-${iteration.savedAt || iteration.capturedAt}`}
+                className="bd-rf-ookla-iteration-card"
+              >
+                <header>
+                  <b>Iteration {iteration.iterationNumber || "?"}</b>
+                  <em>{resolveIterationStatusLabel(iteration)}</em>
+                </header>
+                <div className="bd-rf-ookla-iteration-card-grid">
+                  <span><b>DL / UL</b><strong>{formatIterationMetric(iteration.dlMbps)} / {formatIterationMetric(iteration.ulMbps)} Mbps</strong></span>
+                  <span><b>Ping / Jitter</b><strong>{formatIterationMetric(iteration.pingMs)} / {formatIterationMetric(iteration.jitterMs)} ms</strong></span>
+                  <span><b>Result ID</b><strong>{iteration.resultId || "—"}</strong></span>
+                  <span><b>Source</b><strong>{resolveIterationSourceLabel(iteration)}</strong></span>
+                </div>
+              </article>
             ))}
-          </ul>
+          </div>
         ) : (
-          <small>No iterations saved yet.</small>
+          <small className="bd-rf-ookla-screenshot-meta">Save an iteration after capturing OOKLA evidence.</small>
         )}
-      </div>
+      </details>
 
-      <section className="bd-rf-ookla-step">
-        <div className="bd-rf-ookla-step-head">
+      <details key={`ookla-step1-${step1DefaultOpen ? "open" : "closed"}`} className="bd-rf-ookla-step" defaultOpen={step1DefaultOpen}>
+        <summary className="bd-rf-ookla-step-head">
           <b>Step 1</b>
           <span>Capture OOKLA Evidence</span>
-        </div>
+        </summary>
 
+        <div className="bd-rf-ookla-step-body">
         <div className="bd-mobile-evidence-picker-v7c bd-rf-ookla-screenshot-picker">
           <div>
             <strong>Main OOKLA result screenshot</strong>
-            <small className="bd-rf-ookla-screenshot-meta">DL, UL, Ping, Jitter, Result ID, Test Date/Time.</small>
             <span className="bd-rf-ookla-screenshot-meta">{mainLabel}</span>
             {persistingMain ? <small className="bd-rf-ookla-screenshot-meta">Saving main screenshot…</small> : null}
           </div>
@@ -827,10 +928,77 @@ export default function OoklaTestCard({
           <input id={mainCameraId} type="file" accept="image/*" capture="environment" disabled={disabled} onChange={(e) => handlePhotoPicked(e, "main")} />
         </div>
 
-        <div className="bd-rf-ookla-ocr-panel">
+        <div className="bd-mobile-evidence-picker-v7c bd-rf-ookla-screenshot-picker">
+          <div>
+            <strong>Detailed OOKLA result screenshot</strong>
+            <span className="bd-rf-ookla-screenshot-meta">{detailedLabel}</span>
+            {persistingDetailed ? <small className="bd-rf-ookla-screenshot-meta">Saving detailed screenshot…</small> : null}
+          </div>
+          <div className="bd-mobile-evidence-actions-v7c">
+            <label className={`bd-mobile-evidence-action-v7c ${disabled ? "is-disabled" : ""}`} htmlFor={detailedGalleryId}>Add Picture</label>
+            <label className={`bd-mobile-evidence-action-v7c camera ${disabled ? "is-disabled" : ""}`} htmlFor={detailedCameraId}>Take Picture</label>
+          </div>
+          <input id={detailedGalleryId} type="file" accept="image/*" disabled={disabled} onChange={(e) => handlePhotoPicked(e, "detailed")} />
+          <input id={detailedCameraId} type="file" accept="image/*" capture="environment" disabled={disabled} onChange={(e) => handlePhotoPicked(e, "detailed")} />
+        </div>
+
+        <div className="bd-rf-ookla-capture-url-panel">
+          <div className="bd-rf-ookla-ocr-head">
+            <strong>Result URL &amp; Result ID</strong>
+          </div>
+          <div className="bd-rf-ookla-evidence-grid bd-rf-ookla-capture-url-grid">
+            <label className="bd-rf-ookla-span-2">
+              <span>Result URL</span>
+              <input
+                type="text"
+                disabled={disabled}
+                value={sanitizeOoklaDraftFieldValue(draft.resultUrl)}
+                placeholder="https://www.speedtest.net/result/..."
+                onChange={(event) => {
+                  markManualFieldSource("resultUrl", event.target.value);
+                  handleResultUrlChange(event.target.value);
+                }}
+              />
+            </label>
+            <label>
+              <span>Result ID</span>
+              <input
+                type="text"
+                disabled={disabled}
+                value={sanitizeOoklaDraftFieldValue(draft.resultId)}
+                placeholder="Result ID"
+                onChange={(event) => {
+                  markManualFieldSource("resultId", event.target.value);
+                  update({ resultId: event.target.value });
+                }}
+              />
+            </label>
+          </div>
+          <div className="bd-rf-ookla-url-actions bd-rf-ookla-url-actions-compact">
+            <button type="button" className="bd-rf-ookla-secondary-btn" disabled={disabled} onClick={() => {
+              const extracted = extractOoklaResultId(draft.resultUrl);
+              if (!extracted) {
+                setUrlMessage("Result ID pattern not recognized in Result URL.");
+                return;
+              }
+              update({ resultId: extracted });
+              setUrlMessage(`Result ID extracted: ${extracted}`);
+            }}>
+              Extract Result ID
+            </button>
+            <button type="button" className="bd-rf-ookla-secondary-btn" disabled={disabled || !draft.resultUrl} onClick={() => {
+              if (!openOoklaResultUrl(draft.resultUrl)) setUrlMessage("Enter a valid Result URL before opening.");
+            }}>
+              Open Result URL
+            </button>
+          </div>
+          {urlMessage ? <small className="bd-rf-ookla-screenshot-meta">{urlMessage}</small> : null}
+        </div>
+
+        <div className="bd-rf-ookla-ocr-panel bd-rf-ookla-ocr-panel-compact">
           <div className="bd-rf-ookla-ocr-head">
             <strong>Main Screenshot OCR</strong>
-            <span className="bd-rf-ookla-screenshot-meta">Status: {mainOcrStatus}</span>
+            <span className="bd-rf-ookla-ocr-status">Status: {mainOcrStatus || "idle"}</span>
           </div>
           <div className="bd-rf-ookla-url-actions">
             <button type="button" className="bd-rf-ookla-secondary-btn" disabled={disabled || mainOcrStatus === "reading" || !draft.mainScreenshot} onClick={() => { void runMainScreenshotOcr(draft); }}>
@@ -854,48 +1022,32 @@ export default function OoklaTestCard({
                   mainOcrAssistUsed: true,
                   ocrAssistUsed: true,
                 }));
-                setOcrMessage(buildHybridApplyMessage(
-                  applied?.applied || {},
-                  applied?.skipped || {},
-                  Array.isArray(applied?.mismatchNotes) ? applied.mismatchNotes : [],
-                ));
+                setHybridMessage("");
+                setOcrMessage("Main OCR applied. Missing optional fields can be entered manually.");
               } catch (error) {
                 console.error("Apply Main OCR Suggestions failed:", error);
                 setMainOcrStatus("error");
                 setOcrMessage("Main screenshot OCR failed. Please retry or enter values manually.");
               }
             }}>
-              Apply Main OCR Suggestions
+              Apply Main OCR
             </button>
           </div>
           {Object.keys(mainSuggestions).length ? (
-            <div className="bd-rf-ookla-suggestions">
-              <strong>Main OCR Suggestions</strong>
-              {renderSuggestionsGrid(mainSuggestions, "main", OOKLA_MAIN_SUGGESTION_KEYS, draft.mainOcrDebug?.fieldMeta)}
-            </div>
+            renderOcrCompactStatus({
+              title: "Main OCR",
+              suggestions: mainSuggestions,
+              keys: OOKLA_MAIN_SUGGESTION_KEYS,
+              keyPrefix: "main",
+              fieldMeta: draft.mainOcrDebug?.fieldMeta,
+            })
           ) : null}
-          {renderOcrDebug(draft.mainOcrDebug, "Show Main OCR Debug")}
         </div>
 
-        <div className="bd-mobile-evidence-picker-v7c bd-rf-ookla-screenshot-picker">
-          <div>
-            <strong>Detailed OOKLA result screenshot</strong>
-            <small className="bd-rf-ookla-screenshot-meta">Provider, server/location, connection type, device, Connections Mode, OOKLA user location.</small>
-            <span className="bd-rf-ookla-screenshot-meta">{detailedLabel}</span>
-            {persistingDetailed ? <small className="bd-rf-ookla-screenshot-meta">Saving detailed screenshot…</small> : null}
-          </div>
-          <div className="bd-mobile-evidence-actions-v7c">
-            <label className={`bd-mobile-evidence-action-v7c ${disabled ? "is-disabled" : ""}`} htmlFor={detailedGalleryId}>Add Picture</label>
-            <label className={`bd-mobile-evidence-action-v7c camera ${disabled ? "is-disabled" : ""}`} htmlFor={detailedCameraId}>Take Picture</label>
-          </div>
-          <input id={detailedGalleryId} type="file" accept="image/*" disabled={disabled} onChange={(e) => handlePhotoPicked(e, "detailed")} />
-          <input id={detailedCameraId} type="file" accept="image/*" capture="environment" disabled={disabled} onChange={(e) => handlePhotoPicked(e, "detailed")} />
-        </div>
-
-        <div className="bd-rf-ookla-ocr-panel">
+        <div className="bd-rf-ookla-ocr-panel bd-rf-ookla-ocr-panel-compact">
           <div className="bd-rf-ookla-ocr-head">
             <strong>Detailed Screenshot OCR</strong>
-            <span className="bd-rf-ookla-screenshot-meta">Status: {detailedOcrStatus}</span>
+            <span className="bd-rf-ookla-ocr-status">Status: {detailedOcrStatus || "idle"}</span>
           </div>
           <div className="bd-rf-ookla-url-actions">
             <button type="button" className="bd-rf-ookla-secondary-btn" disabled={disabled || detailedOcrStatus === "reading" || !draft.detailedScreenshot} onClick={() => runDetailedScreenshotOcr(draft)}>
@@ -911,59 +1063,58 @@ export default function OoklaTestCard({
                 detailedFieldMeta: draft.detailedOcrDebug?.fieldMeta || {},
               });
               setDraft({ ...applied.draft, detailedOcrAssistUsed: true, ocrAssistUsed: true });
-              setOcrMessage(buildHybridApplyMessage(applied.applied, applied.skipped, applied.mismatchNotes));
+              setHybridMessage("");
+              setOcrMessage("Detailed OCR applied. Missing optional fields can be entered manually.");
             }}>
-              Apply Detailed OCR Suggestions
+              Apply Detailed OCR
             </button>
           </div>
           {Object.keys(detailedSuggestions).length ? (
-            <div className="bd-rf-ookla-suggestions">
-              <strong>Detailed OCR Suggestions</strong>
-              {renderSuggestionsGrid(detailedSuggestions, "detailed", OOKLA_DETAILED_SUGGESTION_KEYS, draft.detailedOcrDebug?.fieldMeta)}
-            </div>
+            renderOcrCompactStatus({
+              title: "Detailed OCR",
+              suggestions: detailedSuggestions,
+              keys: OOKLA_DETAILED_SUGGESTION_KEYS,
+              keyPrefix: "detailed",
+              fieldMeta: draft.detailedOcrDebug?.fieldMeta,
+            })
           ) : null}
-          {renderOcrDebug(draft.detailedOcrDebug, "Show Detailed OCR Debug")}
         </div>
 
-        <div className="bd-rf-ookla-url-panel">
-          <div className="bd-rf-ookla-ocr-head">
-            <strong>Result URL Assist (Secondary)</strong>
-            <span className="bd-rf-ookla-screenshot-meta">Status: {urlStatus}</span>
-          </div>
-          <div className="bd-rf-ookla-url-actions">
-            <button type="button" className="bd-rf-ookla-secondary-btn" disabled={disabled} onClick={() => {
-              const extracted = extractOoklaResultId(draft.resultUrl);
-              if (!extracted) {
-                setUrlMessage("Result ID pattern not recognized in Result URL.");
-                return;
-              }
-              update({ resultId: extracted });
-              setUrlMessage(`Result ID extracted: ${extracted}`);
-            }}>
-              Extract Result ID
-            </button>
-            <button type="button" className="bd-rf-ookla-secondary-btn" disabled={disabled || !draft.resultUrl} onClick={() => {
-              if (!openOoklaResultUrl(draft.resultUrl)) setUrlMessage("Enter a valid Result URL before opening.");
-            }}>
-              Open Result URL
-            </button>
-            <button type="button" className="bd-rf-ookla-secondary-btn" disabled={disabled || urlStatus === "fetching" || !draft.resultUrl} onClick={handleFetchFromResultUrl}>
-              {urlStatus === "fetching" ? "Reading URL…" : "Auto-Fill From URL"}
-            </button>
-          </div>
-          <small className="bd-rf-ookla-screenshot-meta">{OOKLA_URL_FALLBACK_NOTE}</small>
-          {urlMessage ? <small className="bd-rf-ookla-screenshot-meta">{urlMessage}</small> : null}
+        {(mainOcrStatus === "error" || detailedOcrStatus === "error") && ocrMessage ? (
+          <small className="bd-rf-ookla-warning">{ocrMessage}</small>
+        ) : null}
+        {(hasOcrSuggestions || mainOcrStatus === "ready" || detailedOcrStatus === "ready" || ocrMessage) ? (
+          <small className="bd-rf-ookla-screenshot-meta">Missing optional fields can be entered manually.</small>
+        ) : null}
+
+        {showDeveloperDiagnostics ? (
+          <details className="bd-rf-ookla-developer-diagnostics">
+            <summary>Developer Diagnostics</summary>
+            <div className="bd-rf-ookla-developer-diagnostics-body">
+              <button
+                type="button"
+                className="bd-rf-ookla-secondary-btn"
+                disabled={disabled || urlStatus === "fetching" || !draft.resultUrl}
+                onClick={handleFetchFromResultUrl}
+              >
+                {urlStatus === "fetching" ? "Reading URL…" : "Auto-Fill From URL"}
+              </button>
+              <small className="bd-rf-ookla-screenshot-meta">Secondary URL auto-fill is developer-only. Prefer Main screenshot OCR.</small>
+              {urlStatus !== "idle" ? <small className="bd-rf-ookla-screenshot-meta">URL status: {urlStatus}</small> : null}
+              {renderOcrDebug(draft.mainOcrDebug, "Main OCR Debug")}
+              {renderOcrDebug(draft.detailedOcrDebug, "Detailed OCR Debug")}
+            </div>
+          </details>
+        ) : null}
         </div>
+      </details>
 
-        {ocrMessage ? <small className="bd-rf-ookla-screenshot-meta">{ocrMessage}</small> : null}
-        {hybridMessage ? <small className="bd-rf-ookla-warning">{hybridMessage}</small> : null}
-      </section>
-
-      <section className="bd-rf-ookla-step">
-        <div className="bd-rf-ookla-step-head">
+      <details key={`ookla-step2-${step2DefaultOpen ? "open" : "closed"}`} className="bd-rf-ookla-step" defaultOpen={step2DefaultOpen}>
+        <summary className="bd-rf-ookla-step-head">
           <b>Step 2</b>
           <span>Review Auto-Filled OOKLA Values</span>
-        </div>
+        </summary>
+        <div className="bd-rf-ookla-step-body">
         <div className="bd-rf-ookla-evidence-grid">
           {[
             ["dlMbps", "DL Mbps", "number"],
@@ -980,8 +1131,6 @@ export default function OoklaTestCard({
             ["packetLossPercent", "Packet Loss %", "number"],
             ["ooklaUserLatitude", "OOKLA User Latitude", "number"],
             ["ooklaUserLongitude", "OOKLA User Longitude", "number"],
-            ["resultUrl", "Result URL", "text", true],
-            ["resultId", "Result ID", "text"],
           ].map(([key, label, type, span2]) => (
             <label key={key} className={span2 ? "bd-rf-ookla-span-2" : undefined}>
               <span>{label}</span>
@@ -993,8 +1142,7 @@ export default function OoklaTestCard({
                 placeholder={label}
                 onChange={(event) => {
                   markManualFieldSource(key, event.target.value);
-                  if (key === "resultUrl") handleResultUrlChange(event.target.value);
-                  else update({ [key]: event.target.value });
+                  update({ [key]: event.target.value });
                 }}
               />
             </label>
@@ -1009,13 +1157,15 @@ export default function OoklaTestCard({
             />
           </label>
         </div>
-      </section>
+        </div>
+      </details>
 
-      <section className="bd-rf-ookla-step">
-        <div className="bd-rf-ookla-step-head">
+      <details key={`ookla-step3-${step3DefaultOpen ? "open" : "closed"}`} className="bd-rf-ookla-step" defaultOpen={step3DefaultOpen}>
+        <summary className="bd-rf-ookla-step-head">
           <b>Step 3</b>
           <span>Confirm and Save</span>
-        </div>
+        </summary>
+        <div className="bd-rf-ookla-step-body">
         <label className="bd-rf-check-row">
           <input
             type="checkbox"
@@ -1040,12 +1190,13 @@ export default function OoklaTestCard({
             Reset All OOKLA Iterations
           </button>
         </div>
-      </section>
+        </div>
+      </details>
 
       <details className="bd-rf-ookla-batch-import">
         <summary>
           <strong>Batch Import from OOKLA CSV</strong>
-          <small>Use for 5, 10, or 20 OOKLA iterations. CSV import is for batch OOKLA iterations.</small>
+          <small>Use for 5, 10, or 20 OOKLA iterations. CSV import is for batch OOKLA evidence.</small>
         </summary>
         <OoklaCsvImportPanel
           sessionStartMs={sessionStartMs}
@@ -1059,6 +1210,9 @@ export default function OoklaTestCard({
           }}
         />
       </details>
+
+      {/* Keeps Step 1–3 / CSV bottoms scrollable above fixed sticky + bottom nav. */}
+      <div className="bd-rf-ookla-scroll-clearance" aria-hidden="true" />
     </section>
   );
 }

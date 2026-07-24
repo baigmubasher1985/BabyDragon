@@ -432,7 +432,13 @@ export default function OoklaCsvImportPanel({
               </thead>
               <tbody>
                 {visibleRows.map((row) => (
-                  <tr key={`ookla-csv-${row.originalRowNumber}`} className={row.include ? "is-selected" : ""}>
+                  <tr
+                    key={`ookla-csv-${row.originalRowNumber}`}
+                    className={[
+                      row.include ? "is-selected" : "",
+                      row.addedToIterations || row.status === "added" ? "is-added" : "",
+                    ].filter(Boolean).join(" ") || undefined}
+                  >
                     <td>
                       <input
                         type="checkbox"
