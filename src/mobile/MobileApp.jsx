@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { getSupabaseConfigStatus, probeSupabaseLoginServer, supabase } from "../lib/supabaseClient";
 import "./mobile.css";
 import { CHECKLIST_ITEMS, MOBILE_GPS_INTERVAL_MS, getDefaultIssueInput } from "./mobileConstants";
 import {
@@ -67,6 +67,31 @@ function makeLocalId(prefix, taskId) {
   return `${prefix}-${taskId || "task"}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+const FE_SESSION_CHECK_TIMEOUT_MS = 10000;
+const FE_LOGIN_TIMEOUT_MS = 10000;
+const LOGIN_SERVER_UNREACHABLE_MESSAGE =
+  "Unable to reach BabyDragon login server. Internet works, but the app could not reach the authentication server. Please retry.";
+
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    }),
+  ]);
+}
+
+function isLoginNetworkError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  const name = String(error?.name || "").toLowerCase();
+
+  return (
+    /timed out|failed to fetch|network|authretryablefetcherror|err_name_not_resolved|err_connection_timed_out|err_cleartext_not_permitted|cors/i.test(
+      message,
+    ) || /authretryablefetcherror|typeerror/i.test(name)
+  );
+}
+
 export default function MobileApp() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -95,6 +120,8 @@ export default function MobileApp() {
   const [syncMessage, setSyncMessage] = useState("");
   const [error, setError] = useState("");
   const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [loginProbeLoading, setLoginProbeLoading] = useState(false);
+  const [loginProbeReport, setLoginProbeReport] = useState(null);
   const [isOnline, setIsOnline] = useState(() => isBrowserOnline());
   const [pendingSyncCount, setPendingSyncCount] = useState(() => getMobileQueueCount());
   const [pendingSyncItems, setPendingSyncItems] = useState(() => getMobileQueueItems());
@@ -147,17 +174,33 @@ export default function MobileApp() {
 
     async function loadSession() {
       setAuthLoading(true);
-      const { data, error: sessionError } = await supabase.auth.getSession();
+      try {
+        const { data, error: sessionError } = await withTimeout(
+          supabase.auth.getSession(),
+          FE_SESSION_CHECK_TIMEOUT_MS,
+          "FE session check timed out.",
+        );
 
-      if (!isMounted) return;
+        if (!isMounted) return;
 
-      if (sessionError) {
-        setError(sessionError.message);
-      } else {
-        setSession(data?.session || null);
+        if (sessionError) {
+          setError(sessionError.message);
+          setSession(null);
+        } else {
+          setSession(data?.session || null);
+        }
+      } catch (loadError) {
+        if (!isMounted) return;
+        setSession(null);
+        const message = String(loadError?.message || loadError || "").trim();
+        if (message && !/timed out|failed to fetch|network/i.test(message)) {
+          setError(message);
+        }
+      } finally {
+        if (isMounted) {
+          setAuthLoading(false);
+        }
       }
-
-      setAuthLoading(false);
     }
 
     loadSession();
@@ -276,24 +319,65 @@ export default function MobileApp() {
     setLastSuccessfulSyncAt(null);
   }
 
+  async function handleProbeLoginServer() {
+    setLoginProbeLoading(true);
+    setLoginProbeReport(null);
+
+    try {
+      const report = await probeSupabaseLoginServer();
+      setLoginProbeReport(report);
+    } catch (probeError) {
+      const config = getSupabaseConfigStatus();
+      setLoginProbeReport({
+        config,
+        probes: [
+          {
+            label: "probe",
+            ok: false,
+            status: null,
+            statusText: "",
+            elapsedMs: 0,
+            errorName: String(probeError?.name || "Error"),
+            errorMessage: String(probeError?.message || probeError || "Probe failed."),
+          },
+        ],
+      });
+    } finally {
+      setLoginProbeLoading(false);
+    }
+  }
+
   async function handleLogin(event) {
     event.preventDefault();
     setError("");
     setLoginLoading(true);
 
-    const { data, error: loginError } = await supabase.auth.signInWithPassword({
-      email: loginForm.email.trim(),
-      password: loginForm.password,
-    });
+    try {
+      const { data, error: loginError } = await withTimeout(
+        supabase.auth.signInWithPassword({
+          email: loginForm.email.trim(),
+          password: loginForm.password,
+        }),
+        FE_LOGIN_TIMEOUT_MS,
+        "Login request timed out.",
+      );
 
-    if (loginError) {
-      setError(loginError.message);
-    } else {
-      setSession(data?.session || null);
-      setLoginForm({ email: "", password: "" });
+      if (loginError) {
+        setError(isLoginNetworkError(loginError) ? LOGIN_SERVER_UNREACHABLE_MESSAGE : loginError.message);
+      } else {
+        setSession(data?.session || null);
+        setLoginForm({ email: "", password: "" });
+      }
+    } catch (loginError) {
+      if (isLoginNetworkError(loginError)) {
+        setError(LOGIN_SERVER_UNREACHABLE_MESSAGE);
+      } else {
+        const message = String(loginError?.message || loginError || "").trim();
+        setError(message || LOGIN_SERVER_UNREACHABLE_MESSAGE);
+      }
+    } finally {
+      setLoginLoading(false);
     }
-
-    setLoginLoading(false);
   }
 
   async function handleLogout() {
@@ -1295,13 +1379,71 @@ export default function MobileApp() {
 
   if (!session) {
     return (
-      <MobileLogin
-        error={error}
-        loginForm={loginForm}
-        loginLoading={loginLoading}
-        onLogin={handleLogin}
-        onLoginFormChange={(patch) => setLoginForm((prev) => ({ ...prev, ...patch }))}
-      />
+      <>
+        <MobileLogin
+          error={error}
+          loginForm={loginForm}
+          loginLoading={loginLoading}
+          onLogin={handleLogin}
+          onLoginFormChange={(patch) => setLoginForm((prev) => ({ ...prev, ...patch }))}
+        />
+
+        <section
+          className="bd-mobile-card"
+          style={{ margin: "0 16px 16px", border: "1px solid rgba(96, 165, 250, 0.35)" }}
+        >
+          <h2 style={{ marginTop: 0 }}>Login Server Diagnostic</h2>
+          <p className="bd-mobile-muted">Temporary reachability check from this WebView. No credentials are sent.</p>
+
+          <button
+            type="button"
+            className="bd-mobile-secondary"
+            onClick={handleProbeLoginServer}
+            disabled={loginProbeLoading || loginLoading}
+            style={{ width: "100%" }}
+          >
+            {loginProbeLoading ? "Testing Login Server..." : "Test Login Server"}
+          </button>
+
+          {loginProbeReport && (
+            <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.5 }}>
+              <p style={{ margin: "8px 0 4px" }}>
+                <strong>Configured:</strong> {loginProbeReport.config?.configured ? "yes" : "no"}
+              </p>
+              <p style={{ margin: "4px 0" }}>
+                <strong>Host:</strong> {loginProbeReport.config?.urlHost || "missing"}
+              </p>
+              <p style={{ margin: "4px 0 8px" }}>
+                <strong>Anon key present:</strong> {loginProbeReport.config?.anonKeyConfigured ? "yes" : "no"}
+              </p>
+
+              {(loginProbeReport.probes || []).map((probe) => (
+                <div
+                  key={probe.label}
+                  style={{
+                    marginBottom: 8,
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    background: "rgba(15, 23, 42, 0.55)",
+                  }}
+                >
+                  <div>
+                    <strong>{probe.label}</strong>
+                  </div>
+                  <div>Elapsed: {probe.elapsedMs} ms</div>
+                  {probe.status !== null && probe.status !== undefined ? (
+                    <div>
+                      Status: {probe.status} {probe.statusText}
+                    </div>
+                  ) : null}
+                  {probe.errorName ? <div>Error: {probe.errorName}</div> : null}
+                  {probe.errorMessage ? <div>Message: {probe.errorMessage}</div> : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </>
     );
   }
 

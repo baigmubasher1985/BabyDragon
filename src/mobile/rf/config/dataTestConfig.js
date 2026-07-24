@@ -20,7 +20,7 @@ export const DATA_TEST_TYPES = [
   {
     key: "ookla_app",
     label: "OOKLA App",
-    status: "planned",
+    status: "EXTERNAL",
     description: "Open OOKLA app, upload screenshot, OCR candidate values, then FE confirms final values.",
   },
   {
@@ -41,6 +41,7 @@ export const DATA_TEST_STORAGE_KEYS = {
   nativeHttp: "bd_rf_native_http_setup_v1",
   ftp: "bd_rf_ftp_setup_v1",
   iperf: "bd_rf_iperf_setup_v1",
+  ookla: "bd_rf_ookla_setup_v1",
 };
 
 export const NATIVE_HTTP_PRESETS = [
@@ -184,10 +185,41 @@ export const DEFAULT_FCC_IMPORT_SETUP = {
   timestampBufferSeconds: 30,
   keepRawImport: true,
   saveTruncatedByGrid: true,
+  appFccImport: null,
+};
+
+export const DEFAULT_OOKLA_MANUAL_EVIDENCE = {
+  provider: "ookla_app",
+  source: "ookla_app_manual_v1h3",
+  evidenceType: "external_manual",
+  confirmation: "draft",
+  capturedAt: null,
+  savedAt: null,
+  feConfirmedAt: null,
+  dlMbps: null,
+  ulMbps: null,
+  pingMs: null,
+  jitterMs: null,
+  serverName: "",
+  providerName: "",
+  resultUrl: "",
+  resultId: "",
+  notes: "",
+  ocrAssistUsed: false,
+  ocrConfidence: null,
+  ocrSource: null,
+  ocrExtractedFields: {},
+  userConfirmedFields: {},
+  ocrRawTextPreview: "",
+  screenshot: null,
+  nearestSample: null,
 };
 
 export const DEFAULT_OOKLA_SETUP = {
-  ocrAssist: true,
+  ocrAssist: false,
   requireFeConfirmation: true,
   keepScreenshot: true,
+  /** Report-only BabyDragon KPI warmup window used for TrafficStats burst estimates. */
+  kpiWarmupDurationSec: 3,
+  evidenceDraft: { ...DEFAULT_OOKLA_MANUAL_EVIDENCE },
 };

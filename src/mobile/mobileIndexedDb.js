@@ -47,6 +47,40 @@ function runStore(mode, callback) {
   );
 }
 
+export async function saveOoklaScreenshotFile(
+  file,
+  sessionId = "session",
+  iterationNumber = 0,
+  role = "main",
+) {
+  if (!file) return null;
+
+  const safeRole = role === "detailed" ? "detailed" : "main";
+  const id = `ookla-screenshot-${safeRole}-${sessionId}-${iterationNumber}-${Date.now()}`;
+  const record = {
+    id,
+    name: file.name || `ookla-${safeRole}-screenshot.jpg`,
+    type: file.type || "image/jpeg",
+    size: file.size || 0,
+    lastModified: file.lastModified || Date.now(),
+    blob: file,
+    created_at: new Date().toISOString(),
+    purpose: safeRole === "detailed" ? "ookla_detailed_screenshot" : "ookla_main_screenshot",
+    role: safeRole,
+  };
+
+  await runStore("readwrite", (store) => store.put(record));
+
+  return {
+    id,
+    name: record.name,
+    type: record.type,
+    size: record.size,
+    lastModified: record.lastModified,
+    role: safeRole,
+  };
+}
+
 export async function saveQueuedFile(file) {
   if (!file) return null;
 

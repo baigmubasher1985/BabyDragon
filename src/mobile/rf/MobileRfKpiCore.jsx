@@ -12,6 +12,26 @@ import { runBabyDragonFtpTest } from "../testEngines/ftpTestEngine";
 import { cancelIperf3, runIperf3ThroughputTest } from "../testEngines/iperf3Runner";
 import { buildIperf3CommandFromSetup } from "../testEngines/iperf3CommandParser";
 import { buildIperf3ReportFiles, isIperf3Session, mapIperfExportStatus, resolveIperfExportModes } from "./reports/iperf3ReportExport";
+import { buildOoklaIterationSummary, resolveOoklaEvidenceMode, resolveOoklaIterations } from "./reports/externalEvidenceSummary";
+import { buildFccReportFiles, buildFccFileBaseName, buildFccGeneratedEvidenceSnapshot, isFccSession, mapFccExportStatus } from "./reports/fccReportExport";
+import {
+  buildOoklaDeveloperDebugFiles,
+  buildOoklaEvidenceExportFile,
+  INCLUDE_DEVELOPER_DEBUG_EXPORT_DEFAULT,
+  isOoklaSession,
+  mapOoklaExportStatus,
+  matchNearestActiveRfSample,
+} from "./reports/ooklaReportExport";
+import {
+  finalizeOoklaCsvTimeWindowOnExport,
+  resolveOoklaDisplayResultId,
+} from "./utils/ooklaCsvImport";
+import {
+  DEFAULT_KPI_WARMUP_DURATION_SEC,
+  assignOoklaTrafficStatsWarmupEstimates,
+  isExportableOoklaIteration,
+  resolveKpiWarmupDurationSec,
+} from "./utils/ooklaTrafficStatsWarmup";
 
 
 const BabyDragonRfKpi = registerPlugin("BabyDragonRfKpi");
@@ -32,6 +52,8 @@ const KPI_ROW_SETS = {
     { group: "NR Secondary", kpi: "SS-SINR", unit: "dB", metric: "nrSinr" },
     { group: "Data KPIs", kpi: "APP DL THP", unit: "Mbps", avgMode: "data", dataMetric: "dl" },
     { group: "Data KPIs", kpi: "APP UL THP", unit: "Mbps", avgMode: "data", dataMetric: "ul" },
+    { group: "Data KPIs", kpi: "Android TrafficStats DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl" },
+    { group: "Data KPIs", kpi: "Android TrafficStats UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul" },
     { group: "Voice KPIs", kpi: "Call State", unit: "", avgMode: "none" },
   ],
   nrLte: [
@@ -49,6 +71,8 @@ const KPI_ROW_SETS = {
     { group: "NR Secondary", kpi: "SS-SINR", unit: "dB", metric: "nrSinr" },
     { group: "Data KPIs", kpi: "APP DL THP", unit: "Mbps", avgMode: "data", dataMetric: "dl" },
     { group: "Data KPIs", kpi: "APP UL THP", unit: "Mbps", avgMode: "data", dataMetric: "ul" },
+    { group: "Data KPIs", kpi: "Android TrafficStats DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl" },
+    { group: "Data KPIs", kpi: "Android TrafficStats UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul" },
     { group: "Voice KPIs", kpi: "VoLTE / VoNR State", unit: "", avgMode: "none" },
   ],
   wcdma: [
@@ -233,7 +257,21 @@ function makeAbortErrorMessage(error) {
   return error?.message || "Throughput test failed.";
 }
 
+function isExternalAppThroughputBlocked(dataContext = {}) {
+  const active = dataContext.dataTest || {};
+  const saved = dataContext.savedSession || {};
+  return active.testType === "ookla_app"
+    || active.testType === "fcc_app"
+    || saved.appTestType === "ookla_app"
+    || saved.appTestType === "fcc_app";
+}
+
+function isOoklaThroughputBlocked(dataContext = {}) {
+  return isExternalAppThroughputBlocked(dataContext);
+}
+
 function pickThroughputValue(metric, dataContext = {}) {
+  if (isExternalAppThroughputBlocked(dataContext)) return null;
   const active = dataContext.dataTest || {};
   const saved = dataContext.savedSession || {};
   if (metric === "dl") return getNumber(active.dlMbps ?? saved.appDlMbps);
@@ -310,12 +348,82 @@ function dataTestMonitorTitle(dataTest = {}) {
   return "Internal DL / UL Throughput";
 }
 
+function resolveOoklaEvidence(dataContext = {}) {
+  return dataContext.dataTest?.ooklaEvidence || dataContext.savedSession?.appOoklaEvidence || null;
+}
+
+function resolveOoklaEvidenceIterations(dataContext = {}) {
+  const fromLive = dataContext.dataTest?.ooklaEvidenceIterations;
+  const fromSaved = dataContext.savedSession?.appOoklaEvidenceIterations;
+  if (Array.isArray(fromLive) && fromLive.length) return fromLive;
+  if (Array.isArray(fromSaved) && fromSaved.length) return fromSaved;
+  const latest = resolveOoklaEvidence(dataContext);
+  return latest ? [latest] : [];
+}
+
+function isOoklaContext(dataContext = {}) {
+  const active = dataContext.dataTest || {};
+  const saved = dataContext.savedSession || {};
+  return active.testType === "ookla_app" || saved.appTestType === "ookla_app";
+}
+
+function isFccContext(dataContext = {}) {
+  const active = dataContext.dataTest || {};
+  const saved = dataContext.savedSession || {};
+  return active.testType === "fcc_app" || saved.appTestType === "fcc_app";
+}
+
+function ooklaMonitorHeadline(dataTest = {}, session = {}) {
+  const iterations = dataTest.ooklaEvidenceIterations?.length
+    ? dataTest.ooklaEvidenceIterations
+    : (session?.appOoklaEvidenceIterations?.length ? session.appOoklaEvidenceIterations : resolveOoklaIterations(session || {}));
+  const count = iterations.length;
+  const evidence = dataTest.ooklaEvidence || session?.appOoklaEvidence || iterations[iterations.length - 1];
+  if (count > 1) {
+    if (evidence?.confirmation === "fe_confirmed") return `${count} OOKLA iterations saved. Latest is FE-confirmed.`;
+    return `${count} OOKLA iterations saved. Latest is draft.`;
+  }
+  if (evidence?.confirmation === "fe_confirmed") return "Manual OOKLA App evidence, FE-confirmed.";
+  if (evidence) return "Manual OOKLA App evidence saved as draft.";
+  return dataTest.message || "Recording RF/GPS. Enter OOKLA App results and save evidence.";
+}
+
+function fccMonitorHeadline(dataTest = {}, session = {}) {
+  if (session?.appFccGeneratedEvidence?.sampleCount > 0 || session?.sampleCount > 0) {
+    return "FCC session context recorded. Import FCC export after session to truncate by BabyDragon timestamps.";
+  }
+  return dataTest.message || "Recording RF/GPS for FCC App session context.";
+}
+
+function shouldShowDataTestMonitor(selectedMode, dataTest, visibleSession) {
+  if (selectedMode !== "data") return false;
+  if (isOoklaContext({ dataTest, savedSession: visibleSession })) {
+    return dataTest.status !== "idle"
+      || Boolean(visibleSession?.appOoklaEvidence)
+      || Boolean(visibleSession?.appOoklaEvidenceIterations?.length)
+      || visibleSession?.appTestType === "ookla_app";
+  }
+  if (isFccContext({ dataTest, savedSession: visibleSession })) {
+    return dataTest.status !== "idle" || visibleSession?.appTestType === "fcc_app";
+  }
+  return dataTest.status !== "idle"
+    || getNumber(visibleSession?.appDlMbps) !== null
+    || getNumber(visibleSession?.appUlMbps) !== null;
+}
+
+function parseOoklaOptionalNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function throughputStatus(metric, dataContext = {}) {
   const active = dataContext.dataTest || {};
   const saved = dataContext.savedSession || {};
   const value = pickThroughputValue(metric, dataContext);
 
   if (active.status === "running") {
+    if (active.phase === "session_paused") return "Paused";
     if (metric === "dl" && active.phase === "download") return "Testing";
     if (metric === "ul" && active.phase === "upload") return "Testing";
     if (value !== null) return "Live";
@@ -363,6 +471,29 @@ function throughputStatusBadge(dataContext = {}) {
     if (active.status === "error") return "Error";
     if (active.status === "stopped") return "Stopped";
     return "Ready";
+  }
+
+  if (active.status === "running" && active.phase === "session_paused") return "Paused";
+
+  if (active.testType === "ookla_app" || saved?.appTestType === "ookla_app") {
+    const iterations = resolveOoklaEvidenceIterations({ dataTest: active, savedSession: saved });
+    const evidence = active.ooklaEvidence || saved?.appOoklaEvidence || iterations[iterations.length - 1];
+    if (active.status === "external_ready" && !iterations.length) return "Recording";
+    if (active.status === "evidence_saved" || saved?.appExportStatus === "saved") return "Saved";
+    if (active.status === "evidence_partial" || saved?.appExportStatus === "partial") return "Partial";
+    if (iterations.some((item) => item.confirmation === "fe_confirmed")) {
+      return iterations.every((item) => item.confirmation === "fe_confirmed") ? "Saved" : "Partial";
+    }
+    if (active.status === "evidence_draft" || saved?.appExportStatus === "draft" || iterations.length) return "Draft";
+    return "Ready";
+  }
+
+  if (active.testType === "fcc_app" || saved?.appTestType === "fcc_app") {
+    if (active.status === "external_ready") return "Recording";
+    if (saved?.appFccGeneratedEvidence || saved?.appExportStatus === "saved") return "Saved";
+    if (saved?.appExportStatus === "partial") return "Partial";
+    if (saved?.appExportStatus === "draft") return "Draft";
+    return active.status !== "idle" ? "Recording" : "Ready";
   }
 
   return throughputStatus("dl", dataContext);
@@ -491,12 +622,79 @@ function formatIperfIntervalSummary(parentIteration, sample = {}) {
   return formatIperfIntervalLine(parentIteration, sample).line;
 }
 
-function waitForThroughputPause(waitSeconds, signal, onTick) {
+const NATIVE_HTTP_SESSION_PAUSED_MESSAGE = "Paused - data test waiting to resume";
+
+async function waitForSessionResumeGate(sessionPausedRef, signal, onPaused) {
+  if (!sessionPausedRef?.current) return;
+  if (typeof onPaused === "function") onPaused();
+  await waitWhileSessionPaused(sessionPausedRef, signal);
+}
+
+async function measureThroughputPhaseWithSessionPause({
+  measureFn,
+  sessionPausedRef,
+  sequenceSignal,
+  phaseAbortRef,
+  onPaused,
+}) {
+  while (true) {
+    await waitWhileSessionPaused(sessionPausedRef, sequenceSignal);
+    const phaseController = new AbortController();
+    if (phaseAbortRef) phaseAbortRef.current = phaseController;
+
+    const abortFromSequence = () => {
+      if (!phaseController.signal.aborted) phaseController.abort();
+    };
+    if (sequenceSignal?.addEventListener) {
+      sequenceSignal.addEventListener("abort", abortFromSequence, { once: true });
+    }
+
+    try {
+      return await measureFn(phaseController.signal);
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        if (sequenceSignal?.aborted) throw error;
+        if (sessionPausedRef?.current) {
+          if (typeof onPaused === "function") onPaused();
+          continue;
+        }
+      }
+      throw error;
+    } finally {
+      if (phaseAbortRef) phaseAbortRef.current = null;
+      if (sequenceSignal?.removeEventListener) {
+        sequenceSignal.removeEventListener("abort", abortFromSequence);
+      }
+    }
+  }
+}
+
+function waitWhileSessionPaused(sessionPausedRef, signal) {
+  if (!sessionPausedRef?.current) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (signal?.aborted) {
+        reject(makeAbortError());
+        return;
+      }
+      if (!sessionPausedRef?.current) {
+        resolve();
+        return;
+      }
+      window.setTimeout(check, 500);
+    };
+    check();
+  });
+}
+
+function waitForThroughputPause(waitSeconds, signal, onTick, sessionPausedRef) {
   const totalMs = Math.max(0, Number(waitSeconds || 0) * 1000);
   if (!totalMs) return Promise.resolve();
 
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
+    let pausedAccumulatedMs = 0;
+    let pauseStartedAt = null;
     let intervalId = null;
     let timeoutId = null;
 
@@ -516,9 +714,24 @@ function waitForThroughputPause(waitSeconds, signal, onTick) {
         onAbort();
         return;
       }
-      const elapsed = Date.now() - startedAt;
+      if (sessionPausedRef?.current) {
+        if (pauseStartedAt === null) pauseStartedAt = Date.now();
+        const elapsed = Date.now() - startedAt - pausedAccumulatedMs;
+        const remaining = Math.max(0, Math.ceil((totalMs - elapsed) / 1000));
+        if (typeof onTick === "function") onTick(remaining);
+        return;
+      }
+      if (pauseStartedAt !== null) {
+        pausedAccumulatedMs += Date.now() - pauseStartedAt;
+        pauseStartedAt = null;
+      }
+      const elapsed = Date.now() - startedAt - pausedAccumulatedMs;
       const remaining = Math.max(0, Math.ceil((totalMs - elapsed) / 1000));
       if (typeof onTick === "function") onTick(remaining);
+      if (elapsed >= totalMs) {
+        cleanup();
+        resolve();
+      }
     };
 
     if (signal?.aborted) {
@@ -532,7 +745,7 @@ function waitForThroughputPause(waitSeconds, signal, onTick) {
     timeoutId = window.setTimeout(() => {
       cleanup();
       resolve();
-    }, totalMs);
+    }, totalMs + 3600000);
   });
 }
 
@@ -712,9 +925,58 @@ function formatFileDateTime(timestamp) {
 
 function buildProfessionalReportName(session, activeTask) {
   const taskName = session?.taskLabel || getTaskLabel(activeTask) || "BabyDragon_Task";
+  const reportName = String(session?.reportLogName || "").trim();
+  const namePart = reportName ? cleanFilePart(reportName, "BabyDragon_Report") : cleanFilePart(taskName, "BabyDragon_Task");
   const mode = session?.mode === "voice" ? "Voice" : "Data";
   const started = session?.startedAt || session?.endedAt || Date.now();
-  return cleanFilePart(`${taskName}_${mode}_RF_Report_${formatFileDateTime(started)}`, "BabyDragon_RF_Report");
+  return cleanFilePart(`${namePart}_${mode}_RF_Report_${formatFileDateTime(started)}`, "BabyDragon_RF_Report");
+}
+
+const PAUSE_SUMMARY_RULE = "RF and TrafficStats averages exclude paused GPS-only samples. Paused wall time is excluded from active recording duration.";
+
+function isActiveRfSample(sample) {
+  if (!sample) return false;
+  if (sample.recordState === "paused") return false;
+  if (sample.recordState === "active") return true;
+  return sample.recorded === true;
+}
+
+function buildRecordingStateSummary(session, endedAt) {
+  const end = endedAt || Date.now();
+  const start = session?.startedAt || end;
+  const rawSegments = Array.isArray(session?.pauseSegments) ? session.pauseSegments : [];
+  const pauseSegments = rawSegments
+    .filter((segment) => segment?.startedAt)
+    .map((segment) => ({
+      startedAt: segment.startedAt,
+      endedAt: segment.endedAt ?? end,
+      startedAtIso: formatIso(segment.startedAt),
+      endedAtIso: formatIso(segment.endedAt ?? end),
+    }));
+  const pausedDurationMs = pauseSegments.reduce(
+    (sum, segment) => sum + Math.max(0, (segment.endedAt || end) - segment.startedAt),
+    0,
+  );
+  const wallDurationMs = Math.max(0, end - start);
+  const activeDurationMs = Math.max(0, wallDurationMs - pausedDurationMs);
+  return {
+    activeDurationMs,
+    pausedDurationMs,
+    pauseSegmentCount: pauseSegments.length,
+    pauseSegments,
+    pauseSummaryRule: PAUSE_SUMMARY_RULE,
+  };
+}
+
+function closeOpenPauseSegment(session, endedAt) {
+  const segments = Array.isArray(session?.pauseSegments) ? [...session.pauseSegments] : [];
+  if (!segments.length) return segments;
+  const lastIndex = segments.length - 1;
+  const last = segments[lastIndex];
+  if (last && !last.endedAt) {
+    segments[lastIndex] = { ...last, endedAt };
+  }
+  return segments;
 }
 
 function csvValue(value) {
@@ -830,13 +1092,27 @@ function buildSummaryCsv(session, user, activeTask) {
   const stats = session?.stats || {};
   const thpWindow = getThpWindow(session);
   const iperfSession = isIperf3Session(session);
+  const ooklaSession = isOoklaSession(session);
+  const fccSession = isFccSession(session);
+  const ooklaIterations = resolveOoklaIterations(session);
+  const ooklaEvidence = session?.appOoklaEvidence || ooklaIterations[ooklaIterations.length - 1] || {};
+  const fccBaseName = fccSession ? buildFccFileBaseName(session, { activeTask, getTaskLabel, getTaskGrid }) : "";
+  const recordingSummary = session?.recordingStateSummary || buildRecordingStateSummary(session, session?.endedAt);
   const headers = [
-    "report_type", "session_id", "mode", "fe", "task", "grid", "grid_internal_id",
-    "session_started_local", "session_ended_local", "session_duration", "session_duration_ms", "samples", "gps_points", "rat",
+    "report_type", "report_log_name", "session_id", "mode", "fe", "task", "grid", "grid_internal_id",
+    "session_started_local", "session_ended_local", "session_duration", "session_duration_ms",
+    "active_recording_duration_sec", "paused_duration_sec", "pause_segment_count", "pause_summary_rule",
+    "samples", "gps_points", "rat",
     "thp_started_local", "thp_ended_local", "thp_duration", "thp_duration_ms",
     "app_dl_avg_mbps", "app_ul_avg_mbps", "thp_iterations_requested", "thp_iterations_completed",
     "thp_requested_duration_sec", "thp_warmup_sec", "thp_interval_sec", "thp_wait_between_iterations_sec", "thp_direction",
     "thp_status", "thp_summary_rule", "report_scope",
+    "external_evidence_provider", "ookla_iteration_count", "ookla_evidence_mode", "ookla_iterations_saved",
+    "ookla_csv_rows_imported", "ookla_csv_rows_inside_window", "ookla_csv_rows_selected",
+    "avg_ookla_dl_mbps", "avg_ookla_ul_mbps", "avg_ookla_ping_ms", "avg_ookla_jitter_ms",
+    "min_ookla_dl_mbps", "max_ookla_dl_mbps", "min_ookla_ul_mbps", "max_ookla_ul_mbps",
+    "ookla_evidence_completeness_summary",
+    "fcc_import_status", "fcc_generated_evidence_file", "external_evidence_rule",
     "avg_lte_rsrp_dbm", "min_lte_rsrp_dbm", "max_lte_rsrp_dbm",
     "avg_lte_rsrq_db", "min_lte_rsrq_db", "max_lte_rsrq_db",
     "avg_lte_sinr_db", "min_lte_sinr_db", "max_lte_sinr_db",
@@ -846,11 +1122,14 @@ function buildSummaryCsv(session, user, activeTask) {
     "avg_nr_sinr_db", "min_nr_sinr_db", "max_nr_sinr_db",
     "avg_3g_rscp_dbm", "avg_3g_ecno_db", "avg_3g_rssi_dbm",
     "avg_2g_rssi_dbm", "avg_2g_ber", "avg_2g_timing_advance",
+    "traffic_stats_avg_dl_mbps", "traffic_stats_avg_ul_mbps", "traffic_stats_sample_count",
+    "traffic_stats_supported", "traffic_stats_source", "traffic_stats_summary_rule",
     "voice_monitor_status", "final_call_state", "offhook_samples", "remarks"
   ];
 
   const row = {
     report_type: "session_summary",
+    report_log_name: textOrBlank(session?.reportLogName),
     session_id: session?.id || "",
     mode: session?.mode || "",
     fe: user?.email || "",
@@ -861,6 +1140,10 @@ function buildSummaryCsv(session, user, activeTask) {
     session_ended_local: formatLocalDateTime(session?.endedAt),
     session_duration: formatDuration(session?.durationMs),
     session_duration_ms: session?.durationMs ?? "",
+    active_recording_duration_sec: compactNumber((recordingSummary.activeDurationMs || 0) / 1000, 1),
+    paused_duration_sec: compactNumber((recordingSummary.pausedDurationMs || 0) / 1000, 1),
+    pause_segment_count: recordingSummary.pauseSegmentCount ?? "",
+    pause_summary_rule: recordingSummary.pauseSummaryRule || PAUSE_SUMMARY_RULE,
     samples: session?.sampleCount ?? "",
     gps_points: session?.gpsCount ?? "",
     rat: session?.rat || "",
@@ -868,8 +1151,8 @@ function buildSummaryCsv(session, user, activeTask) {
     thp_ended_local: formatLocalDateTime(thpWindow.endedAt),
     thp_duration: thpWindow.duration,
     thp_duration_ms: thpWindow.durationMs,
-    app_dl_avg_mbps: compactNumber(session?.appDlMbps, 2),
-    app_ul_avg_mbps: compactNumber(session?.appUlMbps, 2),
+    app_dl_avg_mbps: (ooklaSession || fccSession) ? "N/A" : compactNumber(session?.appDlMbps, 2),
+    app_ul_avg_mbps: (ooklaSession || fccSession) ? "N/A" : compactNumber(session?.appUlMbps, 2),
     thp_iterations_requested: session?.appIterationsRequested ?? "",
     thp_iterations_completed: session?.appCompletedIterations ?? "",
     thp_requested_duration_sec: session?.appDurationSeconds ?? "",
@@ -877,13 +1160,70 @@ function buildSummaryCsv(session, user, activeTask) {
     thp_interval_sec: session?.appIntervalSeconds ?? "",
     thp_wait_between_iterations_sec: session?.appWaitSeconds ?? "",
     thp_direction: session?.appDirection ?? "",
-    thp_status: session?.appCompletedIterations && session?.appCompletedIterations === session?.appIterationsRequested ? "complete" : session?.appCompletedIterations ? "partial" : "not_run",
+    thp_status: ooklaSession
+      ? (session?.appExportStatus || mapOoklaExportStatus(session?.appTestStatus, ooklaEvidence, ooklaIterations) || "draft")
+      : fccSession
+        ? (session?.appExportStatus || mapFccExportStatus(session) || "draft")
+        : (session?.appCompletedIterations && session?.appCompletedIterations === session?.appIterationsRequested ? "complete" : session?.appCompletedIterations ? "partial" : "not_run"),
     thp_summary_rule: iperfSession
       ? "Avg DL/UL THP is the arithmetic average of completed iPerf3 iteration rows only."
-      : "Avg DL/UL THP is the arithmetic average of completed THP iterations only.",
+      : ooklaSession
+        ? "OOKLA App DL/UL are FE-confirmed external manual evidence only. Native app DL/UL throughput columns remain N/A."
+        : fccSession
+          ? "FCC App data is external. BabyDragon-generated FCC evidence is session context only; not BabyDragon engine THP."
+          : "Avg DL/UL THP is the arithmetic average of completed THP iterations only.",
     report_scope: iperfSession
       ? "Summary has one row. iPerf3 summary and interval details are in dedicated iPerf3 CSV/JSON files. RF/GPS sample rows are in RF_GPS_Trace CSV."
-      : "Summary has one row. THP iteration details are in THP_Iterations CSV. RF/GPS sample rows are in RF_GPS_Trace CSV.",
+      : ooklaSession
+        ? "Summary has one row. OOKLA manual evidence is in dedicated OOKLA CSV/JSON files. RF/GPS sample rows are in RF_GPS_Trace CSV."
+        : fccSession
+          ? "Summary has one row. BabyDragon FCC context evidence is in dedicated FCC Evidence CSV/JSON files. RF/GPS sample rows are in RF_GPS_Trace CSV."
+          : "Summary has one row. THP iteration details are in THP_Iterations CSV. RF/GPS sample rows are in RF_GPS_Trace CSV.",
+    external_evidence_provider: session?.appExternalEvidenceProvider || (ooklaSession ? "ookla_app" : fccSession ? "fcc_app" : ""),
+    ookla_iteration_count: ooklaSession ? (ooklaIterations.length || "") : "",
+    ...(ooklaSession ? (() => {
+      const ooklaSummary = buildOoklaIterationSummary(ooklaIterations, session?.appOoklaCsvImportDebug || null);
+      return {
+        ookla_evidence_mode: ooklaSummary.ooklaEvidenceMode || resolveOoklaEvidenceMode(ooklaIterations) || "",
+        ookla_iterations_saved: ooklaSummary.ooklaIterationsSaved ?? ooklaIterations.length,
+        ookla_csv_rows_imported: ooklaSummary.csvRowsImported ?? "",
+        ookla_csv_rows_inside_window: ooklaSummary.csvRowsInsideWindow ?? "",
+        ookla_csv_rows_selected: ooklaSummary.csvRowsSelected ?? "",
+        avg_ookla_dl_mbps: compactNumber(ooklaSummary.avgDlMbps, 2),
+        avg_ookla_ul_mbps: compactNumber(ooklaSummary.avgUlMbps, 2),
+        avg_ookla_ping_ms: compactNumber(ooklaSummary.avgPingMs, 1),
+        avg_ookla_jitter_ms: compactNumber(ooklaSummary.avgJitterMs, 1),
+        min_ookla_dl_mbps: compactNumber(ooklaSummary.minDlMbps, 2),
+        max_ookla_dl_mbps: compactNumber(ooklaSummary.maxDlMbps, 2),
+        min_ookla_ul_mbps: compactNumber(ooklaSummary.minUlMbps, 2),
+        max_ookla_ul_mbps: compactNumber(ooklaSummary.maxUlMbps, 2),
+        ookla_evidence_completeness_summary: ooklaSummary.evidenceCompletenessSummary
+          ? JSON.stringify(ooklaSummary.evidenceCompletenessSummary)
+          : "",
+      };
+    })() : {
+      ookla_evidence_mode: "",
+      ookla_iterations_saved: "",
+      ookla_csv_rows_imported: "",
+      ookla_csv_rows_inside_window: "",
+      ookla_csv_rows_selected: "",
+      avg_ookla_dl_mbps: "",
+      avg_ookla_ul_mbps: "",
+      avg_ookla_ping_ms: "",
+      avg_ookla_jitter_ms: "",
+      min_ookla_dl_mbps: "",
+      max_ookla_dl_mbps: "",
+      min_ookla_ul_mbps: "",
+      max_ookla_ul_mbps: "",
+      ookla_evidence_completeness_summary: "",
+    }),
+    fcc_import_status: fccSession ? (session?.appFccImport?.status || "not_imported") : "",
+    fcc_generated_evidence_file: fccSession && fccBaseName ? `${fccBaseName}_FCC_Evidence.csv; ${fccBaseName}_FCC_Evidence.json` : "",
+    external_evidence_rule: ooklaSession
+      ? "OOKLA App DL/UL/Ping/Jitter are external manual evidence only. APP DL/UL THP columns remain N/A."
+      : fccSession
+        ? "FCC App data is external. BabyDragon-generated FCC evidence is session context only; not BabyDragon engine THP."
+        : "",
     avg_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.avg ?? session?.avgLteRsrp, 1),
     min_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.min, 1),
     max_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.max, 1),
@@ -911,29 +1251,114 @@ function buildSummaryCsv(session, user, activeTask) {
     avg_2g_rssi_dbm: compactNumber(stats?.twoGRssi?.avg ?? session?.avgTwoGRssi, 1),
     avg_2g_ber: compactNumber(stats?.twoGBer?.avg ?? session?.avgTwoGBer, 1),
     avg_2g_timing_advance: compactNumber(stats?.twoGTimingAdvance?.avg ?? session?.avgTwoGTimingAdvance, 0),
+    traffic_stats_avg_dl_mbps: compactNumber(session?.trafficStatsAvgDlMbps ?? stats?.trafficStatsDl?.avg, 2),
+    traffic_stats_avg_ul_mbps: compactNumber(session?.trafficStatsAvgUlMbps ?? stats?.trafficStatsUl?.avg, 2),
+    traffic_stats_sample_count: session?.trafficStatsSampleCount ?? stats?.trafficStatsDl?.count ?? "",
+    traffic_stats_supported: session?.trafficStatsSupported ? "yes" : "no",
+    traffic_stats_source: "mobile",
+    traffic_stats_summary_rule: TRAFFIC_STATS_SUMMARY_RULE,
     voice_monitor_status: voice.voice_monitor_status,
     final_call_state: voice.final_call_state,
     offhook_samples: voice.offhook_samples,
     remarks: iperfSession
       ? "One clean session summary row. iPerf3 evidence is exported in dedicated iPerf3 CSV/JSON files."
-      : "One clean session summary row. Iteration details are in the THP_Iterations CSV.",
+      : ooklaSession
+        ? "One clean session summary row. OOKLA manual evidence is exported in dedicated OOKLA CSV/JSON files."
+        : fccSession
+          ? "One clean session summary row. BabyDragon FCC context evidence is exported in dedicated FCC Evidence CSV/JSON files."
+          : "One clean session summary row. Iteration details are in the THP_Iterations CSV.",
   };
 
   return makeCsv(headers, [row]);
 }
 
+function getPausedTraceExportFields() {
+  return {
+    rat: "",
+    carrier: "",
+    sim_carrier: "",
+    network_operator: "",
+    data_network_type: "",
+    call_state: "",
+    lte_pci: "",
+    lte_earfcn: "",
+    lte_tac: "",
+    lte_cell_id: "",
+    lte_rsrp_dbm: "",
+    lte_rsrq_db: "",
+    lte_sinr_db: "",
+    lte_sinr_source: "",
+    lte_rssi_dbm: "",
+    nr_pci: "",
+    nr_nrarfcn: "",
+    nr_tac: "",
+    nr_nci: "",
+    nr_ss_rsrp_dbm: "",
+    nr_ss_rsrq_db: "",
+    nr_ss_sinr_db: "",
+    nr_status: "",
+    threeg_uarfcn: "",
+    threeg_psc: "",
+    threeg_lac: "",
+    threeg_cell_id: "",
+    threeg_rscp_dbm: "",
+    threeg_ecno_db: "",
+    twog_arfcn: "",
+    twog_bsic: "",
+    twog_lac: "",
+    twog_cell_id: "",
+    twog_rssi_dbm: "",
+    twog_ber: "",
+  };
+}
+
+function getPausedTraceTrafficStatsExportFields() {
+  return {
+    traffic_stats_supported: "",
+    traffic_stats_source: "",
+    traffic_stats_mobile_rx_bytes: "",
+    traffic_stats_mobile_tx_bytes: "",
+    traffic_stats_delta_rx_bytes: "",
+    traffic_stats_delta_tx_bytes: "",
+    traffic_stats_delta_sec: "",
+    traffic_stats_dl_mbps: "",
+    traffic_stats_ul_mbps: "",
+    traffic_stats_total_rx_bytes: "",
+    traffic_stats_total_tx_bytes: "",
+    traffic_stats_total_delta_rx_bytes: "",
+    traffic_stats_total_delta_tx_bytes: "",
+    traffic_stats_total_dl_mbps: "",
+    traffic_stats_total_ul_mbps: "",
+    traffic_stats_counter_reset: "",
+    traffic_stats_note: "paused_gps_only",
+  };
+}
+
 function buildTraceCsv(session) {
   const samples = session?.exportSamples || session?.traceSamples || [];
   const headers = [
-    "sample_index", "sample_id", "session_id", "timestamp_local", "timestamp_iso", "mode", "recorded",
-    "latitude", "longitude", "gps_accuracy_m", "rat", "carrier", "sim_carrier", "network_operator", "data_network_type", "call_state",
+    "sample_index", "sample_id", "session_id", "timestamp_local", "timestamp_iso", "mode", "record_state", "recorded",
+    "latitude", "longitude", "gps_accuracy_m", "gps_speed_mps", "rat", "carrier", "sim_carrier", "network_operator", "data_network_type", "call_state",
     "lte_pci", "lte_earfcn", "lte_tac", "lte_cell_id", "lte_rsrp_dbm", "lte_rsrq_db", "lte_sinr_db", "lte_sinr_source", "lte_rssi_dbm",
     "nr_pci", "nr_nrarfcn", "nr_tac", "nr_nci", "nr_ss_rsrp_dbm", "nr_ss_rsrq_db", "nr_ss_sinr_db", "nr_status",
     "threeg_uarfcn", "threeg_psc", "threeg_lac", "threeg_cell_id", "threeg_rscp_dbm", "threeg_ecno_db",
-    "twog_arfcn", "twog_bsic", "twog_lac", "twog_cell_id", "twog_rssi_dbm", "twog_ber"
+    "twog_arfcn", "twog_bsic", "twog_lac", "twog_cell_id", "twog_rssi_dbm", "twog_ber",
+    "traffic_stats_supported", "traffic_stats_source", "traffic_stats_mobile_rx_bytes", "traffic_stats_mobile_tx_bytes",
+    "traffic_stats_delta_rx_bytes", "traffic_stats_delta_tx_bytes", "traffic_stats_delta_sec",
+    "traffic_stats_dl_mbps", "traffic_stats_ul_mbps",
+    "traffic_stats_total_rx_bytes", "traffic_stats_total_tx_bytes",
+    "traffic_stats_total_delta_rx_bytes", "traffic_stats_total_delta_tx_bytes",
+    "traffic_stats_total_dl_mbps", "traffic_stats_total_ul_mbps",
+    "traffic_stats_counter_reset", "traffic_stats_note",
   ];
   const rows = samples.map((sample, index) => {
-    const fields = getSnapshotExportFields(sample?.snapshot || {});
+    const isPausedGps = sample?.recordState === "paused";
+    const fields = isPausedGps
+      ? getPausedTraceExportFields()
+      : getSnapshotExportFields(sample?.snapshot || {});
+    const trafficFields = isPausedGps
+      ? getPausedTraceTrafficStatsExportFields()
+      : getTrafficStatsExportFields(sample?.trafficStats || {});
     return {
       sample_index: index + 1,
       sample_id: sample?.id || "",
@@ -941,11 +1366,14 @@ function buildTraceCsv(session) {
       timestamp_local: formatLocalDateTime(sample?.timestamp),
       timestamp_iso: formatIso(sample?.timestamp),
       mode: sample?.mode || session?.mode || "",
+      record_state: isPausedGps ? "paused" : "active",
       recorded: sample?.recorded ? "yes" : "no",
       latitude: compactNumber(sample?.gps?.lat, 7),
       longitude: compactNumber(sample?.gps?.lng, 7),
       gps_accuracy_m: compactNumber(sample?.gps?.accuracy, 1),
+      gps_speed_mps: compactNumber(sample?.gps?.speed, 2),
       ...fields,
+      ...trafficFields,
     };
   });
   return makeCsv(headers, rows);
@@ -1116,21 +1544,49 @@ function buildJsonRfSummary(session) {
       min_timing_advance: jsonNumber(stats?.twoGTimingAdvance?.min, 0),
       max_timing_advance: jsonNumber(stats?.twoGTimingAdvance?.max, 0),
     },
+    traffic_stats: {
+      supported: session?.trafficStatsSupported === true,
+      summary_rule: TRAFFIC_STATS_SUMMARY_RULE,
+      note: TRAFFIC_STATS_NOTE,
+      mobile: {
+        supported: session?.trafficStatsMobileSupported !== false && session?.trafficStatsSupported === true,
+        source: "mobile",
+        avg_dl_mbps: jsonNumber(session?.trafficStatsAvgDlMbps ?? stats?.trafficStatsDl?.avg, 2),
+        avg_ul_mbps: jsonNumber(session?.trafficStatsAvgUlMbps ?? stats?.trafficStatsUl?.avg, 2),
+        min_dl_mbps: jsonNumber(stats?.trafficStatsDl?.min, 2),
+        max_dl_mbps: jsonNumber(stats?.trafficStatsDl?.max, 2),
+        min_ul_mbps: jsonNumber(stats?.trafficStatsUl?.min, 2),
+        max_ul_mbps: jsonNumber(stats?.trafficStatsUl?.max, 2),
+        sample_count: jsonNumber(session?.trafficStatsSampleCount ?? stats?.trafficStatsDl?.count),
+      },
+      total: {
+        supported: session?.trafficStatsTotalSupported === true,
+        source: "total",
+        avg_dl_mbps: jsonNumber(session?.trafficStatsTotalAvgDlMbps ?? stats?.trafficStatsTotalDl?.avg, 2),
+        avg_ul_mbps: jsonNumber(session?.trafficStatsTotalAvgUlMbps ?? stats?.trafficStatsTotalUl?.avg, 2),
+        min_dl_mbps: jsonNumber(stats?.trafficStatsTotalDl?.min, 2),
+        max_dl_mbps: jsonNumber(stats?.trafficStatsTotalDl?.max, 2),
+        min_ul_mbps: jsonNumber(stats?.trafficStatsTotalUl?.min, 2),
+        max_ul_mbps: jsonNumber(stats?.trafficStatsTotalUl?.max, 2),
+        sample_count: jsonNumber(session?.trafficStatsTotalSampleCount ?? stats?.trafficStatsTotalDl?.count),
+      },
+    },
   };
 }
 
 function buildJsonTraceSamples(session) {
   const samples = session?.exportSamples || session?.traceSamples || [];
   return samples.map((sample, index) => {
-    const fields = getSnapshotExportFields(sample?.snapshot || {});
-    return {
+    const isPausedGps = sample?.recordState === "paused";
+    const baseSample = {
       sample_index: index + 1,
       sample_id: sample?.id || null,
       session_id: sample?.sessionId || session?.id || null,
       timestamp_local: formatLocalDateTime(sample?.timestamp) || null,
       timestamp_iso: jsonTimestamp(sample?.timestamp),
       mode: sample?.mode || session?.mode || null,
-      recorded: Boolean(sample?.recorded),
+      record_state: isPausedGps ? "paused" : "active",
+      recorded: isPausedGps ? false : Boolean(sample?.recorded),
       gps: {
         latitude: jsonNumber(sample?.gps?.lat, 7),
         longitude: jsonNumber(sample?.gps?.lng, 7),
@@ -1138,6 +1594,24 @@ function buildJsonTraceSamples(session) {
         speed_mps: jsonNumber(sample?.gps?.speed, 2),
         bearing_deg: jsonNumber(sample?.gps?.bearing, 1),
       },
+    };
+
+    if (isPausedGps) {
+      return {
+        ...baseSample,
+        network: null,
+        lte: null,
+        nr: null,
+        wcdma: null,
+        gsm: null,
+        traffic_stats: null,
+        note: "paused_gps_only",
+      };
+    }
+
+    const fields = getSnapshotExportFields(sample?.snapshot || {});
+    return {
+      ...baseSample,
       network: {
         rat: jsonText(fields.rat),
         carrier: jsonText(fields.carrier),
@@ -1183,6 +1657,7 @@ function buildJsonTraceSamples(session) {
         rxlev_rssi_dbm: jsonNumber(fields.twog_rssi_dbm, 1),
         ber: jsonNumber(fields.twog_ber),
       },
+      traffic_stats: buildJsonTrafficStatsBlock(sample?.trafficStats),
     };
   });
 }
@@ -1271,6 +1746,149 @@ function buildJsonDataTest(session) {
     };
   }
 
+  if (isOoklaSession(session)) {
+    const finalized = finalizeOoklaCsvTimeWindowOnExport({
+      iterations: resolveOoklaIterations(session),
+      csvImportDebug: session?.appOoklaCsvImportDebug || null,
+      sessionStartMs: session?.startedAt ?? null,
+      sessionEndMs: session?.endedAt ?? null,
+      bufferSeconds: session?.appOoklaCsvImportDebug?.bufferSeconds ?? 60,
+      exportStopMs: Date.now(),
+    });
+    const kpiWarmupDurationSec = resolveKpiWarmupDurationSec(session, DEFAULT_KPI_WARMUP_DURATION_SEC);
+    const iterations = assignOoklaTrafficStatsWarmupEstimates(session, finalized.iterations, {
+      kpiWarmupDurationSec,
+    });
+    const csvImportDebug = finalized.csvImportDebug;
+    const evidence = session?.appOoklaEvidence || iterations[iterations.length - 1] || {};
+    const ooklaSummary = buildOoklaIterationSummary(iterations, csvImportDebug);
+    return {
+      type: "ookla_app_external",
+      label: "OOKLA App External Evidence",
+      status: session?.appExportStatus || mapOoklaExportStatus(session?.appTestStatus, evidence, iterations) || null,
+      summary_rule: "OOKLA App DL/UL/Ping/Jitter are external evidence only. APP DL/UL THP remain null/N/A.",
+      note: "OOKLA iterations live in Report.json and OOKLA_Evidence.csv. Native app DL/UL throughput fields remain null.",
+      app_dl_thp_mbps: null,
+      app_ul_thp_mbps: null,
+      external_evidence: {
+        provider: "ookla_app",
+        source: jsonText(evidence.evidenceSource || evidence.source),
+        confirmation: jsonText(evidence.confirmation),
+        iteration_count: jsonNumber(iterations.length),
+        captured_at_iso: jsonTimestamp(evidence.capturedAt),
+        fe_confirmed_at_iso: jsonTimestamp(evidence.feConfirmedAt),
+        dl_mbps: jsonNumber(evidence.dlMbps, 2),
+        ul_mbps: jsonNumber(evidence.ulMbps, 2),
+        ping_ms: jsonNumber(evidence.pingMs, 1),
+        jitter_ms: jsonNumber(evidence.jitterMs, 1),
+        server_name: jsonText(evidence.serverName),
+        provider_name: jsonText(evidence.providerName),
+        result_url: jsonText(evidence.resultUrl),
+        result_id: jsonText(evidence.resultId),
+        notes: jsonText(evidence.notes),
+        ocr_assist_used: Boolean(evidence.ocrAssistUsed),
+        ocr_source: jsonText(evidence.ocrSource),
+        ocr_confidence: jsonNumber(evidence.ocrConfidence),
+        screenshot_attached: Boolean(evidence.mainScreenshot || evidence.screenshot),
+        screenshot_filename: jsonText((evidence.mainScreenshot || evidence.screenshot)?.fileName),
+        screenshot_storage_key: jsonText((evidence.mainScreenshot || evidence.screenshot)?.storageKey),
+      },
+      ookla_summary: ooklaSummary,
+      csv_import_summary: csvImportDebug
+        ? {
+          source_file_name: csvImportDebug.sourceFileName || null,
+          imported_at: csvImportDebug.importedAt || null,
+          stats: csvImportDebug.stats || null,
+          buffer_seconds: csvImportDebug.bufferSeconds ?? 60,
+          session_start_time: csvImportDebug.sessionStartTime || null,
+          session_end_time: csvImportDebug.sessionEndTime || null,
+          csvRowsImported: csvImportDebug.csvRowsImported ?? csvImportDebug.stats?.imported ?? null,
+          csvRowsInsideWindow: csvImportDebug.csvRowsInsideWindow ?? csvImportDebug.stats?.insideWindow ?? null,
+          csvRowsSelected: csvImportDebug.csvRowsSelected ?? csvImportDebug.stats?.selected ?? null,
+          duplicates: csvImportDebug.duplicates ?? csvImportDebug.stats?.duplicates ?? null,
+        }
+        : null,
+      ookla_iterations: iterations.map((item) => {
+        const mainScreenshot = item.mainScreenshot || item.screenshot || null;
+        const detailedScreenshot = item.detailedScreenshot || null;
+        const matched = matchNearestActiveRfSample(session, item);
+        return {
+          iterationNumber: jsonNumber(item.iterationNumber),
+          evidenceSource: jsonText(item.evidenceSource || item.source),
+          confirmation: jsonText(item.confirmation),
+          ooklaDateTime: jsonText(item.ooklaDateTime || item.testDateTime),
+          dlMbps: jsonNumber(item.dlMbps, 2),
+          ulMbps: jsonNumber(item.ulMbps, 2),
+          pingMs: jsonNumber(item.pingMs, 1),
+          jitterMs: jsonNumber(item.jitterMs, 1),
+          resultId: jsonText(item.resultId),
+          resultUrl: jsonText(item.resultUrl),
+          providerName: jsonText(item.providerName),
+          serverName: jsonText(item.serverName),
+          serverLocation: jsonText(item.serverLocation),
+          connectionType: jsonText(item.connectionType),
+          deviceName: jsonText(item.deviceName),
+          connectionsMode: jsonText(item.connectionsMode),
+          packetLossPercent: jsonNumber(item.packetLossPercent, 2),
+          ooklaUserLatitude: jsonNumber(item.ooklaUserLatitude, 6),
+          ooklaUserLongitude: jsonNumber(item.ooklaUserLongitude, 6),
+          downloadSizeBytes: jsonNumber(item.downloadSizeBytes),
+          uploadSizeBytes: jsonNumber(item.uploadSizeBytes),
+          internalIp: jsonText(item.internalIp),
+          externalIp: jsonText(item.externalIp),
+          fieldSources: item.fieldSources || {},
+          evidenceCompleteness: jsonText(item.evidenceCompleteness),
+          missingFields: Array.isArray(item.missingFields) ? item.missingFields : [],
+          mainScreenshot: mainScreenshot
+            ? {
+              fileName: jsonText(mainScreenshot.fileName),
+              storageKey: jsonText(mainScreenshot.storageKey),
+              mimeType: jsonText(mainScreenshot.mimeType),
+              sizeBytes: jsonNumber(mainScreenshot.sizeBytes),
+            }
+            : null,
+          detailedScreenshot: detailedScreenshot
+            ? {
+              fileName: jsonText(detailedScreenshot.fileName),
+              storageKey: jsonText(detailedScreenshot.storageKey),
+              mimeType: jsonText(detailedScreenshot.mimeType),
+              sizeBytes: jsonNumber(detailedScreenshot.sizeBytes),
+            }
+            : null,
+          csvImportMeta: item.csvImportMeta || null,
+          matchedRf: matched,
+          trafficStatsWarmupEstimate: item.trafficStatsWarmupEstimate || null,
+          capturedAt: jsonTimestamp(item.capturedAt),
+          savedAt: jsonTimestamp(item.savedAt),
+        };
+      }),
+      window: windowBlock,
+      averages: { dl_mbps: null, ul_mbps: null },
+      completed_iterations: null,
+      iterations: [],
+    };
+  }
+
+  if (isFccSession(session)) {
+    const generated = session?.appFccGeneratedEvidence || {};
+    return {
+      type: "fcc_app_context",
+      label: "FCC App Session Context",
+      status: session?.appExportStatus || mapFccExportStatus(session) || null,
+      summary_rule: "FCC App throughput is external. BabyDragon-generated FCC evidence is session context only.",
+      note: "Primary FCC context evidence is exported in dedicated FCC Evidence CSV/JSON files. Native app DL/UL throughput fields remain null.",
+      external_evidence: {
+        provider: "fcc_app",
+      },
+      fcc_generated_evidence: generated,
+      fcc_import: session?.appFccImport || { status: "not_imported", truncate_status: "not_run" },
+      window: windowBlock,
+      averages: { dl_mbps: null, ul_mbps: null },
+      completed_iterations: null,
+      iterations: [],
+    };
+  }
+
   return {
     type: "native_android_http",
     direction: session?.appDirection || null,
@@ -1294,6 +1912,9 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
   const voice = buildVoiceSummary(session);
   const samples = session?.exportSamples || session?.traceSamples || [];
   const iperfSession = isIperf3Session(session);
+  const ooklaSession = isOoklaSession(session);
+  const fccSession = isFccSession(session);
+  const recordingSummary = session?.recordingStateSummary || buildRecordingStateSummary(session, session?.endedAt);
   return JSON.stringify({
     schema: {
       name: "BabyDragon Android Info RF Report",
@@ -1308,10 +1929,15 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
       generated_at_iso: jsonTimestamp(generatedAt),
       files_expected: iperfSession
         ? ["summary_csv", "rf_gps_trace_csv", "iperf3_csv", "iperf3_json", "voice_kpis_csv", "json"]
-        : ["summary_csv", "rf_gps_trace_csv", "thp_iterations_csv", "voice_kpis_csv", "json"],
+        : ooklaSession
+          ? ["report_json", "rf_gps_trace_csv", "ookla_evidence_csv"]
+          : fccSession
+            ? ["summary_csv", "rf_gps_trace_csv", "fcc_evidence_csv", "fcc_evidence_json", "voice_kpis_csv", "json"]
+            : ["summary_csv", "rf_gps_trace_csv", "thp_iterations_csv", "voice_kpis_csv", "json"],
     },
     session: {
       session_id: session?.id || null,
+      report_log_name: jsonText(session?.reportLogName) || null,
       mode: session?.mode || null,
       fe: user?.email || null,
       task: session?.taskLabel || getTaskLabel(activeTask),
@@ -1326,6 +1952,17 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
       sample_count: jsonNumber(session?.sampleCount ?? samples.length),
       gps_points: jsonNumber(session?.gpsCount),
       rat: session?.rat || null,
+      kpi_warmup_duration_sec: jsonNumber(resolveKpiWarmupDurationSec(session, DEFAULT_KPI_WARMUP_DURATION_SEC)),
+      recording_state_summary: {
+        active_duration_ms: jsonNumber(recordingSummary.activeDurationMs),
+        paused_duration_ms: jsonNumber(recordingSummary.pausedDurationMs),
+        pause_segment_count: jsonNumber(recordingSummary.pauseSegmentCount),
+        pause_segments: (recordingSummary.pauseSegments || []).map((segment) => ({
+          started_at_iso: segment.startedAtIso || jsonTimestamp(segment.startedAt),
+          ended_at_iso: segment.endedAtIso || jsonTimestamp(segment.endedAt),
+        })),
+        pause_summary_rule: recordingSummary.pauseSummaryRule || PAUSE_SUMMARY_RULE,
+      },
     },
     rf_summary: buildJsonRfSummary(session),
     data_test: buildJsonDataTest(session),
@@ -1352,11 +1989,80 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
   }, null, 2);
 }
 
-function buildReportPackage({ session, user, activeTask }) {
+function buildReportPackage({
+  session,
+  user,
+  activeTask,
+  includeDeveloperDebugExport = INCLUDE_DEVELOPER_DEBUG_EXPORT_DEFAULT,
+}) {
   const generatedAt = Date.now();
   const baseName = buildProfessionalReportName(session, activeTask);
-  const sessionId = cleanFilePart(baseName, `bd-rf-${generatedAt}`);
+  // Unique folder per export action so MediaStore never creates "file (1)" duplicates in-folder.
+  const exportStamp = (() => {
+    const date = new Date(generatedAt);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  })();
+  const sessionId = cleanFilePart(`${baseName}_${exportStamp}`, `bd-rf-${generatedAt}`);
   const iperfSession = isIperf3Session(session);
+  const ooklaSession = isOoklaSession(session);
+  const fccSession = isFccSession(session);
+
+  // Final OOKLA export contract: Report.json + RF_GPS_Trace.csv + OOKLA_Evidence.csv only.
+  if (ooklaSession) {
+    const evidenceFile = buildOoklaEvidenceExportFile({
+      session,
+      user,
+      activeTask,
+      getTaskLabel,
+      getTaskGrid,
+      baseName,
+    });
+    const files = [
+      {
+        fileName: `${baseName}_Report.json`,
+        reportLabel: "Report JSON",
+        mimeType: "application/json",
+        content: buildJsonReport(session, user, activeTask, baseName, generatedAt),
+      },
+      {
+        fileName: `${baseName}_RF_GPS_Trace.csv`,
+        reportLabel: "RF/GPS Trace CSV",
+        mimeType: "text/csv",
+        content: buildTraceCsv(session),
+      },
+      evidenceFile,
+    ];
+    // Deduplicate by fileName in case a helper accidentally returns a repeat.
+    const uniqueFiles = [];
+    const seenNames = new Set();
+    files.forEach((file) => {
+      const name = String(file?.fileName || "").trim();
+      if (!name || seenNames.has(name)) return;
+      seenNames.add(name);
+      uniqueFiles.push(file);
+    });
+    if (includeDeveloperDebugExport) {
+      uniqueFiles.push(...buildOoklaDeveloperDebugFiles({
+        session,
+        user,
+        activeTask,
+        getTaskLabel,
+        getTaskGrid,
+      }));
+    }
+    return {
+      sessionId,
+      displayName: baseName,
+      generatedAt,
+      files: uniqueFiles,
+      iperfSession: false,
+      ooklaSession: true,
+      fccSession: false,
+      includeDeveloperDebugExport: Boolean(includeDeveloperDebugExport),
+    };
+  }
+
   const files = [
     { fileName: `${baseName}_Summary.csv`, reportLabel: "Summary CSV", mimeType: "text/csv", content: buildSummaryCsv(session, user, activeTask) },
     { fileName: `${baseName}_RF_GPS_Trace.csv`, reportLabel: "RF/GPS Trace CSV", mimeType: "text/csv", content: buildTraceCsv(session) },
@@ -1364,6 +2070,14 @@ function buildReportPackage({ session, user, activeTask }) {
 
   if (iperfSession) {
     files.push(...buildIperf3ReportFiles({
+      session,
+      user,
+      activeTask,
+      getTaskLabel,
+      getTaskGrid,
+    }));
+  } else if (fccSession) {
+    files.push(...buildFccReportFiles({
       session,
       user,
       activeTask,
@@ -1390,6 +2104,9 @@ function buildReportPackage({ session, user, activeTask }) {
     generatedAt,
     files,
     iperfSession,
+    ooklaSession: false,
+    fccSession,
+    includeDeveloperDebugExport: false,
   };
 }
 
@@ -1650,6 +2367,10 @@ function getLiveForRow(row, snapshot, selectedRatKey = "auto", activeFamily = tr
   const group = String(row.group || "").toLowerCase();
 
   if (row.dataMetric) return formatThroughputLive(row.dataMetric, dataContext);
+  if (row.trafficMetric) {
+    const live = getTrafficStatsLive(row.trafficMetric, dataContext.samples || []);
+    return live === "N/A" ? live : formatThroughputWithUnit(live);
+  }
 
   if (!snapshot) return "N/A";
 
@@ -1685,9 +2406,15 @@ function averageForRow(row, samples, snapshot, activeFamily = true, dataContext 
     const value = pickThroughputValue(row.dataMetric, dataContext);
     return value === null ? "N/A" : formatThroughputValue(value);
   }
+  if (row.trafficMetric) {
+    const stats = metricStatsFromTrafficSamples(samples, row.trafficMetric);
+    if (stats.avg === null) return "N/A";
+    return formatThroughputValue(stats.avg);
+  }
   if (!activeFamily || row.avgMode === "none" || row.planned) return "N/A";
 
-  const pool = samples && samples.length ? samples : snapshot ? [{ snapshot }] : [];
+  const pool = (samples && samples.length ? samples : snapshot ? [{ snapshot }] : [])
+    .filter((sample) => !sample?.recordState || isActiveRfSample(sample));
   const values = pool
     .map((sample) => getMetricValue(row, sample.snapshot))
     .filter((value) => typeof value === "number" && Number.isFinite(value));
@@ -1699,6 +2426,10 @@ function averageForRow(row, samples, snapshot, activeFamily = true, dataContext 
 
 function statusForRow(row, snapshot, selectedRatKey = "auto", activeFamily = true, dataContext = {}) {
   if (row.dataMetric) return throughputStatus(row.dataMetric, dataContext);
+  if (row.trafficMetric) {
+    const live = getTrafficStatsLive(row.trafficMetric, dataContext.samples || []);
+    return live === "N/A" ? "N/A" : "Live";
+  }
   if (!snapshot) return "Pending";
   if (snapshot.status === "missing_location_permission") return "Need GPS";
   if (snapshot.status === "security_exception" || snapshot.status === "collector_exception") return "Check";
@@ -1731,11 +2462,14 @@ function statusForRow(row, snapshot, selectedRatKey = "auto", activeFamily = tru
 
 function enrichRows(rows, snapshot, samples, selectedRatKey = "auto", dataContext = {}) {
   const activeFamily = isRatFamilyActive(selectedRatKey, snapshot);
+  const activeSamples = (samples || []).filter(isActiveRfSample);
+  const avgSamples = activeSamples.length ? activeSamples : (samples || []);
+  const mergedContext = { ...dataContext, samples: avgSamples };
   return rows.map((row) => ({
     ...row,
-    live: getLiveForRow(row, snapshot, selectedRatKey, activeFamily, dataContext),
-    avg: averageForRow(row, samples, snapshot, activeFamily, dataContext),
-    status: statusForRow(row, snapshot, selectedRatKey, activeFamily, dataContext),
+    live: getLiveForRow(row, snapshot, selectedRatKey, activeFamily, mergedContext),
+    avg: averageForRow(row, avgSamples, snapshot, activeFamily, mergedContext),
+    status: statusForRow(row, snapshot, selectedRatKey, activeFamily, mergedContext),
   }));
 }
 
@@ -1864,8 +2598,9 @@ function describeRfSource(snapshot) {
 }
 
 function getStatusLabel(testState, selectedMode) {
-  if (testState === "recording") return `${selectedMode === "voice" ? "Voice" : "Data"} armed`;
-  if (testState === "paused") return "Saved locally";
+  if (testState === "recording") return "Recording";
+  if (testState === "paused") return "Paused · GPS only";
+  if (testState === "saved") return "Saved";
   return "Ready";
 }
 
@@ -1952,14 +2687,287 @@ function normalizeGps(point) {
   };
 }
 
-function buildRfSample({ snapshot, now, gps, session, mode, recording }) {
+const TRAFFIC_STATS_NOTE = "android_mobile_and_total_byte_delta";
+const TRAFFIC_STATS_SUMMARY_RULE = "Android mobile/total byte deltas; not OOKLA result; not BabyDragon engine THP";
+
+function readNativeTrafficStatsBlock(snapshot = {}) {
+  const block = snapshot?.trafficStats && typeof snapshot.trafficStats === "object"
+    ? snapshot.trafficStats
+    : snapshot;
+  const mobileRx = getNumber(block?.trafficStatsMobileRxBytes);
+  const mobileTx = getNumber(block?.trafficStatsMobileTxBytes);
+  const totalRx = getNumber(block?.trafficStatsTotalRxBytes);
+  const totalTx = getNumber(block?.trafficStatsTotalTxBytes);
+  const mobileSupported = (
+    block?.trafficStatsMobileSupported === true
+    || (block?.trafficStatsMobileSupported !== false && mobileRx !== null && mobileTx !== null)
+  ) && mobileRx !== null && mobileTx !== null;
+  const totalSupported = (
+    block?.trafficStatsTotalSupported === true
+    || (block?.trafficStatsTotalSupported !== false && totalRx !== null && totalTx !== null)
+  ) && totalRx !== null && totalTx !== null;
+  const supported = mobileSupported || totalSupported;
+  let source = "unsupported";
+  if (mobileSupported && totalSupported) source = "mobile_and_total";
+  else if (totalSupported) source = "total";
+  else if (mobileSupported) source = "mobile";
+
+  return {
+    trafficStatsSupported: supported,
+    trafficStatsMobileSupported: mobileSupported,
+    trafficStatsTotalSupported: totalSupported,
+    trafficStatsSource: source,
+    trafficStatsMobileRxBytes: mobileSupported ? mobileRx : null,
+    trafficStatsMobileTxBytes: mobileSupported ? mobileTx : null,
+    trafficStatsTotalRxBytes: totalSupported ? totalRx : null,
+    trafficStatsTotalTxBytes: totalSupported ? totalTx : null,
+    trafficStatsReadAt: block?.trafficStatsReadAt || snapshot?.timestamp || null,
+  };
+}
+
+function buildSampleTrafficStats(snapshot = {}, previousSample = null, now = Date.now(), options = {}) {
+  const skipDelta = options?.skipDelta === true;
+  const native = readNativeTrafficStatsBlock(snapshot);
+  const base = {
+    trafficStatsSupported: native.trafficStatsSupported,
+    trafficStatsMobileSupported: native.trafficStatsMobileSupported,
+    trafficStatsTotalSupported: native.trafficStatsTotalSupported,
+    trafficStatsSource: native.trafficStatsSource,
+    trafficStatsMobileRxBytes: native.trafficStatsMobileRxBytes,
+    trafficStatsMobileTxBytes: native.trafficStatsMobileTxBytes,
+    trafficStatsTotalRxBytes: native.trafficStatsTotalRxBytes,
+    trafficStatsTotalTxBytes: native.trafficStatsTotalTxBytes,
+    trafficStatsDeltaRxBytes: null,
+    trafficStatsDeltaTxBytes: null,
+    trafficStatsTotalDeltaRxBytes: null,
+    trafficStatsTotalDeltaTxBytes: null,
+    trafficStatsDeltaSec: null,
+    trafficStatsDlMbps: null,
+    trafficStatsUlMbps: null,
+    trafficStatsTotalDlMbps: null,
+    trafficStatsTotalUlMbps: null,
+    trafficStatsCounterReset: false,
+    trafficStatsInvalid: !native.trafficStatsSupported,
+    trafficStatsNote: TRAFFIC_STATS_NOTE,
+  };
+
+  if (!native.trafficStatsSupported) return base;
+
+  if (skipDelta) {
+    return {
+      ...base,
+      trafficStatsInvalid: true,
+      trafficStatsNote: "baseline_reset_after_pause",
+    };
+  }
+
+  const prevStats = previousSample?.trafficStats;
+  if (!prevStats?.trafficStatsSupported || previousSample?.recordState === "paused") return base;
+
+  const prevAt = getNumber(previousSample?.timestamp);
+  if (prevAt === null) {
+    return { ...base, trafficStatsInvalid: true };
+  }
+
+  const deltaSec = (now - prevAt) / 1000;
+  if (!Number.isFinite(deltaSec) || deltaSec <= 0 || deltaSec > 10) {
+    return { ...base, trafficStatsInvalid: true };
+  }
+
+  let mobileReset = false;
+  let totalReset = false;
+  let mobileDeltaRx = null;
+  let mobileDeltaTx = null;
+  let mobileDl = null;
+  let mobileUl = null;
+  if (native.trafficStatsMobileSupported) {
+    const prevRx = getNumber(prevStats.trafficStatsMobileRxBytes);
+    const prevTx = getNumber(prevStats.trafficStatsMobileTxBytes);
+    if (prevRx !== null && prevTx !== null) {
+      if (native.trafficStatsMobileRxBytes < prevRx || native.trafficStatsMobileTxBytes < prevTx) {
+        mobileReset = true;
+      } else {
+        mobileDeltaRx = native.trafficStatsMobileRxBytes - prevRx;
+        mobileDeltaTx = native.trafficStatsMobileTxBytes - prevTx;
+        const dlMbps = (mobileDeltaRx * 8) / deltaSec / 1_000_000;
+        const ulMbps = (mobileDeltaTx * 8) / deltaSec / 1_000_000;
+        mobileDl = Number.isFinite(dlMbps) && dlMbps >= 0 ? dlMbps : null;
+        mobileUl = Number.isFinite(ulMbps) && ulMbps >= 0 ? ulMbps : null;
+      }
+    }
+  }
+
+  // Total counters are independent of mobile. Wi-Fi bursts must still compute when mobile is 0/reset.
+  let totalDeltaRx = null;
+  let totalDeltaTx = null;
+  let totalDl = null;
+  let totalUl = null;
+  if (native.trafficStatsTotalSupported) {
+    const prevTotalRx = getNumber(prevStats.trafficStatsTotalRxBytes);
+    const prevTotalTx = getNumber(prevStats.trafficStatsTotalTxBytes);
+    if (prevTotalRx !== null && prevTotalTx !== null) {
+      if (native.trafficStatsTotalRxBytes < prevTotalRx || native.trafficStatsTotalTxBytes < prevTotalTx) {
+        totalReset = true;
+      } else {
+        totalDeltaRx = native.trafficStatsTotalRxBytes - prevTotalRx;
+        totalDeltaTx = native.trafficStatsTotalTxBytes - prevTotalTx;
+        const dlMbps = (totalDeltaRx * 8) / deltaSec / 1_000_000;
+        const ulMbps = (totalDeltaTx * 8) / deltaSec / 1_000_000;
+        totalDl = Number.isFinite(dlMbps) && dlMbps >= 0 ? dlMbps : null;
+        totalUl = Number.isFinite(ulMbps) && ulMbps >= 0 ? ulMbps : null;
+      }
+    }
+  }
+
+  const counterReset = mobileReset || totalReset;
+  // Only invalidate the sample when BOTH families failed to produce a rate.
+  const anyRate = mobileDl !== null || mobileUl !== null || totalDl !== null || totalUl !== null;
+  if (counterReset && !anyRate) {
+    return {
+      ...base,
+      trafficStatsCounterReset: true,
+      trafficStatsInvalid: true,
+      trafficStatsDeltaSec: Number(deltaSec.toFixed(3)),
+    };
+  }
+
+  return {
+    ...base,
+    trafficStatsDeltaRxBytes: mobileDeltaRx,
+    trafficStatsDeltaTxBytes: mobileDeltaTx,
+    trafficStatsTotalDeltaRxBytes: totalDeltaRx,
+    trafficStatsTotalDeltaTxBytes: totalDeltaTx,
+    trafficStatsDeltaSec: Number(deltaSec.toFixed(3)),
+    trafficStatsDlMbps: mobileDl,
+    trafficStatsUlMbps: mobileUl,
+    trafficStatsTotalDlMbps: totalDl,
+    trafficStatsTotalUlMbps: totalUl,
+    trafficStatsCounterReset: counterReset && !anyRate,
+    trafficStatsInvalid: !anyRate,
+  };
+}
+
+function trafficStatsField(metric, scope = "mobile") {
+  if (scope === "total") {
+    return metric === "ul" ? "trafficStatsTotalUlMbps" : "trafficStatsTotalDlMbps";
+  }
+  return metric === "ul" ? "trafficStatsUlMbps" : "trafficStatsDlMbps";
+}
+
+function isValidTrafficStatsSample(sample) {
+  const stats = sample?.trafficStats;
+  return Boolean(stats?.trafficStatsSupported && !stats?.trafficStatsInvalid);
+}
+
+function getTrafficStatsLive(metric, samples = []) {
+  const field = trafficStatsField(metric);
+  for (let index = samples.length - 1; index >= 0; index -= 1) {
+    const sample = samples[index];
+    if (!isActiveRfSample(sample)) continue;
+    if (!isValidTrafficStatsSample(sample)) continue;
+    const value = getNumber(sample.trafficStats?.[field]);
+    if (value !== null) return formatThroughputValue(value);
+  }
+  return "N/A";
+}
+
+function metricStatsFromTrafficSamples(samples, metric, scope = "mobile") {
+  const field = trafficStatsField(metric, scope);
+  const values = (samples || [])
+    .filter((sample) => isActiveRfSample(sample) && isValidTrafficStatsSample(sample))
+    .map((sample) => getNumber(sample.trafficStats?.[field]))
+    .filter((value) => value !== null);
+
+  if (!values.length) return { count: 0, avg: null, min: null, max: null };
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return {
+    count: values.length,
+    avg,
+    min: Math.min(...values),
+    max: Math.max(...values),
+  };
+}
+
+function getTrafficStatsExportFields(trafficStats = {}) {
+  const supported = trafficStats.trafficStatsSupported === true;
+  return {
+    traffic_stats_supported: supported ? "yes" : "no",
+    traffic_stats_source: trafficStats.trafficStatsSource || "mobile",
+    traffic_stats_mobile_rx_bytes: compactNumber(trafficStats.trafficStatsMobileRxBytes, 0),
+    traffic_stats_mobile_tx_bytes: compactNumber(trafficStats.trafficStatsMobileTxBytes, 0),
+    traffic_stats_delta_rx_bytes: compactNumber(trafficStats.trafficStatsDeltaRxBytes, 0),
+    traffic_stats_delta_tx_bytes: compactNumber(trafficStats.trafficStatsDeltaTxBytes, 0),
+    traffic_stats_delta_sec: compactNumber(trafficStats.trafficStatsDeltaSec, 3),
+    traffic_stats_dl_mbps: compactNumber(trafficStats.trafficStatsDlMbps, 2),
+    traffic_stats_ul_mbps: compactNumber(trafficStats.trafficStatsUlMbps, 2),
+    traffic_stats_total_rx_bytes: compactNumber(trafficStats.trafficStatsTotalRxBytes, 0),
+    traffic_stats_total_tx_bytes: compactNumber(trafficStats.trafficStatsTotalTxBytes, 0),
+    traffic_stats_total_delta_rx_bytes: compactNumber(trafficStats.trafficStatsTotalDeltaRxBytes, 0),
+    traffic_stats_total_delta_tx_bytes: compactNumber(trafficStats.trafficStatsTotalDeltaTxBytes, 0),
+    traffic_stats_total_dl_mbps: compactNumber(trafficStats.trafficStatsTotalDlMbps, 2),
+    traffic_stats_total_ul_mbps: compactNumber(trafficStats.trafficStatsTotalUlMbps, 2),
+    traffic_stats_counter_reset: trafficStats.trafficStatsCounterReset ? "yes" : "no",
+    traffic_stats_note: trafficStats.trafficStatsNote || TRAFFIC_STATS_NOTE,
+  };
+}
+
+function buildJsonTrafficStatsBlock(trafficStats = {}) {
+  if (!trafficStats || typeof trafficStats !== "object") return null;
+  return {
+    supported: trafficStats.trafficStatsSupported === true,
+    source: jsonText(trafficStats.trafficStatsSource) || "mobile",
+    delta_sec: jsonNumber(trafficStats.trafficStatsDeltaSec, 3),
+    counter_reset: trafficStats.trafficStatsCounterReset === true,
+    invalid: trafficStats.trafficStatsInvalid === true,
+    note: jsonText(trafficStats.trafficStatsNote) || TRAFFIC_STATS_NOTE,
+    mobile: {
+      supported: trafficStats.trafficStatsMobileSupported === true
+        || (trafficStats.trafficStatsMobileRxBytes != null && trafficStats.trafficStatsMobileTxBytes != null),
+      rx_bytes: jsonNumber(trafficStats.trafficStatsMobileRxBytes),
+      tx_bytes: jsonNumber(trafficStats.trafficStatsMobileTxBytes),
+      delta_rx_bytes: jsonNumber(trafficStats.trafficStatsDeltaRxBytes),
+      delta_tx_bytes: jsonNumber(trafficStats.trafficStatsDeltaTxBytes),
+      dl_mbps: jsonNumber(trafficStats.trafficStatsDlMbps, 2),
+      ul_mbps: jsonNumber(trafficStats.trafficStatsUlMbps, 2),
+    },
+    total: {
+      supported: trafficStats.trafficStatsTotalSupported === true
+        || (trafficStats.trafficStatsTotalRxBytes != null && trafficStats.trafficStatsTotalTxBytes != null),
+      rx_bytes: jsonNumber(trafficStats.trafficStatsTotalRxBytes),
+      tx_bytes: jsonNumber(trafficStats.trafficStatsTotalTxBytes),
+      delta_rx_bytes: jsonNumber(trafficStats.trafficStatsTotalDeltaRxBytes),
+      delta_tx_bytes: jsonNumber(trafficStats.trafficStatsTotalDeltaTxBytes),
+      dl_mbps: jsonNumber(trafficStats.trafficStatsTotalDlMbps, 2),
+      ul_mbps: jsonNumber(trafficStats.trafficStatsTotalUlMbps, 2),
+    },
+  };
+}
+
+function buildPausedGpsSample({ now, gps, session, mode }) {
   return {
     id: `${now}-${Math.random().toString(16).slice(2, 8)}`,
     timestamp: now,
     isoTime: new Date(now).toISOString(),
     mode,
     sessionId: session?.id || null,
-    recorded: Boolean(recording),
+    recordState: "paused",
+    recorded: false,
+    gps: normalizeGps(gps),
+    snapshot: null,
+    trafficStats: null,
+  };
+}
+
+function buildRfSample({ snapshot, now, gps, session, mode, recording }) {
+  const recordState = recording ? "active" : "paused";
+  return {
+    id: `${now}-${Math.random().toString(16).slice(2, 8)}`,
+    timestamp: now,
+    isoTime: new Date(now).toISOString(),
+    mode,
+    sessionId: session?.id || null,
+    recordState,
+    recorded: recordState === "active",
     gps: normalizeGps(gps),
     snapshot,
   };
@@ -1986,6 +2994,7 @@ function metricFromSnapshot(snapshot, metric) {
 
 function averageMetric(samples, metric) {
   let values = (samples || [])
+    .filter((sample) => isActiveRfSample(sample))
     .map((sample) => metricFromSnapshot(sample.snapshot, metric))
     .filter((value) => typeof value === "number" && Number.isFinite(value));
 
@@ -2012,6 +3021,7 @@ function formatMetric(value, unit = "", digits = 1) {
 
 function metricStats(samples, metric) {
   let values = (samples || [])
+    .filter((sample) => isActiveRfSample(sample))
     .map((sample) => metricFromSnapshot(sample.snapshot, metric))
     .filter((value) => typeof value === "number" && Number.isFinite(value));
 
@@ -2041,36 +3051,62 @@ function formatDuration(ms) {
 
 function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid, appTest }) {
   const list = Array.isArray(samples) ? samples : [];
+  const activeList = list.filter(isActiveRfSample);
   const first = list[0];
   const last = list[list.length - 1];
   const start = session?.startedAt || first?.timestamp || endedAt;
   const end = endedAt || last?.timestamp || Date.now();
   const gpsCount = list.filter((sample) => sample.gps?.lat && sample.gps?.lng).length;
-  const lastSnapshot = last?.snapshot || {};
+  const lastActiveSample = [...activeList].reverse().find((sample) => sample?.snapshot) || last;
+  const lastSnapshot = lastActiveSample?.snapshot || {};
+  const closedSession = {
+    ...session,
+    pauseSegments: closeOpenPauseSegment(session, end),
+    endedAt: session?.endedAt || endedAt,
+  };
+  const recordingStateSummary = buildRecordingStateSummary(closedSession, end);
 
-  const lteRsrpStats = metricStats(list, "lteRsrp");
-  const lteRsrqStats = metricStats(list, "lteRsrq");
-  const lteSinrStats = metricStats(list, "lteSinr");
-  const lteRssiStats = metricStats(list, "lteRssi");
-  const nrRsrpStats = metricStats(list, "nrRsrp");
-  const nrRsrqStats = metricStats(list, "nrRsrq");
-  const nrSinrStats = metricStats(list, "nrSinr");
-  const threeGRscpStats = metricStats(list, "threeGRscp");
-  const threeGEcnoStats = metricStats(list, "threeGEcno");
-  const threeGRssiStats = metricStats(list, "threeGRssi");
-  const twoGRssiStats = metricStats(list, "twoGRssi");
-  const twoGBerStats = metricStats(list, "twoGBer");
-  const twoGTimingAdvanceStats = metricStats(list, "twoGTimingAdvance");
+  const lteRsrpStats = metricStats(activeList, "lteRsrp");
+  const lteRsrqStats = metricStats(activeList, "lteRsrq");
+  const lteSinrStats = metricStats(activeList, "lteSinr");
+  const lteRssiStats = metricStats(activeList, "lteRssi");
+  const nrRsrpStats = metricStats(activeList, "nrRsrp");
+  const nrRsrqStats = metricStats(activeList, "nrRsrq");
+  const nrSinrStats = metricStats(activeList, "nrSinr");
+  const threeGRscpStats = metricStats(activeList, "threeGRscp");
+  const threeGEcnoStats = metricStats(activeList, "threeGEcno");
+  const threeGRssiStats = metricStats(activeList, "threeGRssi");
+  const twoGRssiStats = metricStats(activeList, "twoGRssi");
+  const twoGBerStats = metricStats(activeList, "twoGBer");
+  const twoGTimingAdvanceStats = metricStats(activeList, "twoGTimingAdvance");
+  const trafficStatsDlStats = metricStatsFromTrafficSamples(activeList, "dl");
+  const trafficStatsUlStats = metricStatsFromTrafficSamples(activeList, "ul");
+  const trafficStatsTotalDlStats = metricStatsFromTrafficSamples(activeList, "dl", "total");
+  const trafficStatsTotalUlStats = metricStatsFromTrafficSamples(activeList, "ul", "total");
   const appSource = appTest || session?.appTest || {};
-  const appIterationResults = Array.isArray(appSource.iterationResults) ? appSource.iterationResults : [];
-  const appDlMbps = getNumber(appSource.dlMbps);
-  const appUlMbps = getNumber(appSource.ulMbps);
-  const appIterationsRequested = clampInteger(appSource.iterationsRequested || appSource.iterations || DEFAULT_THP_ITERATIONS, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
-  const appCompletedIterations = clampInteger(appSource.completedIterations || appIterationResults.length || 0, 0, MAX_THP_ITERATIONS, 0);
+  const isOokla = appSource.testType === "ookla_app";
+  const isFcc = appSource.testType === "fcc_app";
+  const appIterationResults = (isOokla || isFcc)
+    ? []
+    : (Array.isArray(appSource.iterationResults) ? appSource.iterationResults : []);
+  const appDlMbps = (isOokla || isFcc) ? null : getNumber(appSource.dlMbps);
+  const appUlMbps = (isOokla || isFcc) ? null : getNumber(appSource.ulMbps);
+  const appIterationsRequested = (isOokla || isFcc)
+    ? 0
+    : clampInteger(appSource.iterationsRequested || appSource.iterations || DEFAULT_THP_ITERATIONS, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
+  const appCompletedIterations = (isOokla || isFcc)
+    ? 0
+    : clampInteger(appSource.completedIterations || appIterationResults.length || 0, 0, MAX_THP_ITERATIONS, 0);
   const appWaitSeconds = clampInteger(appSource.waitSeconds ?? DEFAULT_THP_WAIT_SECONDS, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
   const appDurationSeconds = clampInteger(appSource.durationSeconds ?? DEFAULT_THP_DURATION_SECONDS, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
   const appIntervalSeconds = clampInteger(appSource.intervalSeconds ?? DEFAULT_THP_INTERVAL_SECONDS, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
   const appWarmupSeconds = clampInteger(appSource.warmupSeconds ?? DEFAULT_THP_WARMUP_SECONDS, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
+  const kpiWarmupDurationSec = resolveKpiWarmupDurationSec({
+    kpiWarmupDurationSec: appSource.kpiWarmupDurationSec ?? session?.kpiWarmupDurationSec,
+    appWarmupSeconds: isOokla
+      ? (appSource.kpiWarmupDurationSec ?? appSource.warmupSeconds ?? DEFAULT_KPI_WARMUP_DURATION_SEC)
+      : appWarmupSeconds,
+  }, DEFAULT_KPI_WARMUP_DURATION_SEC);
   const appDirection = appSource.direction || DEFAULT_DATA_DIRECTION;
   const isIperf = appSource.testType === "iperf";
   const setupSnapshot = isIperf ? (appSource.setupSnapshot || {}) : null;
@@ -2115,15 +3151,103 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     appDirectionLabel: DATA_DIRECTIONS.find((item) => item.key === appDirection)?.label || appDirection,
   } : {};
 
+  const ooklaIterations = isOokla
+    ? (Array.isArray(appSource.ooklaEvidenceIterations) && appSource.ooklaEvidenceIterations.length
+      ? appSource.ooklaEvidenceIterations
+      : (appSource.ooklaEvidence ? [appSource.ooklaEvidence] : []))
+    : [];
+  const ooklaLatest = ooklaIterations[ooklaIterations.length - 1] || appSource.ooklaEvidence || null;
+
+  const ooklaMetadata = isOokla ? {
+    appTestType: "ookla_app",
+    appExternalEvidenceProvider: "ookla_app",
+    appOoklaEvidenceIterations: ooklaIterations,
+    appOoklaEvidence: ooklaLatest,
+    appOoklaCsvImportDebug: appSource.ooklaCsvImportDebug || null,
+    appExportStatus: mapOoklaExportStatus(appSource.status, ooklaLatest || {}, ooklaIterations),
+    appTestStartedAt: appSource.startedAt || null,
+    appTestEndedAt: appSource.endedAt || end,
+    appTestMessage: appSource.message || "OOKLA App manual evidence workflow.",
+    kpiWarmupDurationSec,
+  } : {};
+
+  const partialSessionForFcc = {
+    id: session?.id || `bd-rf-${start}`,
+    mode: session?.mode || mode || "data",
+    taskLabel: session?.taskLabel || taskLabel || "Active field task",
+    grid: session?.grid || grid || "Grid pending",
+    reportLogName: String(session?.reportLogName || "").trim(),
+    startedAt: start,
+    endedAt: end,
+    sampleCount: list.length,
+    activeSampleCount: activeList.length,
+    gpsCount,
+    rat: getCurrentRatName(lastSnapshot),
+    stats: {
+      lteRsrp: lteRsrpStats,
+      lteRsrq: lteRsrqStats,
+      lteSinr: lteSinrStats,
+      lteRssi: lteRssiStats,
+      nrRsrp: nrRsrpStats,
+      nrRsrq: nrRsrqStats,
+      nrSinr: nrSinrStats,
+      threeGRscp: threeGRscpStats,
+      threeGEcno: threeGEcnoStats,
+      threeGRssi: threeGRssiStats,
+      twoGRssi: twoGRssiStats,
+      twoGBer: twoGBerStats,
+      twoGTimingAdvance: twoGTimingAdvanceStats,
+      trafficStatsDl: trafficStatsDlStats,
+      trafficStatsUl: trafficStatsUlStats,
+      trafficStatsTotalDl: trafficStatsTotalDlStats,
+      trafficStatsTotalUl: trafficStatsTotalUlStats,
+    },
+    firstGps: first?.gps || null,
+    lastGps: [...list].reverse().find((sample) => sample.gps)?.gps || null,
+    trafficStatsAvgDlMbps: trafficStatsDlStats.avg,
+    trafficStatsAvgUlMbps: trafficStatsUlStats.avg,
+    trafficStatsSampleCount: Math.max(trafficStatsDlStats.count, trafficStatsUlStats.count),
+    trafficStatsSupported: list.some((sample) => sample?.trafficStats?.trafficStatsSupported),
+    trafficStatsMobileSupported: list.some((sample) => sample?.trafficStats?.trafficStatsMobileSupported),
+    trafficStatsTotalSupported: list.some((sample) => sample?.trafficStats?.trafficStatsTotalSupported),
+    trafficStatsTotalAvgDlMbps: trafficStatsTotalDlStats.avg,
+    trafficStatsTotalAvgUlMbps: trafficStatsTotalUlStats.avg,
+    trafficStatsTotalSampleCount: Math.max(trafficStatsTotalDlStats.count, trafficStatsTotalUlStats.count),
+    kpiWarmupDurationSec,
+    recordingStateSummary,
+    activeRecordingDurationMs: recordingStateSummary.activeDurationMs,
+    pausedDurationMs: recordingStateSummary.pausedDurationMs,
+    pauseSegmentCount: recordingStateSummary.pauseSegmentCount,
+    appTestStatus: appSource.status || "idle",
+  };
+
+  const fccMetadata = isFcc ? {
+    appTestType: "fcc_app",
+    appExternalEvidenceProvider: "fcc_app",
+    appFccGeneratedEvidence: buildFccGeneratedEvidenceSnapshot(partialSessionForFcc, {}),
+    appFccImport: appSource.appFccImport || null,
+    appExportStatus: mapFccExportStatus({ ...partialSessionForFcc, appTestStatus: appSource.status }),
+    appTestStartedAt: appSource.startedAt || null,
+    appTestEndedAt: appSource.endedAt || end,
+    appTestMessage: appSource.message || "FCC App session context recording.",
+  } : {};
+
   return {
     id: session?.id || `bd-rf-${start}`,
     mode: session?.mode || mode || "data",
     taskLabel: session?.taskLabel || taskLabel || "Active field task",
     grid: session?.grid || grid || "Grid pending",
+    reportLogName: String(session?.reportLogName || "").trim(),
+    pauseSegments: closedSession.pauseSegments || [],
+    recordingStateSummary,
+    activeRecordingDurationMs: recordingStateSummary.activeDurationMs,
+    pausedDurationMs: recordingStateSummary.pausedDurationMs,
+    pauseSegmentCount: recordingStateSummary.pauseSegmentCount,
     startedAt: start,
     endedAt: end,
     durationMs: Math.max(0, end - start),
     sampleCount: list.length,
+    activeSampleCount: activeList.length,
     gpsCount,
     rat: getCurrentRatName(lastSnapshot),
     avgLteRsrp: lteRsrpStats.avg,
@@ -2139,6 +3263,16 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     avgTwoGRssi: twoGRssiStats.avg,
     avgTwoGBer: twoGBerStats.avg,
     avgTwoGTimingAdvance: twoGTimingAdvanceStats.avg,
+    trafficStatsAvgDlMbps: trafficStatsDlStats.avg,
+    trafficStatsAvgUlMbps: trafficStatsUlStats.avg,
+    trafficStatsSampleCount: Math.max(trafficStatsDlStats.count, trafficStatsUlStats.count),
+    trafficStatsSupported: list.some((sample) => sample?.trafficStats?.trafficStatsSupported),
+    trafficStatsMobileSupported: list.some((sample) => sample?.trafficStats?.trafficStatsMobileSupported),
+    trafficStatsTotalSupported: list.some((sample) => sample?.trafficStats?.trafficStatsTotalSupported),
+    trafficStatsTotalAvgDlMbps: trafficStatsTotalDlStats.avg,
+    trafficStatsTotalAvgUlMbps: trafficStatsTotalUlStats.avg,
+    trafficStatsTotalSampleCount: Math.max(trafficStatsTotalDlStats.count, trafficStatsTotalUlStats.count),
+    kpiWarmupDurationSec,
     appDlMbps,
     appUlMbps,
     appDownloadBytes: appSource.downloadBytes || 0,
@@ -2156,6 +3290,8 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     appTestMessage: appSource.message || "Internal DL/UL test ready.",
     appTestError: appSource.error || "",
     ...iperfMetadata,
+    ...ooklaMetadata,
+    ...fccMetadata,
     stats: {
       lteRsrp: lteRsrpStats,
       lteRsrq: lteRsrqStats,
@@ -2170,6 +3306,10 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
       twoGRssi: twoGRssiStats,
       twoGBer: twoGBerStats,
       twoGTimingAdvance: twoGTimingAdvanceStats,
+      trafficStatsDl: trafficStatsDlStats,
+      trafficStatsUl: trafficStatsUlStats,
+      trafficStatsTotalDl: trafficStatsTotalDlStats,
+      trafficStatsTotalUl: trafficStatsTotalUlStats,
     },
     firstGps: first?.gps || null,
     lastGps: [...list].reverse().find((sample) => sample.gps)?.gps || null,
@@ -2228,14 +3368,17 @@ function buildTraceMapModel(traceSamples, maxPoints = 80) {
     }
     const rsrp = getSampleRsrp(sample);
     const sinr = metricFromSnapshot(sample.snapshot, "lteSinr") ?? metricFromSnapshot(sample.snapshot, "nrSinr");
+    const isPausedGps = sample.recordState === "paused";
     return {
       id: sample.id || `${sample.timestamp}-${index}`,
       x: Number.isFinite(x) ? Math.max(4, Math.min(96, x)) : 50,
       y: Number.isFinite(y) ? Math.max(6, Math.min(94, y)) : 50,
       rsrp,
       sinr,
-      className: getRsrpQualityClass(rsrp),
-      label: `${formatTime(sample.timestamp)} · RSRP ${displayValue(rsrp)} · SINR ${displayValue(sinr)}`,
+      className: isPausedGps ? "paused-gps" : getRsrpQualityClass(rsrp),
+      label: isPausedGps
+        ? `${formatTime(sample.timestamp)} · Paused GPS only`
+        : `${formatTime(sample.timestamp)} · RSRP ${displayValue(rsrp)} · SINR ${displayValue(sinr)}`,
       sample,
     };
   });
@@ -2402,6 +3545,7 @@ function getTraceLatLngs(traceSamples, maxPoints = 220) {
       rsrp: getSampleRsrp(sample),
       sinr: metricFromSnapshot(sample.snapshot, "lteSinr") ?? metricFromSnapshot(sample.snapshot, "nrSinr"),
       timestamp: sample.timestamp,
+      recordState: sample.recordState || (sample.recorded ? "active" : "paused"),
     }));
 }
 
@@ -2441,6 +3585,7 @@ function FitRfMapBounds({ bounds }) {
 }
 
 function qualityColor(className) {
+  if (className === "paused-gps") return "#64748b";
   if (className === "good") return "#22c55e";
   if (className === "fair") return "#f59e0b";
   if (className === "poor") return "#ef4444";
@@ -2497,16 +3642,25 @@ function RfLeafletSessionMap({ traceSamples, traceMap, activeTask, lastGpsLocati
         )}
 
         {tracePoints.map((point) => {
-          const className = getRsrpQualityClass(point.rsrp);
+          const isPausedGps = point.recordState === "paused";
+          const className = isPausedGps ? "paused-gps" : getRsrpQualityClass(point.rsrp);
           return (
             <CircleMarker
               key={point.id}
               center={point.position}
-              radius={4.5}
-              pathOptions={{ color: "#ffffff", weight: 1.4, fillColor: qualityColor(className), fillOpacity: 0.94 }}
+              radius={isPausedGps ? 4 : 4.5}
+              pathOptions={{
+                color: isPausedGps ? "#cbd5e1" : "#ffffff",
+                weight: isPausedGps ? 1 : 1.4,
+                fillColor: qualityColor(className),
+                fillOpacity: isPausedGps ? 0.45 : 0.94,
+                dashArray: isPausedGps ? "4 4" : undefined,
+              }}
             >
               <Tooltip direction="top" opacity={0.95}>
-                {formatTime(point.timestamp)} · RSRP {displayValue(point.rsrp)} · SINR {displayValue(point.sinr)}
+                {isPausedGps
+                  ? `${formatTime(point.timestamp)} · Paused GPS only`
+                  : `${formatTime(point.timestamp)} · RSRP ${displayValue(point.rsrp)} · SINR ${displayValue(point.sinr)}`}
               </Tooltip>
             </CircleMarker>
           );
@@ -2629,7 +3783,8 @@ export default function MobileRfKpi({
   const [exportFiles, setExportFiles] = useState([]);
   const [exportPackageName, setExportPackageName] = useState("");
   const [exportBasePath, setExportBasePath] = useState("");
-  const [dataSetupOpen, setDataSetupOpen] = useState(false);
+  const [dataSetupOpen, setDataSetupOpen] = useState(true);
+  const [advancedRfOpen, setAdvancedRfOpen] = useState(false);
   const [dataTestType, setDataTestType] = useState(DEFAULT_DATA_TEST_TYPE);
   const [dataDirection, setDataDirection] = useState(DEFAULT_DATA_DIRECTION);
   const [thpIterations, setThpIterations] = useState(String(DEFAULT_THP_ITERATIONS));
@@ -2643,12 +3798,15 @@ export default function MobileRfKpi({
   const [iperfSetup, setIperfSetup] = useState(DEFAULT_IPERF_SETUP);
   const [iperfBinaryStatus, setIperfBinaryStatus] = useState(null);
   const [ooklaSetup, setOoklaSetup] = useState(DEFAULT_OOKLA_SETUP);
+  const [ooklaDraftResetToken, setOoklaDraftResetToken] = useState(0);
+  const [ooklaCsvImportDebug, setOoklaCsvImportDebug] = useState(null);
   const [fccSetup, setFccSetup] = useState(DEFAULT_FCC_IMPORT_SETUP);
   const resolvedThpIterations = clampInteger(thpIterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
   const resolvedThpWaitSeconds = clampInteger(thpWaitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
   const resolvedThpDurationSeconds = clampInteger(thpDurationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
   const resolvedThpIntervalSeconds = clampInteger(thpIntervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
   const resolvedThpWarmupSeconds = clampInteger(thpWarmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_THP_WARMUP_SECONDS);
+  const [reportLogName, setReportLogName] = useState("");
   const [clockTick, setClockTick] = useState(Date.now());
   const [rfPollCount, setRfPollCount] = useState(0);
   const permissionRequestStarted = useRef(false);
@@ -2659,7 +3817,12 @@ export default function MobileRfKpi({
   const gpsRef = useRef(lastGpsLocation);
   const dataTestRef = useRef(dataTest);
   const throughputAbortRef = useRef(null);
+  const throughputPhaseAbortRef = useRef(null);
   const rfReadInFlightRef = useRef(false);
+  const collectorRunningRef = useRef(collectorRunning);
+  const sessionPausedRef = useRef(false);
+  const trafficStatsSkipBaselineRef = useRef(false);
+  const reportLogNameRef = useRef(reportLogName);
 
   const activeTask = useMemo(
     () => getActiveTask(inProcessTasks.length ? inProcessTasks : activeFieldTasks),
@@ -2809,7 +3972,13 @@ export default function MobileRfKpi({
   const visibleSession = activeSessionSummary || savedSession;
   const exportCandidateSession = savedSession || activeSessionSummary;
   const thpIsRunning = dataTest?.status === "running";
-  const canExportSession = Boolean(savedSession && !thpIsRunning && ((savedSession.sampleCount || 0) > 0 || savedSession?.appIterationResults?.length));
+  const canExportSession = Boolean(savedSession && !thpIsRunning && (
+    (savedSession.sampleCount || 0) > 0
+    || savedSession?.appIterationResults?.length
+    || savedSession?.appOoklaEvidence
+    || savedSession?.appOoklaEvidenceIterations?.length
+    || savedSession?.appFccGeneratedEvidence
+  ));
   const traceSamples = useMemo(
     () => getBestTraceSamples({ currentSession, sessionSamples, savedSession, samples }),
     [currentSession, sessionSamples, savedSession, samples]
@@ -2820,11 +3989,35 @@ export default function MobileRfKpi({
     () => (dataTest.testType === "iperf" || visibleSession?.appTestType === "iperf" ? flattenIperfIntervalRows(thpIterationRows) : []),
     [dataTest.testType, visibleSession?.appTestType, thpIterationRows],
   );
-  const kpiTableCollapsed = selectedMode === "data" && dataTest.status !== "idle";
+  const selectedTestLabel = DATA_TEST_TYPES.find((item) => item.key === dataTestType)?.label || "Data Test";
+  const recordingStateLabel = getStatusLabel(testState, selectedMode);
+  const mapHasGpsSamples = (visibleSession?.gpsCount || 0) > 0 || Boolean(traceMap?.hasRealGps);
+  const kpiLive = (kpiName) => {
+    const row = tableRows.find((item) => item.kpi === kpiName || String(item.kpi || "").startsWith(kpiName));
+    return row?.live ?? "N/A";
+  };
+  const summaryAppDl = (isOoklaContext({ dataTest, savedSession: visibleSession }) || isFccContext({ dataTest, savedSession: visibleSession }))
+    ? "N/A"
+    : formatThroughputWithUnit(formatThroughputLive("dl", { dataTest, savedSession: visibleSession }));
+  const summaryAppUl = (isOoklaContext({ dataTest, savedSession: visibleSession }) || isFccContext({ dataTest, savedSession: visibleSession }))
+    ? "N/A"
+    : formatThroughputWithUnit(formatThroughputLive("ul", { dataTest, savedSession: visibleSession }));
+  const summaryTrafficDl = getTrafficStatsLive("dl", samples);
+  const summaryTrafficUl = getTrafficStatsLive("ul", samples);
+  const summaryCallState = nativeSnapshot?.callState || "N/A";
 
   useEffect(() => {
     testStateRef.current = testState;
+    sessionPausedRef.current = testState === "paused";
   }, [testState]);
+
+  useEffect(() => {
+    collectorRunningRef.current = collectorRunning;
+  }, [collectorRunning]);
+
+  useEffect(() => {
+    reportLogNameRef.current = reportLogName;
+  }, [reportLogName]);
 
   useEffect(() => {
     selectedModeRef.current = selectedMode;
@@ -2882,6 +4075,26 @@ export default function MobileRfKpi({
   }
 
   async function refreshNativeSnapshot({ append = true } = {}) {
+    const isPausedSession = testStateRef.current === "paused" && collectorRunningRef.current;
+    const isRecordingSession = testStateRef.current === "recording" && collectorRunningRef.current;
+
+    if (isPausedSession && append) {
+      const readNow = Date.now();
+      setSamples((current) => {
+        const sample = buildPausedGpsSample({
+          now: readNow,
+          gps: gpsRef.current,
+          session: currentSessionRef.current,
+          mode: selectedModeRef.current,
+        });
+        return [...current.slice(-899), sample];
+      });
+      setCollectorMessage("Session paused. GPS-only samples continue.");
+      return null;
+    }
+
+    if (!isRecordingSession && append) return null;
+
     if (rfReadInFlightRef.current) return null;
     rfReadInFlightRef.current = true;
     setCollectorBusy(true);
@@ -2901,18 +4114,22 @@ export default function MobileRfKpi({
       setLastRfReadTime(readNow);
       setRfPollCount((count) => count + 1);
 
-      if (append && snapshot?.ok) {
-        setSamples((current) => [
-          ...current.slice(-899),
-          buildRfSample({
+      if (append && snapshot?.ok && isRecordingSession) {
+        setSamples((current) => {
+          const previousSample = [...current].reverse().find((item) => isActiveRfSample(item)) || current[current.length - 1] || null;
+          const skipTrafficDelta = trafficStatsSkipBaselineRef.current === true;
+          if (skipTrafficDelta) trafficStatsSkipBaselineRef.current = false;
+          const sample = buildRfSample({
             snapshot: { ...snapshot, babyDragonReadAt: readNow },
             now: readNow,
             gps: gpsRef.current,
             session: currentSessionRef.current,
             mode: selectedModeRef.current,
-            recording: testStateRef.current === "recording",
-          }),
-        ]);
+            recording: true,
+          });
+          sample.trafficStats = buildSampleTrafficStats(snapshot, previousSample, readNow, { skipDelta: skipTrafficDelta });
+          return [...current.slice(-899), sample];
+        });
       }
       return snapshot;
     } catch (error) {
@@ -2922,6 +4139,47 @@ export default function MobileRfKpi({
       rfReadInFlightRef.current = false;
       setCollectorBusy(false);
     }
+  }
+
+  function pauseRecording() {
+    if (testStateRef.current !== "recording" || !collectorRunningRef.current) return;
+    const now = Date.now();
+    const session = currentSessionRef.current;
+    if (!session) return;
+    const pauseSegments = [...(session.pauseSegments || []), { startedAt: now, endedAt: null }];
+    const nextSession = { ...session, pauseSegments };
+    currentSessionRef.current = nextSession;
+    setCurrentSession(nextSession);
+    testStateRef.current = "paused";
+    sessionPausedRef.current = true;
+    setTestState("paused");
+    if (dataTestRef.current?.status === "running" && dataTestRef.current?.testType === "native_http") {
+      if (throughputPhaseAbortRef.current) {
+        throughputPhaseAbortRef.current.abort();
+      }
+      patchDataTest({
+        phase: "session_paused",
+        message: NATIVE_HTTP_SESSION_PAUSED_MESSAGE,
+      });
+    }
+    setCollectorMessage("Session paused. GPS-only recording continues.");
+  }
+
+  function resumeRecording() {
+    if (testStateRef.current !== "paused" || !collectorRunningRef.current) return;
+    const now = Date.now();
+    const session = currentSessionRef.current;
+    if (!session) return;
+    const pauseSegments = closeOpenPauseSegment(session, now);
+    const nextSession = { ...session, pauseSegments };
+    currentSessionRef.current = nextSession;
+    setCurrentSession(nextSession);
+    testStateRef.current = "recording";
+    sessionPausedRef.current = false;
+    trafficStatsSkipBaselineRef.current = true;
+    setTestState("recording");
+    setCollectorMessage("Session resumed. RF and TrafficStats recording restored.");
+    refreshNativeSnapshot({ append: true });
   }
 
   function patchDataTest(patch) {
@@ -2953,10 +4211,22 @@ export default function MobileRfKpi({
     const phasesPerIteration = (runDl ? 1 : 0) + (runUl ? 1 : 0);
     const controller = new AbortController();
     throughputAbortRef.current = controller;
-    const sequenceTimeoutMs = ((maxPhaseDurationSeconds * 1000 + 12000) * Math.max(1, phasesPerIteration) * iterations) + (waitSeconds * 1000 * Math.max(0, iterations - 1)) + 8000;
+    const sequenceTimeoutMs = ((maxPhaseDurationSeconds * 1000 + 12000) * Math.max(1, phasesPerIteration) * iterations)
+      + (waitSeconds * 1000 * Math.max(0, iterations - 1))
+      + 8000
+      + (2 * 60 * 60 * 1000);
     const clearTimeout = buildTimedSignal(controller, sequenceTimeoutMs);
     const startedAt = Date.now();
     const iterationResults = [];
+
+    const reportNativeHttpPaused = () => {
+      if (throughputAbortRef.current !== controller) return;
+      patchDataTest({
+        status: "running",
+        phase: "session_paused",
+        message: NATIVE_HTTP_SESSION_PAUSED_MESSAGE,
+      });
+    };
 
     patchDataTest({
       status: "running",
@@ -2986,11 +4256,13 @@ export default function MobileRfKpi({
 
     try {
       for (let iteration = 1; iteration <= iterations; iteration += 1) {
+        await waitWhileSessionPaused(sessionPausedRef, controller.signal);
         const iterationStartedAt = Date.now();
         let dl = null;
         let ul = null;
 
         if (runDl) {
+          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
           patchDataTest({
             status: "running",
             phase: "download",
@@ -2998,36 +4270,66 @@ export default function MobileRfKpi({
             message: `Iteration ${iteration}/${iterations}: DL warmup ${warmupSeconds}s + measure ${dlDurationSeconds}s...`,
           });
 
-          dl = await measureDownloadThroughput({
-            signal: controller.signal,
-            config: { ...config, durationSeconds: dlDurationSeconds, intervalSeconds, warmupSeconds },
-            onProgress: (received) => {
-              if (throughputAbortRef.current === controller) {
-                patchDataTest({
-                  downloadBytes: received,
-                  currentIteration: iteration,
-                  message: `Iteration ${iteration}/${iterations}: downloading ${Math.round(received / 1024 / 1024)} MB...`,
-                });
-              }
-            },
+          dl = await measureThroughputPhaseWithSessionPause({
+            sessionPausedRef,
+            sequenceSignal: controller.signal,
+            phaseAbortRef: throughputPhaseAbortRef,
+            onPaused: reportNativeHttpPaused,
+            measureFn: (phaseSignal) => measureDownloadThroughput({
+              signal: phaseSignal,
+              config: { ...config, durationSeconds: dlDurationSeconds, intervalSeconds, warmupSeconds },
+              onProgress: (received) => {
+                if (sessionPausedRef.current) {
+                  reportNativeHttpPaused();
+                  return;
+                }
+                if (throughputAbortRef.current === controller) {
+                  patchDataTest({
+                    downloadBytes: received,
+                    currentIteration: iteration,
+                    message: `Iteration ${iteration}/${iterations}: downloading ${Math.round(received / 1024 / 1024)} MB...`,
+                  });
+                }
+              },
+            }),
           });
           if (throughputAbortRef.current !== controller) return;
+          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
         }
-
-        const interimDlResults = [...iterationResults, { iteration, dlMbps: dl?.mbps ?? null, ulMbps: null }];
-        patchDataTest({
-          dlMbps: averageThroughput(interimDlResults, "dlMbps") ?? dataTestRef.current.dlMbps,
-          phase: runUl ? "upload" : "iteration_complete",
-          currentIteration: iteration,
-          iterationResults: interimDlResults,
-          message: runUl ? `Iteration ${iteration}/${iterations}: UL warmup ${warmupSeconds}s + measure ${ulDurationSeconds}s...` : `Iteration ${iteration}/${iterations}: DL complete.`,
-        });
 
         if (runUl) {
-          ul = await measureUploadThroughput({ signal: controller.signal, config: { ...config, durationSeconds: ulDurationSeconds, intervalSeconds, warmupSeconds } });
+          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+          patchDataTest({
+            status: "running",
+            phase: "upload",
+            currentIteration: iteration,
+            dlMbps: runDl ? (dl?.mbps ?? dataTestRef.current.dlMbps) : dataTestRef.current.dlMbps,
+            message: `Iteration ${iteration}/${iterations}: UL warmup ${warmupSeconds}s + measure ${ulDurationSeconds}s...`,
+          });
+
+          ul = await measureThroughputPhaseWithSessionPause({
+            sessionPausedRef,
+            sequenceSignal: controller.signal,
+            phaseAbortRef: throughputPhaseAbortRef,
+            onPaused: reportNativeHttpPaused,
+            measureFn: (phaseSignal) => measureUploadThroughput({
+              signal: phaseSignal,
+              config: { ...config, durationSeconds: ulDurationSeconds, intervalSeconds, warmupSeconds },
+            }),
+          });
           if (throughputAbortRef.current !== controller) return;
+          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+        } else if (runDl) {
+          patchDataTest({
+            status: "running",
+            phase: "iteration_complete",
+            currentIteration: iteration,
+            message: `Iteration ${iteration}/${iterations}: DL complete.`,
+          });
         }
 
+        await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+        const iterationEndedAt = Date.now();
         const iterationResult = {
           iteration,
           dlMbps: dl?.mbps ?? null,
@@ -3046,7 +4348,7 @@ export default function MobileRfKpi({
           ulSource: ul?.source || "",
           source: [dl?.source, ul?.source].filter(Boolean).join(" + "),
           startedAt: iterationStartedAt,
-          endedAt: Date.now(),
+          endedAt: iterationEndedAt,
           durationSeconds,
           dlDurationSeconds,
           ulDurationSeconds,
@@ -3069,23 +4371,26 @@ export default function MobileRfKpi({
           completedIterations: iteration,
           currentIteration: iteration,
           iterationResults: [...iterationResults],
-          endedAt: iteration === iterations ? Date.now() : null,
+          endedAt: iteration === iterations ? iterationEndedAt : null,
           message: iteration === iterations
             ? `Complete ${iteration}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps.`
             : `Iteration ${iteration}/${iterations} complete. Waiting before next run...`,
         });
 
         if (iteration < iterations && waitSeconds > 0) {
+          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
           await waitForThroughputPause(waitSeconds, controller.signal, (remaining) => {
             if (throughputAbortRef.current === controller) {
               patchDataTest({
                 status: "running",
-                phase: "wait",
+                phase: sessionPausedRef.current ? "session_paused" : "wait",
                 currentIteration: iteration + 1,
-                message: `Waiting ${remaining}s before iteration ${iteration + 1}/${iterations}...`,
+                message: sessionPausedRef.current
+                  ? NATIVE_HTTP_SESSION_PAUSED_MESSAGE
+                  : `Waiting ${remaining}s before iteration ${iteration + 1}/${iterations}...`,
               });
             }
-          });
+          }, sessionPausedRef);
         }
       }
     } catch (error) {
@@ -3442,19 +4747,429 @@ export default function MobileRfKpi({
   }
 
 
+  function findNearestRfGpsSample(timestamp) {
+    const list = samplesRef.current || [];
+    if (!list.length || !timestamp) {
+      return {
+        sampleId: null,
+        timestamp: null,
+        isoTime: null,
+        gps: null,
+        trafficStatsRef: null,
+      };
+    }
+    let nearest = null;
+    let minDelta = Infinity;
+    list.forEach((sample) => {
+      const sampleTs = getNumber(sample?.timestamp);
+      if (sampleTs === null) return;
+      const delta = Math.abs(sampleTs - timestamp);
+      if (delta < minDelta) {
+        minDelta = delta;
+        nearest = sample;
+      }
+    });
+    if (!nearest) {
+      return {
+        sampleId: null,
+        timestamp: null,
+        isoTime: null,
+        gps: null,
+        trafficStatsRef: null,
+      };
+    }
+    const sampleId = nearest.sessionId && nearest.timestamp
+      ? `${nearest.sessionId}-${nearest.timestamp}`
+      : (nearest.timestamp ? String(nearest.timestamp) : null);
+    return {
+      sampleId,
+      timestamp: nearest.timestamp || null,
+      isoTime: nearest.timestamp ? new Date(nearest.timestamp).toISOString() : null,
+      gps: nearest.gps || null,
+        trafficStatsRef: nearest.trafficStats
+        ? {
+          trafficStatsSupported: nearest.trafficStats.trafficStatsSupported === true,
+          dlMbps: getNumber(nearest.trafficStats.trafficStatsDlMbps ?? nearest.trafficStats.dlMbps),
+          ulMbps: getNumber(nearest.trafficStats.trafficStatsUlMbps ?? nearest.trafficStats.ulMbps),
+          trafficStatsDlMbps: getNumber(nearest.trafficStats.trafficStatsDlMbps ?? nearest.trafficStats.dlMbps),
+          trafficStatsUlMbps: getNumber(nearest.trafficStats.trafficStatsUlMbps ?? nearest.trafficStats.ulMbps),
+        }
+        : null,
+    };
+  }
+
+  function buildOoklaScreenshotMetadata(screenshot, role = "main") {
+    if (!screenshot) return null;
+    const safeRole = role === "detailed" ? "detailed" : "main";
+    return {
+      role: screenshot.role || safeRole,
+      fileName: screenshot.fileName || `ookla-${safeRole}-screenshot`,
+      mimeType: screenshot.mimeType || "image/jpeg",
+      sizeBytes: getNumber(screenshot.sizeBytes) ?? 0,
+      capturedAt: screenshot.capturedAt || new Date().toISOString(),
+      storageKey: screenshot.storageKey || null,
+      exportRelativePath: screenshot.exportRelativePath || null,
+    };
+  }
+
+  function resolveOoklaIterationStatus(iterations = []) {
+    const confirmed = iterations.filter((item) => item.confirmation === "fe_confirmed");
+    if (confirmed.length === iterations.length && iterations.length > 0) return "evidence_saved";
+    if (confirmed.length > 0) return "evidence_partial";
+    if (iterations.length) return "evidence_draft";
+    return "external_ready";
+  }
+
+  async function saveOoklaEvidenceIteration(draft) {
+    const draftDl = parseOoklaOptionalNumber(draft?.dlMbps);
+    const draftUl = parseOoklaOptionalNumber(draft?.ulMbps);
+    if (draftDl === null || draftUl === null) {
+      patchDataTest({
+        message: "Enter or auto-fill DL and UL before saving OOKLA iteration.",
+      });
+      return { ok: false, reason: "missing_dl_ul" };
+    }
+
+    const savedAt = new Date().toISOString();
+    const capturedAt = savedAt;
+    const capturedTs = Date.parse(capturedAt) || Date.now();
+    const feConfirmed = Boolean(draft?.feConfirmed);
+    const existing = Array.isArray(dataTestRef.current.ooklaEvidenceIterations)
+      ? dataTestRef.current.ooklaEvidenceIterations
+      : [];
+    const iterationNumber = existing.length + 1;
+    const mainScreenshot = buildOoklaScreenshotMetadata(draft?.mainScreenshot || draft?.screenshot, "main");
+    const detailedScreenshot = buildOoklaScreenshotMetadata(draft?.detailedScreenshot, "detailed");
+    const evidenceSource = String(draft?.evidenceSource || "ookla_app_manual_v1h3");
+    const iteration = {
+      iterationNumber,
+      provider: "ookla_app",
+      source: evidenceSource.includes("csv") ? "ookla_csv_import" : "ookla_app_manual_v1h3",
+      evidenceSource,
+      evidenceType: "external_manual",
+      confirmation: feConfirmed ? "fe_confirmed" : "draft",
+      capturedAt,
+      savedAt,
+      feConfirmedAt: feConfirmed ? savedAt : null,
+      dlMbps: parseOoklaOptionalNumber(draft?.dlMbps),
+      ulMbps: parseOoklaOptionalNumber(draft?.ulMbps),
+      pingMs: parseOoklaOptionalNumber(draft?.pingMs),
+      jitterMs: parseOoklaOptionalNumber(draft?.jitterMs),
+      serverName: String(draft?.serverName || "").trim(),
+      serverLocation: String(draft?.serverLocation || "").trim(),
+      providerName: String(draft?.providerName || "").trim(),
+      resultUrl: String(draft?.resultUrl || "").trim(),
+      resultId: String(draft?.resultId || "").trim(),
+      testDateTime: String(draft?.testDateTime || draft?.ooklaDateTime || "").trim(),
+      ooklaDateTime: String(draft?.ooklaDateTime || draft?.testDateTime || "").trim(),
+      connectionType: String(draft?.connectionType || "").trim(),
+      deviceName: String(draft?.deviceName || "").trim(),
+      connectionsMode: String(draft?.connectionsMode || "").trim(),
+      packetLossPercent: parseOoklaOptionalNumber(draft?.packetLossPercent),
+      ooklaUserLatitude: parseOoklaOptionalNumber(draft?.ooklaUserLatitude),
+      ooklaUserLongitude: parseOoklaOptionalNumber(draft?.ooklaUserLongitude),
+      downloadSizeBytes: parseOoklaOptionalNumber(draft?.downloadSizeBytes),
+      uploadSizeBytes: parseOoklaOptionalNumber(draft?.uploadSizeBytes),
+      internalIp: String(draft?.internalIp || "").trim(),
+      externalIp: String(draft?.externalIp || "").trim(),
+      notes: String(draft?.notes || "").trim(),
+      csvImportMeta: draft?.csvImportMeta || null,
+      mainScreenshot,
+      detailedScreenshot,
+      screenshot: mainScreenshot,
+      ocrAssistUsed: Boolean(draft?.ocrAssistUsed || draft?.mainOcrAssistUsed || draft?.detailedOcrAssistUsed),
+      mainOcrAssistUsed: Boolean(draft?.mainOcrAssistUsed),
+      detailedOcrAssistUsed: Boolean(draft?.detailedOcrAssistUsed),
+      ocrConfidence: getNumber(draft?.ocrConfidence),
+      ocrSource: draft?.ocrSource ? String(draft.ocrSource) : null,
+      ocrExtractedFields: draft?.ocrExtractedFields || {},
+      detailedOcrExtractedFields: draft?.detailedOcrExtractedFields || {},
+      userConfirmedFields: feConfirmed
+        ? {
+          dlMbps: parseOoklaOptionalNumber(draft?.dlMbps),
+          ulMbps: parseOoklaOptionalNumber(draft?.ulMbps),
+          pingMs: parseOoklaOptionalNumber(draft?.pingMs),
+          jitterMs: parseOoklaOptionalNumber(draft?.jitterMs),
+          serverName: String(draft?.serverName || "").trim(),
+          serverLocation: String(draft?.serverLocation || "").trim(),
+          providerName: String(draft?.providerName || "").trim(),
+          resultId: String(draft?.resultId || "").trim(),
+          resultUrl: String(draft?.resultUrl || "").trim(),
+          testDateTime: String(draft?.testDateTime || "").trim(),
+          connectionType: String(draft?.connectionType || "").trim(),
+          deviceName: String(draft?.deviceName || "").trim(),
+          connectionsMode: String(draft?.connectionsMode || "").trim(),
+          packetLossPercent: parseOoklaOptionalNumber(draft?.packetLossPercent),
+          ooklaUserLatitude: parseOoklaOptionalNumber(draft?.ooklaUserLatitude),
+          ooklaUserLongitude: parseOoklaOptionalNumber(draft?.ooklaUserLongitude),
+        }
+        : (draft?.userConfirmedFields || {}),
+      ocrRawTextPreview: String(draft?.ocrRawTextPreview || "").trim(),
+      detailedOcrRawTextPreview: String(draft?.detailedOcrRawTextPreview || "").trim(),
+      mainOcrDebug: draft?.mainOcrDebug || draft?.ocrDebug || null,
+      detailedOcrDebug: draft?.detailedOcrDebug || null,
+      ocrDebug: draft?.mainOcrDebug || draft?.ocrDebug || null,
+      urlFetchStatus: String(draft?.urlFetchStatus || "not_attempted"),
+      urlExtractedFields: draft?.urlExtractedFields || {},
+      urlAssistUsed: Boolean(draft?.urlAssistUsed),
+      evidenceCompleteness: String(draft?.evidenceCompleteness || "partial"),
+      requiredEvidenceStatus: String(draft?.requiredEvidenceStatus || draft?.evidenceCompleteness || "partial"),
+      optionalMissingFields: Array.isArray(draft?.optionalMissingFields) ? draft.optionalMissingFields : (Array.isArray(draft?.missingFields) ? draft.missingFields : []),
+      missingFields: Array.isArray(draft?.missingFields) ? draft.missingFields : [],
+      valueSource: String(draft?.valueSource || "manual"),
+      fieldSources: draft?.fieldSources || {},
+      nearestSample: findNearestRfGpsSample(capturedTs),
+    };
+    const iterations = [...existing, iteration];
+    const status = resolveOoklaIterationStatus(iterations);
+
+    patchDataTest({
+      testType: "ookla_app",
+      phase: "ookla_app",
+      status,
+      ooklaEvidenceIterations: iterations,
+      ooklaEvidence: iteration,
+      message: `OOKLA iteration ${iterationNumber} saved. RF/GPS recording remains active.`,
+    });
+    setOoklaDraftResetToken((value) => value + 1);
+  }
+
+  async function saveOoklaEvidence(draft) {
+    return saveOoklaEvidenceIteration(draft);
+  }
+
+  function buildOoklaIterationDedupeKey(item = {}) {
+    const resultId = String(item?.resultId || "").trim();
+    if (resultId) return `id:${resultId}`;
+    const resultUrl = String(item?.resultUrl || "").trim().toLowerCase();
+    if (resultUrl) return `url:${resultUrl}`;
+    // Empty / incomplete rows must not collapse to combo:||| or bypass identity checks.
+    if (!isExportableOoklaIteration(item)) return null;
+    const date = String(item?.ooklaDateTime || item?.testDateTime || "").trim().toLowerCase();
+    const dl = parseOoklaOptionalNumber(item?.dlMbps);
+    const ul = parseOoklaOptionalNumber(item?.ulMbps);
+    const ping = parseOoklaOptionalNumber(item?.pingMs);
+    if (!date) return null;
+    return `combo:${date}|${dl ?? ""}|${ul ?? ""}|${ping ?? ""}`;
+  }
+
+  async function saveOoklaCsvIterations(drafts = [], debugPayload = null) {
+    const list = Array.isArray(drafts) ? drafts : [];
+    if (!list.length) return { added: 0, skippedDuplicates: 0 };
+    if (debugPayload) {
+      setOoklaCsvImportDebug(debugPayload);
+      patchDataTest({
+        ooklaCsvImportDebug: debugPayload,
+      });
+    }
+
+    const existing = Array.isArray(dataTestRef.current.ooklaEvidenceIterations)
+      ? dataTestRef.current.ooklaEvidenceIterations
+      : [];
+    const existingKeys = new Set(
+      existing.map((item) => buildOoklaIterationDedupeKey(item)).filter(Boolean),
+    );
+    let nextIterations = [...existing];
+    const savedAt = new Date().toISOString();
+    let added = 0;
+    let skippedDuplicates = 0;
+
+    list.forEach((draft) => {
+      if (!isExportableOoklaIteration(draft)) {
+        return;
+      }
+      const dedupeKey = buildOoklaIterationDedupeKey(draft);
+      if (!dedupeKey) return;
+      if (existingKeys.has(dedupeKey)) {
+        skippedDuplicates += 1;
+        return;
+      }
+      existingKeys.add(dedupeKey);
+      const iterationNumber = nextIterations.length + 1;
+      const capturedTs = Date.parse(draft?.ooklaDateTime) || Date.now();
+      const feConfirmed = Boolean(draft?.feConfirmed);
+      const requiredOk = Boolean(
+        parseOoklaOptionalNumber(draft?.dlMbps) !== null
+        && parseOoklaOptionalNumber(draft?.ulMbps) !== null
+        && (String(draft?.resultId || "").trim() || String(draft?.resultUrl || "").trim())
+        && (String(draft?.ooklaDateTime || draft?.testDateTime || "").trim()),
+      );
+      const confirmation = feConfirmed && requiredOk ? "fe_confirmed" : "draft";
+      const optionalMissing = Array.isArray(draft?.missingFields) ? draft.missingFields : [];
+      nextIterations = [...nextIterations, {
+        iterationNumber,
+        provider: "ookla_app",
+        source: "ookla_csv_import",
+        evidenceSource: "ookla_csv_import",
+        evidenceType: "external_manual",
+        confirmation,
+        capturedAt: savedAt,
+        savedAt,
+        feConfirmedAt: confirmation === "fe_confirmed" ? savedAt : null,
+        dlMbps: parseOoklaOptionalNumber(draft?.dlMbps),
+        ulMbps: parseOoklaOptionalNumber(draft?.ulMbps),
+        pingMs: parseOoklaOptionalNumber(draft?.pingMs),
+        jitterMs: parseOoklaOptionalNumber(draft?.jitterMs),
+        serverName: String(draft?.serverName || "").trim(),
+        serverLocation: String(draft?.serverLocation || "").trim(),
+        providerName: String(draft?.providerName || "").trim(),
+        resultUrl: String(draft?.resultUrl || "").trim(),
+        resultId: String(draft?.resultId || "").trim(),
+        testDateTime: String(draft?.testDateTime || draft?.ooklaDateTime || "").trim(),
+        ooklaDateTime: String(draft?.ooklaDateTime || draft?.testDateTime || "").trim(),
+        connectionType: String(draft?.connectionType || "").trim(),
+        deviceName: "",
+        connectionsMode: "",
+        packetLossPercent: null,
+        ooklaUserLatitude: parseOoklaOptionalNumber(draft?.ooklaUserLatitude),
+        ooklaUserLongitude: parseOoklaOptionalNumber(draft?.ooklaUserLongitude),
+        downloadSizeBytes: parseOoklaOptionalNumber(draft?.downloadSizeBytes),
+        uploadSizeBytes: parseOoklaOptionalNumber(draft?.uploadSizeBytes),
+        internalIp: String(draft?.internalIp || "").trim(),
+        externalIp: String(draft?.externalIp || "").trim(),
+        notes: String(draft?.notes || "").trim(),
+        mainScreenshot: null,
+        detailedScreenshot: null,
+        screenshot: null,
+        ocrAssistUsed: false,
+        mainOcrAssistUsed: false,
+        detailedOcrAssistUsed: false,
+        evidenceCompleteness: String(draft?.evidenceCompleteness || (requiredOk ? "complete" : "partial")),
+        requiredEvidenceStatus: requiredOk ? "complete" : "partial",
+        optionalMissingFields: optionalMissing,
+        missingFields: optionalMissing,
+        valueSource: "ookla_csv_import",
+        fieldSources: draft?.fieldSources || {},
+        csvImportMeta: draft?.csvImportMeta || null,
+        nearestSample: findNearestRfGpsSample(capturedTs),
+      }];
+      added += 1;
+    });
+
+    const status = resolveOoklaIterationStatus(nextIterations);
+    const skipNote = skippedDuplicates > 0 ? ` Duplicate OOKLA CSV rows skipped: ${skippedDuplicates}.` : "";
+    patchDataTest({
+      testType: "ookla_app",
+      phase: "ookla_app",
+      status,
+      ooklaEvidenceIterations: nextIterations,
+      ooklaEvidence: nextIterations[nextIterations.length - 1] || null,
+      ooklaCsvImportDebug: debugPayload || dataTestRef.current.ooklaCsvImportDebug || ooklaCsvImportDebug,
+      message: `Added ${added} OOKLA CSV iteration(s).${skipNote} RF/GPS recording remains active.`,
+    });
+    return { added, skippedDuplicates };
+  }
+
+  function resetOoklaEvidenceDraft() {
+    setOoklaDraftResetToken((value) => value + 1);
+    patchDataTest({
+      message: "Current OOKLA iteration draft cleared. RF/GPS recording remains active.",
+    });
+  }
+
+  function resetAllOoklaEvidence() {
+    patchDataTest({
+      testType: "ookla_app",
+      phase: "ookla_app",
+      status: "external_ready",
+      ooklaEvidenceIterations: [],
+      ooklaEvidence: null,
+      message: "All OOKLA iterations cleared. RF/GPS recording remains active.",
+    });
+    setOoklaDraftResetToken((value) => value + 1);
+  }
+
+  function readFccImportFileAsText(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(reader.error || new Error("Unable to read FCC import file."));
+      reader.readAsText(file);
+    });
+  }
+
+  async function handleFccImportFile(file) {
+    if (!file) return;
+
+    const fileName = file.name || "fcc-export";
+    const mimeType = file.type || "application/octet-stream";
+    const sizeBytes = Number.isFinite(file.size) ? file.size : 0;
+    const importedAt = new Date().toISOString();
+    const extension = String(fileName.split(".").pop() || "").toLowerCase();
+
+    let detectedFormat = "unknown";
+    let parseStatus = "unknown";
+    let status = "not_imported";
+    let truncateStatus = "not_run";
+    let rawTextPreview = null;
+    let message = "Import metadata captured.";
+
+    if (extension === "zip") {
+      detectedFormat = "zip";
+      parseStatus = "zip_pending_sample";
+      status = "zip_pending_sample";
+      message = "ZIP support pending sample export structure.";
+    } else if (extension === "csv" || extension === "json" || extension === "txt") {
+      detectedFormat = extension;
+      try {
+        const text = await readFccImportFileAsText(file);
+        rawTextPreview = text.slice(0, 2000);
+        parseStatus = "imported_raw";
+        status = "imported_raw";
+        message = "Raw import captured. Truncate will run after FCC parser is implemented with sample schema.";
+      } catch (error) {
+        parseStatus = "read_failed";
+        status = "read_failed";
+        message = String(error?.message || error || "Unable to read FCC import file.");
+      }
+    } else {
+      parseStatus = "unsupported_format";
+      status = "unsupported_format";
+      message = "Unsupported FCC import format. Use CSV, JSON, TXT, or ZIP.";
+    }
+
+    const importMeta = {
+      fileName,
+      mimeType,
+      sizeBytes,
+      importedAt,
+      detectedFormat,
+      parseStatus,
+      status,
+      rawTextPreview,
+      rowCount: null,
+      truncatedRowCount: null,
+      timestampColumn: null,
+      truncateStatus,
+      timestampBufferSeconds: getNumber(fccSetup.timestampBufferSeconds) ?? 30,
+      message,
+    };
+
+    setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
+    patchDataTest({
+      appFccImport: importMeta,
+      message: message,
+    });
+  }
+
   async function armWorkflow(mode) {
     const now = Date.now();
+    const sessionReportName = String(reportLogNameRef.current || "").trim();
     const session = {
       id: `bd-rf-${now}`,
       mode,
       startedAt: now,
       taskLabel: activeTaskLabel,
       grid: activeGrid,
+      reportLogName: sessionReportName,
+      pauseSegments: [],
     };
 
     selectedModeRef.current = mode;
     currentSessionRef.current = session;
     testStateRef.current = "recording";
+    sessionPausedRef.current = false;
+    trafficStatsSkipBaselineRef.current = false;
     setSelectedMode(mode);
     setCurrentSession(session);
     setSavedSession(null);
@@ -3465,6 +5180,7 @@ export default function MobileRfKpi({
     setClockTick(now);
     setTestState("recording");
     setCollectorRunning(true);
+    collectorRunningRef.current = true;
     setSamples([]);
     await refreshNativeSnapshot({ append: true });
     if (mode === "data") {
@@ -3476,6 +5192,17 @@ export default function MobileRfKpi({
         runIperfThroughputTest(session.id, currentDataTestConfig);
       } else {
         const label = DATA_TEST_TYPES.find((item) => item.key === currentDataTestConfig.testType)?.label || currentDataTestConfig.testType;
+        const externalTestType = currentDataTestConfig.testType;
+        let externalMessage = `${label} selected. BabyDragon is recording RF/GPS timestamps. Import/screenshot capture comes in the next focused step.`;
+        if (externalTestType === "ookla_app") {
+          externalMessage = "OOKLA App selected. BabyDragon is recording RF/GPS timestamps. Run the OOKLA Speedtest app, return here, and save manual FE-confirmed evidence.";
+        } else if (externalTestType === "fcc_app") {
+          externalMessage = "FCC App selected. BabyDragon is recording RF/GPS timestamps. Run the FCC app externally. After the session, import the FCC export file to truncate by BabyDragon start/end time.";
+        }
+        const ooklaKpiWarmup = resolveKpiWarmupDurationSec({
+          kpiWarmupDurationSec: currentDataTestConfig?.ookla?.kpiWarmupDurationSec,
+          appWarmupSeconds: currentDataTestConfig.warmupSeconds,
+        }, DEFAULT_KPI_WARMUP_DURATION_SEC);
         patchDataTest({
           status: "external_ready",
           phase: currentDataTestConfig.testType,
@@ -3485,12 +5212,13 @@ export default function MobileRfKpi({
           waitSeconds: currentDataTestConfig.waitSeconds,
           durationSeconds: currentDataTestConfig.durationSeconds,
           intervalSeconds: currentDataTestConfig.intervalSeconds,
-          warmupSeconds: currentDataTestConfig.warmupSeconds,
+          warmupSeconds: externalTestType === "ookla_app" ? ooklaKpiWarmup : currentDataTestConfig.warmupSeconds,
+          kpiWarmupDurationSec: externalTestType === "ookla_app" ? ooklaKpiWarmup : undefined,
           setupSnapshot: currentDataTestConfig,
           sessionId: session.id,
           startedAt: now,
           endedAt: null,
-          message: `${label} selected. BabyDragon is recording RF/GPS timestamps. Import/screenshot capture comes in the next focused step.`,
+          message: externalMessage,
         });
       }
     }
@@ -3498,14 +5226,22 @@ export default function MobileRfKpi({
 
   function stopWorkflow() {
     const endedAt = Date.now();
-    const session = currentSessionRef.current || {
+    const baseSession = currentSessionRef.current || {
       id: `bd-rf-${endedAt}`,
       mode: selectedModeRef.current,
       startedAt: samplesRef.current[0]?.timestamp || endedAt,
       taskLabel: activeTaskLabel,
       grid: activeGrid,
+      reportLogName: String(reportLogNameRef.current || "").trim(),
+      pauseSegments: [],
     };
-    const recorded = samplesRef.current.filter((sample) => sample.sessionId === session.id || sample.recorded);
+    const session = {
+      ...baseSession,
+      reportLogName: String(baseSession.reportLogName || reportLogNameRef.current || "").trim(),
+      pauseSegments: closeOpenPauseSegment(baseSession, endedAt),
+      endedAt,
+    };
+    const recorded = samplesRef.current.filter((sample) => sample.sessionId === session.id || sample.recorded || sample.recordState === "paused");
     const sessionList = recorded.length ? recorded : samplesRef.current;
     if (throughputAbortRef.current && dataTestRef.current?.status === "running") {
       throughputAbortRef.current.abort();
@@ -3520,7 +5256,7 @@ export default function MobileRfKpi({
     setDataTest(finalDataTest);
 
     setSavedSession(buildSessionSummary({
-      session: { ...session, endedAt },
+      session,
       samples: sessionList,
       endedAt,
       mode: selectedModeRef.current,
@@ -3529,10 +5265,12 @@ export default function MobileRfKpi({
       appTest: finalDataTest,
     }));
     currentSessionRef.current = null;
-    testStateRef.current = "paused";
+    testStateRef.current = "saved";
+    sessionPausedRef.current = false;
+    collectorRunningRef.current = false;
     setCurrentSession(null);
     setClockTick(endedAt);
-    setTestState("paused");
+    setTestState("saved");
     setCollectorRunning(false);
   }
 
@@ -3549,7 +5287,7 @@ export default function MobileRfKpi({
       return;
     }
     const sessionToExport = savedSession;
-    if (!sessionToExport || (!sessionToExport.sampleCount && !sessionToExport?.appIterationResults?.length)) {
+    if (!sessionToExport || (!sessionToExport.sampleCount && !sessionToExport?.appIterationResults?.length && !sessionToExport?.appOoklaEvidence && !sessionToExport?.appOoklaEvidenceIterations?.length && !sessionToExport?.appFccGeneratedEvidence)) {
       setExportStatus("Tap Stop / Save first, then export the saved report package.");
       return;
     }
@@ -3565,9 +5303,16 @@ export default function MobileRfKpi({
       setExportFiles(files);
       setExportPackageName(reportPackage.displayName || result?.displayName || reportPackage.sessionId);
       setExportBasePath(result?.basePath || "Downloads/BabyDragon/Reports");
+      const exportExtra = reportPackage.iperfSession
+        ? " iPerf3 CSV + JSON included."
+        : reportPackage.ooklaSession
+          ? " OOKLA package: Report.json + RF_GPS_Trace.csv + OOKLA_Evidence.csv."
+          : reportPackage.fccSession
+            ? " FCC Evidence CSV + JSON included."
+            : "";
       setExportStatus(result?.fallback
-        ? `Report package downloaded: ${files.length} files.${reportPackage.iperfSession ? " iPerf3 CSV + JSON included." : ""}`
-        : `Report package saved successfully: ${files.length} files.${reportPackage.iperfSession ? " iPerf3 CSV + JSON included." : ""}`);
+        ? `Report package downloaded: ${files.length} files.${exportExtra}`
+        : `Report package saved successfully: ${files.length} files.${exportExtra}`);
     } catch (error) {
       setExportStatus(error?.message || "Report export failed.");
     }
@@ -3618,19 +5363,34 @@ export default function MobileRfKpi({
     if (throughputAbortRef.current) throughputAbortRef.current.abort();
   }, []);
 
+  function handleReportLogNameChange(value) {
+    setReportLogName(value);
+    reportLogNameRef.current = value;
+    if (currentSessionRef.current) {
+      const nextSession = {
+        ...currentSessionRef.current,
+        reportLogName: String(value || "").trim(),
+      };
+      currentSessionRef.current = nextSession;
+      setCurrentSession(nextSession);
+    }
+  }
+
   function togglePanel(panelName) {
     setOpenPanel((current) => (current === panelName ? "none" : panelName));
   }
 
   return (
-    <section className="bd-mobile-rf-view bd-mobile-rf-compact">
-      <section className="bd-mobile-card bd-rf-control-card">
+    <section className="bd-mobile-rf-view bd-mobile-rf-compact bd-rf-ux-simplified">
+      <section className="bd-mobile-card bd-rf-control-card bd-rf-top-summary">
         <div className="bd-rf-compact-head">
           <div>
             <p className="bd-mobile-eyebrow">Android Info RF KPI</p>
             <h2>RF Cockpit</h2>
             <span>
-              {hasRunningTask ? "Task live" : "Ready"} · {getStatusLabel(testState, selectedMode)} · Samples {sampleCount} · Duration {formatDuration(visibleSession?.durationMs || 0)} · Last RF {formatTime(lastRfReadTime)}
+              {recordingStateLabel}
+              {selectedMode === "data" ? ` · ${selectedTestLabel}` : " · Voice"}
+              {" · "}Samples {sampleCount}
             </span>
           </div>
           <button type="button" onClick={() => togglePanel("about")}>Info</button>
@@ -3638,18 +5398,38 @@ export default function MobileRfKpi({
 
         {openPanel === "about" && (
           <p className="bd-rf-inline-note">
-            BabyDragon now reads public Android CellInfo plus SignalStrength fallback. LTE anchor identity comes from CellInfo when available. Missing SINR/RF values can be filled from SignalStrength. NR values stay blank unless Android exposes real NR RF or NR cell data.
+            BabyDragon reads public Android CellInfo plus SignalStrength fallback. Missing values stay blank unless Android exposes them.
           </p>
         )}
 
-        <div className="bd-rf-context-strip bd-rf-context-strip-f3">
-          <span><b>FE</b>{user?.email || "Signed in FE"}</span>
+        <div className="bd-rf-context-strip bd-rf-context-strip-compact">
           <span><b>Task</b>{activeTaskLabel}</span>
+          <span><b>FE</b>{user?.email || "Signed in FE"}</span>
           <span><b>Grid</b>{activeGrid}</span>
           <span><b>GPS</b>{formatGps(lastGpsLocation)}</span>
-          <span><b>RF Poll</b>{rfPollCount ? `#${nativeSnapshot?.snapshotSequence || rfPollCount} · ${formatLocalDateTime(lastRfReadTime)}` : "Waiting"}</span>
-          <span><b>RF Rule</b>Android may repeat cached RSRP/RSRQ; BabyDragon records every read.</span>
+          <span><b>Test</b>{selectedMode === "data" ? selectedTestLabel : "Voice Test"}</span>
+          <span><b>State</b>{recordingStateLabel}</span>
         </div>
+
+        <label className="bd-rf-report-name-field">
+          <span>Log / Report Name</span>
+          <input
+            type="text"
+            value={reportLogName}
+            placeholder="Optional custom export name"
+            onChange={(event) => handleReportLogNameChange(event.target.value)}
+          />
+        </label>
+
+        <p className="bd-rf-helper-line">Select a test type, then press Start Data.</p>
+
+        {(testState === "paused" || testState === "recording") && collectorRunning ? (
+          <p className="bd-rf-inline-note bd-rf-pause-note">
+            {testState === "paused"
+              ? "Paused: GPS only. RF and TrafficStats suspended."
+              : "Recording RF, GPS, and TrafficStats."}
+          </p>
+        ) : null}
 
         <div className="bd-rf-mode-toggle">
           <button
@@ -3669,34 +5449,34 @@ export default function MobileRfKpi({
         </div>
 
         {selectedMode === "data" && (
-          <section className={`bd-rf-data-setup-card ${dataSetupOpen ? "open" : "collapsed"} ${dataTestType === "iperf" ? "iperf-setup" : ""}`}>
+          <section className={`bd-rf-data-setup-card open ${dataTestType === "iperf" ? "iperf-setup" : ""}`}>
             <div className="bd-rf-data-setup-head bd-rf-data-setup-head-compact">
               <div>
-                <b>Data Test Setup</b>
+                <b>Test Type</b>
                 <span className="bd-rf-data-setup-summary-oneline">{currentDataTestSummary}</span>
               </div>
               <button type="button" onClick={() => setDataSetupOpen((current) => !current)}>
-                {dataSetupOpen ? "Hide" : "Setup"}
+                {dataSetupOpen ? "Collapse" : "Expand"}
               </button>
             </div>
 
-            {dataSetupOpen && (
-              <>
-                <div className="bd-rf-test-type-grid bd-rf-test-type-grid-compact">
-                  {DATA_TEST_TYPES.map((item) => (
-                    <button
-                      type="button"
-                      key={item.key}
-                      className={dataTestType === item.key ? "active" : ""}
-                      disabled={dataTest.status === "running"}
-                      onClick={() => setDataTestType(item.key)}
-                    >
-                      <strong>{item.label}</strong>
-                      <span>{item.status}</span>
-                    </button>
-                  ))}
-                </div>
+            <div className="bd-rf-test-type-grid bd-rf-test-type-grid-compact">
+              {DATA_TEST_TYPES.map((item) => (
+                <button
+                  type="button"
+                  key={item.key}
+                  className={dataTestType === item.key ? "active" : ""}
+                  disabled={dataTest.status === "running"}
+                  onClick={() => { setDataTestType(item.key); setDataSetupOpen(true); }}
+                >
+                  <strong>{item.label}</strong>
+                  <span>{item.status}</span>
+                </button>
+              ))}
+            </div>
 
+            {dataSetupOpen && (
+              <div className="bd-rf-selected-workflow">
                 {dataTestType === "native_http" && (
                   <NativeHttpTestCard setup={currentNativeHttpSetup} onChange={handleNativeHttpSetupChange} disabled={dataTest.status === "running"} />
                 )}
@@ -3712,12 +5492,48 @@ export default function MobileRfKpi({
                   />
                 )}
                 {dataTestType === "ookla_app" && (
-                  <OoklaTestCard setup={ooklaSetup} onChange={setOoklaSetup} disabled={dataTest.status === "running"} />
+                  <OoklaTestCard
+                    savedIterations={resolveOoklaEvidenceIterations({ dataTest, savedSession: visibleSession })}
+                    draftResetToken={ooklaDraftResetToken}
+                    sessionId={currentSession?.id || dataTest.sessionId || "session"}
+                    sessionStartMs={
+                      Number.isFinite(dataTest.startedAt)
+                        ? dataTest.startedAt
+                        : (Number.isFinite(currentSession?.startedAt) ? currentSession.startedAt : null)
+                    }
+                    sessionEndMs={
+                      Number.isFinite(dataTest.endedAt)
+                        ? dataTest.endedAt
+                        : (dataTest.status === "running" || dataTest.status === "paused"
+                          ? Date.now()
+                          : (Number.isFinite(currentSession?.endedAt) ? currentSession.endedAt : null))
+                    }
+                    provisionalSessionEnd={
+                      !Number.isFinite(dataTest.endedAt)
+                      && (dataTest.status === "running" || dataTest.status === "paused" || dataTest.status === "external_ready" || String(dataTest.status || "").startsWith("evidence"))
+                    }
+                    onSaveEvidence={saveOoklaEvidenceIteration}
+                    onSaveCsvIterations={saveOoklaCsvIterations}
+                    onCsvImportDebugChange={(debug) => {
+                      setOoklaCsvImportDebug(debug);
+                      patchDataTest({ ooklaCsvImportDebug: debug });
+                    }}
+                    onNewIteration={resetOoklaEvidenceDraft}
+                    onResetDraft={resetOoklaEvidenceDraft}
+                    onResetAll={resetAllOoklaEvidence}
+                    disabled={false}
+                  />
                 )}
                 {dataTestType === "fcc_app" && (
-                  <FccTestCard setup={fccSetup} onChange={setFccSetup} disabled={dataTest.status === "running"} />
+                  <FccTestCard
+                    setup={fccSetup}
+                    importMeta={dataTest.appFccImport || fccSetup.appFccImport || null}
+                    onChange={setFccSetup}
+                    onImportFile={handleFccImportFile}
+                    disabled={dataTest.status === "running"}
+                  />
                 )}
-              </>
+              </div>
             )}
           </section>
         )}
@@ -3757,17 +5573,23 @@ export default function MobileRfKpi({
 
 
         {visibleSession && (
-          <div className={`bd-rf-session-card ${collectorRunning ? "recording" : "saved"}`}>
-            <div className="bd-rf-session-head">
+          <details
+            key={collectorRunning || testState === "paused" ? "session-live" : `session-saved-${visibleSession.id || "local"}`}
+            className={`bd-rf-session-card bd-rf-session-collapsible ${testState === "paused" ? "paused" : collectorRunning ? "recording" : "saved"}`}
+            defaultOpen={collectorRunning || testState === "paused"}
+          >
+            <summary className="bd-rf-session-head">
               <div>
-                <b>{collectorRunning ? "Recording Session" : "Saved Session"}</b>
+                <b>{testState === "paused" ? "Paused Session" : collectorRunning ? "Recording Session" : "Saved Session"}</b>
                 <span>{String(visibleSession.mode || "data").toUpperCase()} · {visibleSession.rat || servingTechnology}</span>
               </div>
-              <em>{collectorRunning ? "LIVE" : "FROZEN"}</em>
-            </div>
+              <em>{testState === "paused" ? "GPS ONLY" : collectorRunning ? "LIVE" : "FROZEN"}</em>
+            </summary>
             <div className="bd-rf-session-grid bd-rf-session-grid-c2">
               <span><b>Duration</b><strong>{formatDuration(visibleSession.durationMs)}</strong><small>{formatTime(visibleSession.startedAt)} → {formatTime(visibleSession.endedAt)}</small></span>
-              <span><b>Samples</b><strong>{visibleSession.sampleCount}</strong><small>{visibleSession.gpsCount} GPS points</small></span>
+              <span><b>Active RF</b><strong>{formatDuration(visibleSession.activeRecordingDurationMs || 0)}</strong><small>{visibleSession.pauseSegmentCount ? `${visibleSession.pauseSegmentCount} pause segment(s)` : "No pauses"}</small></span>
+              <span><b>Samples</b><strong>{visibleSession.sampleCount}</strong><small>{visibleSession.gpsCount} GPS points · {visibleSession.activeSampleCount ?? visibleSession.sampleCount} active RF</small></span>
+              <span><b>Paused</b><strong>{formatDuration(visibleSession.pausedDurationMs || 0)}</strong><small>GPS-only rows excluded from RF averages</small></span>
               <span><b>RF Polls</b><strong>{rfPollCount}</strong><small>Android snapshots read</small></span>
               <span><b>RF Rule</b><strong>Real values</strong><small>No fake RF changes</small></span>
               {getSessionRfMetricCards(visibleSession).map((metric) => (
@@ -3782,10 +5604,10 @@ export default function MobileRfKpi({
                 />
               ))}
             </div>
-          </div>
+          </details>
         )}
 
-        {selectedMode === "data" && (dataTest.status !== "idle" || getNumber(visibleSession?.appDlMbps) !== null || getNumber(visibleSession?.appUlMbps) !== null) && (
+        {shouldShowDataTestMonitor(selectedMode, dataTest, visibleSession) && (
           <div className={`bd-rf-thp-card bd-rf-thp-monitor-compact ${dataTest.status || "idle"}`}>
             <div className="bd-rf-thp-head bd-rf-thp-head-compact">
               <div>
@@ -3793,7 +5615,11 @@ export default function MobileRfKpi({
                 <span className="bd-rf-thp-headline">
                   {dataTest.testType === "iperf"
                     ? iperfMonitorHeadline(dataTest, visibleSession)
-                    : (dataTest.message || visibleSession?.appTestMessage || "Avg values are from completed iterations.")}
+                    : isOoklaContext({ dataTest, savedSession: visibleSession })
+                      ? ooklaMonitorHeadline(dataTest, visibleSession)
+                      : isFccContext({ dataTest, savedSession: visibleSession })
+                        ? fccMonitorHeadline(dataTest, visibleSession)
+                        : (dataTest.message || visibleSession?.appTestMessage || "Avg values are from completed iterations.")}
                 </span>
               </div>
               {(() => {
@@ -3801,12 +5627,44 @@ export default function MobileRfKpi({
                 return <em className={`bd-rf-status ${statusClassName(badge)}`}>{badge}</em>;
               })()}
             </div>
-            <div className="bd-rf-thp-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">
-              <span><b>Avg DL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("dl", { dataTest, savedSession: visibleSession }))}</strong></span>
-              <span><b>Avg UL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("ul", { dataTest, savedSession: visibleSession }))}</strong></span>
-              <span><b>Iterations</b><strong>{dataTest.completedIterations || visibleSession?.appCompletedIterations || 0}/{dataTest.iterationsRequested || visibleSession?.appIterationsRequested || resolvedThpIterations}</strong></span>
-              <span><b>Wait</b><strong>{dataTest.waitSeconds ?? visibleSession?.appWaitSeconds ?? resolvedThpWaitSeconds}s</strong></span>
-            </div>
+            {isOoklaContext({ dataTest, savedSession: visibleSession }) ? (
+              <div className="bd-rf-thp-grid bd-rf-ookla-evidence-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">
+                {(() => {
+                  const iterations = resolveOoklaEvidenceIterations({ dataTest, savedSession: visibleSession });
+                  const evidence = resolveOoklaEvidence({ dataTest, savedSession: visibleSession }) || iterations[iterations.length - 1];
+                  const resultIdOnly = resolveOoklaDisplayResultId(evidence);
+                  return (
+                    <>
+                      <span><b>Saved iterations</b><strong>{iterations.length}</strong></span>
+                      <span><b>Evidence source</b><strong>{displayValue(evidence?.evidenceSource || evidence?.source || "N/A")}</strong></span>
+                      <span><b>OOKLA DL Mbps</b><strong>{displayValue(evidence?.dlMbps, " Mbps")}</strong></span>
+                      <span><b>OOKLA UL Mbps</b><strong>{displayValue(evidence?.ulMbps, " Mbps")}</strong></span>
+                      <span><b>OOKLA Ping ms</b><strong>{displayValue(evidence?.pingMs, " ms")}</strong></span>
+                      <span><b>OOKLA Jitter ms</b><strong>{displayValue(evidence?.jitterMs, " ms")}</strong></span>
+                      <span><b>Result ID</b><strong>{displayValue(resultIdOnly)}</strong></span>
+                      <span><b>Server</b><strong>{displayValue(evidence?.serverName || evidence?.serverLocation)}</strong></span>
+                      <span><b>Latest iteration</b><strong>{evidence?.iterationNumber ?? (iterations.length || "N/A")}</strong></span>
+                      <span><b>Confirmation</b><strong>{evidence?.confirmation === "fe_confirmed" ? "FE Confirmed" : evidence ? "Draft" : "N/A"}</strong></span>
+                      <span className="bd-rf-ookla-span-2"><b>Captured At</b><strong>{evidence?.capturedAt ? formatLocalDateTime(evidence.capturedAt) : "N/A"}</strong></span>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : isFccContext({ dataTest, savedSession: visibleSession }) ? (
+              <div className="bd-rf-thp-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">
+                <span><b>RF samples</b><strong>{visibleSession?.sampleCount ?? samples.length ?? 0}</strong></span>
+                <span><b>GPS points</b><strong>{visibleSession?.gpsCount ?? 0}</strong></span>
+                <span><b>FCC import</b><strong>{visibleSession?.appFccImport?.status || "not_imported"}</strong></span>
+                <span><b>APP DL/UL THP</b><strong>N/A</strong></span>
+              </div>
+            ) : (
+              <div className="bd-rf-thp-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">
+                <span><b>Avg DL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("dl", { dataTest, savedSession: visibleSession }))}</strong></span>
+                <span><b>Avg UL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("ul", { dataTest, savedSession: visibleSession }))}</strong></span>
+                <span><b>Iterations</b><strong>{dataTest.completedIterations || visibleSession?.appCompletedIterations || 0}/{dataTest.iterationsRequested || visibleSession?.appIterationsRequested || resolvedThpIterations}</strong></span>
+                <span><b>Wait</b><strong>{dataTest.waitSeconds ?? visibleSession?.appWaitSeconds ?? resolvedThpWaitSeconds}s</strong></span>
+              </div>
+            )}
             {dataTest.testType === "iperf" ? (
               <>
                 <p className="bd-rf-iperf-info-line">{iperfMonitorInfoLine(dataTest)}</p>
@@ -3840,7 +5698,7 @@ export default function MobileRfKpi({
             {ftpFinalPolishNote(dataTest) ? (
               <p className="bd-rf-ftp-final-note">{ftpFinalPolishNote(dataTest)}</p>
             ) : null}
-            {dataTest.testType !== "iperf" && thpIterationRows.length ? (
+            {dataTest.testType !== "iperf" && dataTest.testType !== "ookla_app" && thpIterationRows.length ? (
               <div className="bd-rf-thp-iteration-list">
                 {thpIterationRows.map((row) => (
                   <span key={`${row.iteration}-${row.startedAt || row.endedAt || "row"}`}>
@@ -3854,130 +5712,157 @@ export default function MobileRfKpi({
           </div>
         )}
 
-        <div className="bd-rf-panel-buttons">
-          <button type="button" className={openPanel === "map" ? "active" : ""} onClick={() => togglePanel("map")}>Map</button>
-          <button type="button" className={openPanel === "legend" ? "active" : ""} onClick={() => togglePanel("legend")}>Legend</button>
+      </section>
+
+      <section className="bd-mobile-card bd-rf-live-summary-card">
+        <div className="bd-rf-live-summary-head">
+          <b>Live RF Summary</b>
+          <small>Advanced RF details are available below.</small>
+        </div>
+        <div className="bd-rf-live-summary-grid">
+          <span><b>RAT</b><strong>{servingTechnology}</strong></span>
+          <span><b>LTE RSRP</b><strong>{kpiLive("RSRP")}</strong></span>
+          <span><b>LTE RSRQ</b><strong>{kpiLive("RSRQ")}</strong></span>
+          <span><b>LTE SINR</b><strong>{kpiLive("SINR / RSSNR")}</strong></span>
+          <span><b>NR SS-RSRP</b><strong>{kpiLive("SS-RSRP")}</strong></span>
+          <span><b>NR SS-RSRQ</b><strong>{kpiLive("SS-RSRQ")}</strong></span>
+          <span><b>NR SS-SINR</b><strong>{kpiLive("SS-SINR")}</strong></span>
+          <span><b>App DL THP</b><strong>{summaryAppDl}</strong></span>
+          <span><b>App UL THP</b><strong>{summaryAppUl}</strong></span>
+          <span><b>TrafficStats DL</b><strong>{summaryTrafficDl}</strong></span>
+          <span><b>TrafficStats UL</b><strong>{summaryTrafficUl}</strong></span>
+          <span><b>Call State</b><strong>{summaryCallState}</strong></span>
         </div>
       </section>
 
-      {openPanel === "map" && (
-        <section className="bd-mobile-card bd-rf-hidden-panel">
-          <div className="bd-rf-panel-head">
-            <p><b>Route + KPI Map</b><span>Street map with grid, saved route, GPS trace, and KPI dots</span></p>
-            <button type="button" onClick={() => setOpenPanel("none")}>Hide</button>
-          </div>
-          <RfLeafletSessionMap
-            traceSamples={traceSamples}
-            traceMap={traceMap}
-            activeTask={activeTask}
-            lastGpsLocation={lastGpsLocation}
-          />
-          <TraceQualityLegend />
-          <div className="bd-rf-mini-facts bd-rf-mini-facts-c2">
-            <span><b>Task</b>{activeTaskLabel}</span>
-            <span><b>Session</b>{visibleSession ? `${visibleSession.sampleCount} samples · ${visibleSession.gpsCount} GPS` : "No saved session yet"}</span>
-            <span><b>Start</b>{formatGps(visibleSession?.firstGps || traceSamples.find((sample) => sample.gps)?.gps)}</span>
-            <span><b>End</b>{formatGps(visibleSession?.lastGps || [...traceSamples].reverse().find((sample) => sample.gps)?.gps)}</span>
-            <span><b>Trace</b>{traceMap.hasRealGps ? `${traceMap.gpsCount} GPS fixes` : "Waiting for movement/GPS"}</span>
-            <span><b>Last Point</b>{formatGps(visibleSession?.lastGps || traceSamples[traceSamples.length - 1]?.gps)}</span>
-          </div>
-        </section>
-      )}
-
-      <details className={`bd-mobile-card bd-rf-table-card-compact bd-rf-kpi-table-collapsible ${kpiTableCollapsed ? "is-collapsed" : ""}`} open={!kpiTableCollapsed}>
+      <details
+        className={`bd-mobile-card bd-rf-table-card-compact bd-rf-kpi-table-collapsible ${advancedRfOpen ? "" : "is-collapsed"}`}
+        open={advancedRfOpen}
+        onToggle={(event) => setAdvancedRfOpen(event.currentTarget.open)}
+      >
         <summary className="bd-rf-kpi-table-summary">
           <span>
-            <b>Live KPI Table</b>
+            <b>Show Advanced RF Table</b>
             <small>RF Poll {rfPollCount ? `#${nativeSnapshot?.snapshotSequence || rfPollCount}` : "waiting"} · {nativeSnapshot?.ok ? "Native live" : collectorBusy ? "Reading..." : "Waiting"}</small>
           </span>
         </summary>
         <div className="bd-rf-kpi-table-body">
-        <div className="bd-rf-panel-head bd-rf-panel-head-inline">
-          <p><span>CellInfo + SignalStrength rolling avg · Last {formatTime(lastRfReadTime)}</span></p>
-        </div>
+          <div className="bd-rf-panel-head bd-rf-panel-head-inline">
+            <p><span>CellInfo + SignalStrength · Last {formatTime(lastRfReadTime)}</span></p>
+          </div>
 
-        <div className="bd-rf-rat-toggle" role="group" aria-label="Select KPI technology view">
-          {RAT_OPTIONS.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              className={ratView === option.key ? "active" : ""}
-              onClick={() => setRatView(option.key)}
-            >
-              <b>{option.label}</b>
-              <span>{option.hint}</span>
-            </button>
-          ))}
-        </div>
+          <div className="bd-rf-rat-toggle" role="group" aria-label="Select KPI technology view">
+            {RAT_OPTIONS.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                className={ratView === option.key ? "active" : ""}
+                onClick={() => setRatView(option.key)}
+              >
+                <b>{option.label}</b>
+                <span>{option.hint}</span>
+              </button>
+            ))}
+          </div>
 
-        <p className="bd-rf-tech-note">
-          Auto follows the serving RAT: {servingTechnology}. LTE anchor identity comes from CellInfo. SINR can come from SignalStrength or raw public Android signal text when Android exposes it.
-        </p>
+          <p className="bd-rf-tech-note">
+            Auto follows serving RAT: {servingTechnology}.
+          </p>
+          <p className="bd-rf-traffic-stats-note">
+            Android TrafficStats DL/UL are mobile byte deltas, not OOKLA or engine THP.
+          </p>
 
-        <div className="bd-mobile-rf-kpi-table-wrap compact">
-          <table className="bd-mobile-rf-kpi-table compact">
-            <thead>
-              <tr>
-                <th>KPI</th>
-                <th>Live</th>
-                <th>Avg</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tableRows.map((row) => (
-                <tr key={`${effectiveRatView}-${row.group}-${row.kpi}`}>
-                  <td>
-                    <span className={`bd-rf-group-pill ${row.group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>{row.group}</span>
-                    <strong>{row.kpi}</strong>
-                    {row.unit ? <small>{row.unit}</small> : null}
-                  </td>
-                  <td>{row.live}</td>
-                  <td>{row.avg}</td>
-                  <td><span className={`bd-rf-status ${row.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>{row.status}</span></td>
+          <div className="bd-mobile-rf-kpi-table-wrap compact">
+            <table className="bd-mobile-rf-kpi-table compact">
+              <thead>
+                <tr>
+                  <th>KPI</th>
+                  <th>Live</th>
+                  <th>Avg</th>
+                  <th>Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="bd-rf-inline-note success">
-          RF Poll confirms BabyDragon reads every second. Android may repeat cached RSRP/RSRQ/RSSI values; BabyDragon does not invent RF changes.
-        </p>
+              </thead>
+              <tbody>
+                {tableRows.map((row) => (
+                  <tr key={`${effectiveRatView}-${row.group}-${row.kpi}`}>
+                    <td>
+                      <span className={`bd-rf-group-pill ${row.group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>{row.group}</span>
+                      <strong>{row.kpi}</strong>
+                      {row.unit ? <small>{row.unit}</small> : null}
+                    </td>
+                    <td>{row.live}</td>
+                    <td>{row.avg}</td>
+                    <td><span className={`bd-rf-status ${row.status.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}>{row.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </details>
 
-      {openPanel === "legend" && (
-        <section className="bd-mobile-card bd-rf-hidden-panel">
-          <div className="bd-rf-panel-head">
-            <p><b>Legend / Thresholds</b><span>Configurable report colors</span></p>
-            <button type="button" onClick={() => setOpenPanel("none")}>Hide</button>
-          </div>
-          <p className="bd-rf-inline-note">
-            3GPP measurement families stay standard. BabyDragon report colors use configurable RF engineering thresholds by RAT: NR/LTE, WCDMA, GSM, data, and voice.
-          </p>
-          <div className="bd-mobile-rf-legend-list compact">
-            {KPI_LEGENDS.map((legend) => (
-              <article className="bd-mobile-rf-legend-card compact" key={legend.name}>
-                <header>
-                  <div>
-                    <strong>{legend.name}</strong>
-                    <small>{legend.note}</small>
-                  </div>
-                  <em>{legend.unit}</em>
-                </header>
-                <div className="bd-mobile-rf-bands compact">
-                  {legend.bands.map((band) => (
-                    <span className={`bd-rf-band ${band.className}`} key={`${legend.name}-${band.label}`}>
-                      <b>{band.label}</b>
-                      <small>{band.range}</small>
-                    </span>
-                  ))}
+      <details
+        key={mapHasGpsSamples ? "rf-map-with-gps" : "rf-map-empty"}
+        className="bd-mobile-card bd-rf-map-collapsible"
+        defaultOpen={mapHasGpsSamples}
+      >
+        <summary className="bd-rf-kpi-table-summary">
+          <span>
+            <b>Route + KPI Map</b>
+            <small>{mapHasGpsSamples ? `${visibleSession?.gpsCount || traceMap.gpsCount || 0} GPS samples` : "No GPS samples yet"}</small>
+          </span>
+        </summary>
+        <div className="bd-rf-map-collapsible-body">
+          {mapHasGpsSamples ? (
+            <>
+              <RfLeafletSessionMap
+                traceSamples={traceSamples}
+                traceMap={traceMap}
+                activeTask={activeTask}
+                lastGpsLocation={lastGpsLocation}
+              />
+              <div className="bd-rf-mini-facts bd-rf-mini-facts-c2">
+                <span><b>Task</b>{activeTaskLabel}</span>
+                <span><b>Session</b>{visibleSession ? `${visibleSession.sampleCount} samples · ${visibleSession.gpsCount} GPS` : "No saved session yet"}</span>
+                <span><b>Start</b>{formatGps(visibleSession?.firstGps || traceSamples.find((sample) => sample.gps)?.gps)}</span>
+                <span><b>End</b>{formatGps(visibleSession?.lastGps || [...traceSamples].reverse().find((sample) => sample.gps)?.gps)}</span>
+              </div>
+            </>
+          ) : (
+            <p className="bd-rf-inline-note">Map opens when GPS samples are available.</p>
+          )}
+        </div>
+      </details>
+
+      <details className="bd-mobile-card bd-rf-legend-collapsible">
+        <summary className="bd-rf-kpi-table-summary">
+          <span>
+            <b>Legend</b>
+            <small>RF color thresholds</small>
+          </span>
+        </summary>
+        <div className="bd-mobile-rf-legend-list compact">
+          {KPI_LEGENDS.map((legend) => (
+            <article className="bd-mobile-rf-legend-card compact" key={legend.name}>
+              <header>
+                <div>
+                  <strong>{legend.name}</strong>
+                  <small>{legend.note}</small>
                 </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
+                <em>{legend.unit}</em>
+              </header>
+              <div className="bd-mobile-rf-bands compact">
+                {legend.bands.map((band) => (
+                  <span className={`bd-rf-band ${band.className}`} key={`${legend.name}-${band.label}`}>
+                    <b>{band.label}</b>
+                    <small>{band.range}</small>
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </details>
 
       {openPanel === "export" && (
         <section className="bd-mobile-card bd-rf-hidden-panel">
@@ -3985,9 +5870,9 @@ export default function MobileRfKpi({
             <p><b>Report Package</b><span>Summary, trace, THP, voice KPIs, and FCC-style JSON</span></p>
             <button type="button" onClick={() => setOpenPanel("none")}>Hide</button>
           </div>
-          {savedSession && (
+          {savedSession && testState === "saved" && (
             <p className="bd-rf-inline-note success">
-              Saved locally: {savedSession.sampleCount} RF samples, {savedSession.gpsCount} GPS points, duration {formatDuration(savedSession.durationMs)}.
+              Saved locally: {savedSession.sampleCount} samples ({savedSession.activeSampleCount ?? savedSession.sampleCount} active RF), {savedSession.gpsCount} GPS points, active {formatDuration(savedSession.activeRecordingDurationMs || 0)}, paused {formatDuration(savedSession.pausedDurationMs || 0)}.
             </p>
           )}
           <button type="button" className="bd-mobile-primary bd-rf-export-now" disabled={!canExportSession || exportStatus?.startsWith("Building")} onClick={exportSavedSession}>
@@ -4020,6 +5905,16 @@ export default function MobileRfKpi({
           <button type="button" className="bd-mobile-primary" onClick={() => armWorkflow(selectedMode)}>
             {collectorRunning ? "Restart" : selectedMode === "voice" ? "Start Voice" : "Start Data"}
           </button>
+          {testState === "recording" ? (
+            <button type="button" className="bd-mobile-secondary bd-rf-pause-btn" onClick={pauseRecording}>
+              Pause Recording
+            </button>
+          ) : null}
+          {testState === "paused" ? (
+            <button type="button" className="bd-mobile-secondary bd-rf-resume-btn" onClick={resumeRecording}>
+              Resume Recording
+            </button>
+          ) : null}
           <button type="button" className="bd-mobile-secondary" onClick={stopWorkflow} disabled={!collectorRunning && !samples.length}>
             {collectorRunning ? "Stop / Save" : savedSession ? "Saved" : "Stop / Save"}
           </button>

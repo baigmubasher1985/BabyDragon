@@ -1,15 +1,24 @@
 package com.mobbitechglobal.babydragon;
 
 import android.Manifest;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import android.content.Context;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.net.TrafficStats;
 import android.net.Uri;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.util.Base64;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.telephony.CellIdentityCdma;
@@ -42,6 +51,12 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
+
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.TextRecognizer;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -400,7 +415,59 @@ public class BabyDragonRfKpiPlugin extends Plugin {
             result.put("message", exception.getMessage());
         }
 
+        attachTrafficStatsSnapshot(result);
         call.resolve(result);
+    }
+
+    private void attachTrafficStatsSnapshot(JSObject result) {
+        JSObject trafficStats = new JSObject();
+        long mobileRxBytes = TrafficStats.getMobileRxBytes();
+        long mobileTxBytes = TrafficStats.getMobileTxBytes();
+        long totalRxBytes = TrafficStats.getTotalRxBytes();
+        long totalTxBytes = TrafficStats.getTotalTxBytes();
+
+        boolean mobileSupported = isTrafficStatsCounterSupported(mobileRxBytes)
+                && isTrafficStatsCounterSupported(mobileTxBytes);
+        boolean totalSupported = isTrafficStatsCounterSupported(totalRxBytes)
+                && isTrafficStatsCounterSupported(totalTxBytes);
+        boolean supported = mobileSupported || totalSupported;
+
+        trafficStats.put("trafficStatsSupported", supported);
+        trafficStats.put("trafficStatsMobileSupported", mobileSupported);
+        trafficStats.put("trafficStatsTotalSupported", totalSupported);
+        if (mobileSupported && totalSupported) {
+            trafficStats.put("trafficStatsSource", "mobile_and_total");
+        } else if (totalSupported) {
+            trafficStats.put("trafficStatsSource", "total");
+        } else if (mobileSupported) {
+            trafficStats.put("trafficStatsSource", "mobile");
+        } else {
+            trafficStats.put("trafficStatsSource", "unsupported");
+        }
+
+        if (mobileSupported) {
+            trafficStats.put("trafficStatsMobileRxBytes", mobileRxBytes);
+            trafficStats.put("trafficStatsMobileTxBytes", mobileTxBytes);
+        } else {
+            trafficStats.put("trafficStatsMobileRxBytes", null);
+            trafficStats.put("trafficStatsMobileTxBytes", null);
+        }
+
+        if (totalSupported) {
+            trafficStats.put("trafficStatsTotalRxBytes", totalRxBytes);
+            trafficStats.put("trafficStatsTotalTxBytes", totalTxBytes);
+        } else {
+            trafficStats.put("trafficStatsTotalRxBytes", null);
+            trafficStats.put("trafficStatsTotalTxBytes", null);
+        }
+
+        trafficStats.put("trafficStatsReadAt", System.currentTimeMillis());
+        trafficStats.put("trafficStatsApiLevel", Build.VERSION.SDK_INT);
+        result.put("trafficStats", trafficStats);
+    }
+
+    private boolean isTrafficStatsCounterSupported(long value) {
+        return value != TrafficStats.UNSUPPORTED && value >= 0L;
     }
 
     @PluginMethod
@@ -571,6 +638,266 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         result.put("ok", true);
         result.put("permissions", buildPermissionStatus(getContext()));
         call.resolve(result);
+    }
+
+    @PluginMethod
+    public void recognizeTextFromImage(PluginCall call) {
+        String base64Image = call.getString("base64Image");
+        if (base64Image == null || base64Image.trim().isEmpty()) {
+            JSObject failure = new JSObject();
+            failure.put("ok", false);
+            failure.put("error", "base64Image is required");
+            call.resolve(failure);
+            return;
+        }
+
+        String payload = base64Image.trim();
+        if (payload.contains(",")) {
+            payload = payload.substring(payload.indexOf(",") + 1);
+        }
+
+        byte[] bytes;
+        try {
+            bytes = Base64.decode(payload, Base64.DEFAULT);
+        } catch (IllegalArgumentException exception) {
+            JSObject failure = new JSObject();
+            failure.put("ok", false);
+            failure.put("error", "Invalid base64 image payload");
+            call.resolve(failure);
+            return;
+        }
+
+        Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+        if (bitmap == null) {
+            JSObject failure = new JSObject();
+            failure.put("ok", false);
+            failure.put("error", "Unable to decode image bytes");
+            call.resolve(failure);
+            return;
+        }
+
+        InputImage image = InputImage.fromBitmap(bitmap, 0);
+        TextRecognizer recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+        recognizer.process(image)
+            .addOnSuccessListener(visionText -> {
+                JSObject result = new JSObject();
+                JSArray lines = new JSArray();
+                for (Text.TextBlock block : visionText.getTextBlocks()) {
+                    for (Text.Line line : block.getLines()) {
+                        JSObject lineObj = new JSObject();
+                        lineObj.put("text", line.getText() != null ? line.getText() : "");
+                        android.graphics.Rect box = line.getBoundingBox();
+                        if (box != null) {
+                            lineObj.put("top", box.top);
+                            lineObj.put("left", box.left);
+                            lineObj.put("width", box.width());
+                            lineObj.put("height", box.height());
+                        }
+                        lines.put(lineObj);
+                    }
+                }
+                result.put("ok", true);
+                result.put("text", visionText.getText() != null ? visionText.getText() : "");
+                result.put("lines", lines);
+                result.put("confidence", null);
+                result.put("error", null);
+                resolveOnMain(call, result);
+            })
+            .addOnFailureListener(exception -> {
+                JSObject result = new JSObject();
+                result.put("ok", false);
+                result.put("text", "");
+                result.put("confidence", null);
+                result.put("error", exception.getMessage() != null ? exception.getMessage() : "OCR failed");
+                resolveOnMain(call, result);
+            });
+    }
+
+    @PluginMethod
+    public void fetchOoklaResultPage(PluginCall call) {
+        String pageUrl = call.getString("url");
+        if (pageUrl == null || pageUrl.trim().isEmpty()) {
+            JSObject failure = new JSObject();
+            failure.put("ok", false);
+            failure.put("statusCode", null);
+            failure.put("finalUrl", null);
+            failure.put("text", null);
+            failure.put("error", "url is required");
+            call.resolve(failure);
+            return;
+        }
+
+        final String trimmedUrl = pageUrl.trim();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                JSObject result = new JSObject();
+                HttpURLConnection connection = null;
+                try {
+                    if (!trimmedUrl.startsWith("https://")) {
+                        result.put("ok", false);
+                        result.put("statusCode", null);
+                        result.put("finalUrl", null);
+                        result.put("text", null);
+                        result.put("error", "Only HTTPS URLs are allowed");
+                        resolveOnMain(call, result);
+                        return;
+                    }
+
+                    URL requestUrl = new URL(trimmedUrl);
+                    connection = (HttpURLConnection) requestUrl.openConnection();
+                    connection.setRequestMethod("GET");
+                    connection.setConnectTimeout(10000);
+                    connection.setReadTimeout(10000);
+                    connection.setInstanceFollowRedirects(true);
+                    connection.setRequestProperty("User-Agent", "BabyDragon/1.0 (Android; OOKLA result reader)");
+                    connection.setRequestProperty("Accept", "text/html,application/xhtml+xml,*/*");
+
+                    int statusCode = connection.getResponseCode();
+                    String finalUrl = connection.getURL() != null ? connection.getURL().toString() : trimmedUrl;
+                    InputStream stream = statusCode >= 200 && statusCode < 300
+                        ? connection.getInputStream()
+                        : connection.getErrorStream();
+                    String body = readHttpBodyCapped(stream, 1024 * 1024);
+
+                    result.put("ok", statusCode >= 200 && statusCode < 300);
+                    result.put("statusCode", statusCode);
+                    result.put("finalUrl", finalUrl);
+                    result.put("text", body);
+                    result.put("error", statusCode >= 200 && statusCode < 300 ? null : "http_" + statusCode);
+                } catch (Exception exception) {
+                    result.put("ok", false);
+                    result.put("statusCode", null);
+                    result.put("finalUrl", null);
+                    result.put("text", null);
+                    result.put("error", exception.getMessage() != null ? exception.getMessage() : "fetch_failed");
+                } finally {
+                    if (connection != null) {
+                        connection.disconnect();
+                    }
+                    resolveOnMain(call, result);
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * Fetch the public OOKLA Result share image (og:image) as base64 for OCR.
+     * This is not an undocumented API — the share PNG is linked from the result page meta tags.
+     */
+    @PluginMethod
+    public void fetchOoklaResultShareImage(PluginCall call) {
+        String imageUrl = call.getString("url");
+        if (imageUrl == null || imageUrl.trim().isEmpty()) {
+            JSObject failure = new JSObject();
+            failure.put("ok", false);
+            failure.put("statusCode", null);
+            failure.put("finalUrl", null);
+            failure.put("base64Image", null);
+            failure.put("contentType", null);
+            failure.put("error", "url is required");
+            call.resolve(failure);
+            return;
+        }
+
+        final String trimmedUrl = imageUrl.trim();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                JSObject result = new JSObject();
+                HttpURLConnection connection = null;
+                try {
+                    if (!trimmedUrl.startsWith("https://")) {
+                        result.put("ok", false);
+                        result.put("statusCode", null);
+                        result.put("finalUrl", null);
+                        result.put("base64Image", null);
+                        result.put("contentType", null);
+                        result.put("error", "Only HTTPS URLs are allowed");
+                        resolveOnMain(call, result);
+                        return;
+                    }
+                    if (!trimmedUrl.matches("(?i)^https://([a-z0-9.-]*\\.)?speedtest\\.net/.*")) {
+                        result.put("ok", false);
+                        result.put("statusCode", null);
+                        result.put("finalUrl", null);
+                        result.put("base64Image", null);
+                        result.put("contentType", null);
+                        result.put("error", "Only speedtest.net share image URLs are allowed");
+                        resolveOnMain(call, result);
+                        return;
+                    }
+
+                    URL requestUrl = new URL(trimmedUrl);
+                    connection = (HttpURLConnection) requestUrl.openConnection();
+                    connection.setRequestMethod("GET");
+                    connection.setConnectTimeout(10000);
+                    connection.setReadTimeout(10000);
+                    connection.setInstanceFollowRedirects(true);
+                    connection.setRequestProperty("User-Agent", "BabyDragon/1.0 (Android; OOKLA result reader)");
+                    connection.setRequestProperty("Accept", "image/png,image/jpeg,image/*,*/*");
+
+                    int statusCode = connection.getResponseCode();
+                    String finalUrl = connection.getURL() != null ? connection.getURL().toString() : trimmedUrl;
+                    String contentType = connection.getContentType();
+                    InputStream stream = statusCode >= 200 && statusCode < 300
+                        ? connection.getInputStream()
+                        : connection.getErrorStream();
+                    byte[] bytes = readHttpBytesCapped(stream, 2 * 1024 * 1024);
+                    boolean ok = statusCode >= 200 && statusCode < 300 && bytes != null && bytes.length > 0;
+
+                    result.put("ok", ok);
+                    result.put("statusCode", statusCode);
+                    result.put("finalUrl", finalUrl);
+                    result.put("contentType", contentType);
+                    result.put("base64Image", ok ? Base64.encodeToString(bytes, Base64.NO_WRAP) : null);
+                    result.put("error", ok ? null : "http_" + statusCode);
+                } catch (Exception exception) {
+                    result.put("ok", false);
+                    result.put("statusCode", null);
+                    result.put("finalUrl", null);
+                    result.put("base64Image", null);
+                    result.put("contentType", null);
+                    result.put("error", exception.getMessage() != null ? exception.getMessage() : "fetch_failed");
+                } finally {
+                    if (connection != null) {
+                        connection.disconnect();
+                    }
+                    resolveOnMain(call, result);
+                }
+            }
+        }).start();
+    }
+
+    private String readHttpBodyCapped(InputStream stream, int maxBytes) throws IOException {
+        byte[] bytes = readHttpBytesCapped(stream, maxBytes);
+        if (bytes == null || bytes.length == 0) {
+            return "";
+        }
+        return new String(bytes, "UTF-8");
+    }
+
+    private byte[] readHttpBytesCapped(InputStream stream, int maxBytes) throws IOException {
+        if (stream == null) {
+            return new byte[0];
+        }
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int total = 0;
+        int read;
+        while ((read = stream.read(chunk)) != -1) {
+            int toWrite = Math.min(read, maxBytes - total);
+            if (toWrite <= 0) {
+                break;
+            }
+            buffer.write(chunk, 0, toWrite);
+            total += toWrite;
+            if (total >= maxBytes) {
+                break;
+            }
+        }
+        stream.close();
+        return buffer.toByteArray();
     }
 
     private void resolveOnMain(final PluginCall call, final JSObject result) {
