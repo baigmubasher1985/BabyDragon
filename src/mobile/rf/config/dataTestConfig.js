@@ -26,8 +26,8 @@ export const DATA_TEST_TYPES = [
   {
     key: "fcc_app",
     label: "FCC App",
-    status: "planned",
-    description: "Open FCC app, import FCC export, truncate by BabyDragon session timestamps, and save grid-named outputs.",
+    status: "external",
+    description: "Open FCC app externally, import FCC ZIP, select rows inside BabyDragon session window, and save as external evidence.",
   },
 ];
 
@@ -185,6 +185,7 @@ export const DEFAULT_FCC_IMPORT_SETUP = {
   timestampBufferSeconds: 30,
   keepRawImport: true,
   saveTruncatedByGrid: true,
+  fccZipUrl: "",
   appFccImport: null,
 };
 

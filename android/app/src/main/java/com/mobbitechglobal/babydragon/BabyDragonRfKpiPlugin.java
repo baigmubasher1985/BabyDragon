@@ -869,6 +869,210 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         }).start();
     }
 
+    /**
+     * Download an FCC App export ZIP from a user-pasted HTTPS URL.
+     * Returns base64 ZIP bytes for FE import only — does not write into report folders.
+     */
+    @PluginMethod
+    public void downloadFccZipFromUrl(PluginCall call) {
+        String rawUrl = call.getString("url");
+        JSObject failure = new JSObject();
+        failure.put("ok", false);
+        failure.put("statusCode", null);
+        failure.put("contentType", null);
+        failure.put("filename", null);
+        failure.put("sizeBytes", null);
+        failure.put("base64Zip", null);
+        failure.put("finalUrl", null);
+        failure.put("message", null);
+
+        if (rawUrl == null || rawUrl.trim().isEmpty()) {
+            failure.put("error", "url_required");
+            failure.put("message", "Invalid URL: HTTPS FCC ZIP URL required");
+            call.resolve(failure);
+            return;
+        }
+
+        final String trimmedUrl = rawUrl.trim();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                JSObject result = new JSObject();
+                result.put("ok", false);
+                result.put("source", "native-fcc-zip-download-v1i2c");
+                HttpURLConnection connection = null;
+                final int maxBytes = 25 * 1024 * 1024;
+                final int connectTimeoutMs = 15000;
+                final int readTimeoutMs = 30000;
+                final int maxRedirects = 5;
+                try {
+                    if (!trimmedUrl.regionMatches(true, 0, "https://", 0, 8)) {
+                        result.put("error", "https_required");
+                        result.put("message", "Invalid URL: HTTPS FCC ZIP URL required");
+                        resolveOnMain(call, result);
+                        return;
+                    }
+
+                    URL currentUrl = new URL(trimmedUrl);
+                    String host = currentUrl.getHost() == null ? "" : currentUrl.getHost().toLowerCase();
+                    if (host.isEmpty()) {
+                        result.put("error", "invalid_host");
+                        result.put("message", "Invalid URL: HTTPS FCC ZIP URL required");
+                        resolveOnMain(call, result);
+                        return;
+                    }
+                    // Prefer mozark FCC API host; still allow other HTTPS hosts that return a ZIP.
+                    boolean preferredHost = host.equals("fccapi.mozark.ai") || host.endsWith(".mozark.ai");
+
+                    int statusCode = -1;
+                    String contentType = null;
+                    String contentDisposition = null;
+                    String finalUrl = trimmedUrl;
+                    byte[] bytes = null;
+
+                    for (int redirect = 0; redirect <= maxRedirects; redirect += 1) {
+                        if (!"https".equalsIgnoreCase(currentUrl.getProtocol())) {
+                            result.put("error", "https_redirect_required");
+                            result.put("message", "Download failed: redirects must stay on HTTPS");
+                            resolveOnMain(call, result);
+                            return;
+                        }
+
+                        connection = (HttpURLConnection) currentUrl.openConnection();
+                        connection.setInstanceFollowRedirects(false);
+                        connection.setRequestMethod("GET");
+                        connection.setConnectTimeout(connectTimeoutMs);
+                        connection.setReadTimeout(readTimeoutMs);
+                        connection.setRequestProperty("User-Agent", "BabyDragon/1.0 (Android; FCC ZIP import)");
+                        connection.setRequestProperty("Accept", "application/zip,application/octet-stream,*/*");
+
+                        statusCode = connection.getResponseCode();
+                        contentType = connection.getContentType();
+                        contentDisposition = connection.getHeaderField("Content-Disposition");
+                        finalUrl = connection.getURL() != null ? connection.getURL().toString() : currentUrl.toString();
+
+                        if (statusCode == HttpURLConnection.HTTP_MOVED_PERM
+                            || statusCode == HttpURLConnection.HTTP_MOVED_TEMP
+                            || statusCode == HttpURLConnection.HTTP_SEE_OTHER
+                            || statusCode == 307
+                            || statusCode == 308) {
+                            String location = connection.getHeaderField("Location");
+                            connection.disconnect();
+                            connection = null;
+                            if (location == null || location.trim().isEmpty()) {
+                                result.put("error", "redirect_missing_location");
+                                result.put("message", "Download failed: redirect missing Location");
+                                result.put("statusCode", statusCode);
+                                resolveOnMain(call, result);
+                                return;
+                            }
+                            currentUrl = new URL(currentUrl, location.trim());
+                            continue;
+                        }
+
+                        long contentLength = connection.getContentLengthLong();
+                        if (contentLength > maxBytes) {
+                            result.put("error", "size_exceeded");
+                            result.put("message", "Download failed: FCC ZIP exceeds 25 MB limit");
+                            result.put("statusCode", statusCode);
+                            result.put("contentType", contentType);
+                            result.put("finalUrl", finalUrl);
+                            resolveOnMain(call, result);
+                            return;
+                        }
+
+                        InputStream stream = statusCode >= 200 && statusCode < 300
+                            ? connection.getInputStream()
+                            : connection.getErrorStream();
+                        bytes = readHttpBytesCapped(stream, maxBytes + 1);
+                        if (bytes != null && bytes.length > maxBytes) {
+                            result.put("error", "size_exceeded");
+                            result.put("message", "Download failed: FCC ZIP exceeds 25 MB limit");
+                            result.put("statusCode", statusCode);
+                            result.put("contentType", contentType);
+                            result.put("finalUrl", finalUrl);
+                            resolveOnMain(call, result);
+                            return;
+                        }
+                        break;
+                    }
+
+                    boolean httpOk = statusCode >= 200 && statusCode < 300;
+                    boolean looksZip = bytes != null
+                        && bytes.length >= 4
+                        && bytes[0] == 'P'
+                        && bytes[1] == 'K';
+                    String typeLower = contentType == null ? "" : contentType.toLowerCase();
+                    boolean typeZip = typeLower.contains("zip")
+                        || typeLower.contains("octet-stream")
+                        || typeLower.contains("application/x-zip");
+
+                    String filename = filenameFromContentDisposition(contentDisposition);
+                    if (filename == null || filename.trim().isEmpty()) {
+                        String path = currentUrl.getPath();
+                        if (path != null && path.contains("/")) {
+                            filename = path.substring(path.lastIndexOf('/') + 1);
+                        }
+                    }
+                    if (filename == null || filename.trim().isEmpty()) {
+                        filename = "fcc-export.zip";
+                    }
+                    filename = safeFileName(filename);
+                    if (!filename.toLowerCase().endsWith(".zip")) {
+                        filename = filename + ".zip";
+                    }
+
+                    boolean ok = httpOk && looksZip && bytes != null && bytes.length > 0;
+                    if (!ok && httpOk && typeZip && bytes != null && bytes.length > 0 && !looksZip) {
+                        // Content-Type claims ZIP but magic missing — still reject (never treat as executable).
+                        ok = false;
+                    }
+
+                    result.put("ok", ok);
+                    result.put("statusCode", statusCode);
+                    result.put("contentType", contentType);
+                    result.put("filename", filename);
+                    result.put("sizeBytes", bytes == null ? 0 : bytes.length);
+                    result.put("finalUrl", finalUrl);
+                    result.put("preferredHost", preferredHost);
+                    result.put("base64Zip", ok ? Base64.encodeToString(bytes, Base64.NO_WRAP) : null);
+                    if (ok) {
+                        result.put("error", null);
+                        result.put("message", "FCC ZIP downloaded");
+                    } else if (!httpOk) {
+                        result.put("error", "http_" + statusCode);
+                        result.put("message", "Download failed: HTTP " + statusCode);
+                    } else {
+                        result.put("error", "not_zip");
+                        result.put("message", "Download failed: response is not a ZIP file");
+                    }
+                } catch (SocketTimeoutException timeout) {
+                    result.put("error", "timeout");
+                    result.put("message", "Download failed: timeout");
+                } catch (Exception exception) {
+                    result.put("error", "fetch_failed");
+                    result.put("message", "Download failed: "
+                        + (exception.getMessage() != null ? exception.getMessage() : "fetch_failed"));
+                } finally {
+                    if (connection != null) {
+                        connection.disconnect();
+                    }
+                    resolveOnMain(call, result);
+                }
+            }
+        }).start();
+    }
+
+    private String filenameFromContentDisposition(String header) {
+        if (header == null || header.trim().isEmpty()) return null;
+        Matcher matcher = Pattern.compile("filename\\*?=(?:UTF-8''|\"?)([^\";]+)", Pattern.CASE_INSENSITIVE)
+            .matcher(header);
+        if (matcher.find()) {
+            return matcher.group(1).replace("\"", "").trim();
+        }
+        return null;
+    }
+
     private String readHttpBodyCapped(InputStream stream, int maxBytes) throws IOException {
         byte[] bytes = readHttpBytesCapped(stream, maxBytes);
         if (bytes == null || bytes.length == 0) {

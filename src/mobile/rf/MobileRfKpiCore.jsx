@@ -12,8 +12,20 @@ import { runBabyDragonFtpTest } from "../testEngines/ftpTestEngine";
 import { cancelIperf3, runIperf3ThroughputTest } from "../testEngines/iperf3Runner";
 import { buildIperf3CommandFromSetup } from "../testEngines/iperf3CommandParser";
 import { buildIperf3ReportFiles, isIperf3Session, mapIperfExportStatus, resolveIperfExportModes } from "./reports/iperf3ReportExport";
-import { buildOoklaIterationSummary, resolveOoklaEvidenceMode, resolveOoklaIterations } from "./reports/externalEvidenceSummary";
-import { buildFccReportFiles, buildFccFileBaseName, buildFccGeneratedEvidenceSnapshot, isFccSession, mapFccExportStatus } from "./reports/fccReportExport";
+import {
+  buildFccIterationSummary,
+  buildOoklaIterationSummary,
+  resolveOoklaEvidenceMode,
+  resolveOoklaIterations,
+} from "./reports/externalEvidenceSummary";
+import {
+  buildFccReportFiles,
+  buildFccFileBaseName,
+  buildFccGeneratedEvidenceSnapshot,
+  isFccSession,
+  mapFccExportStatus,
+  matchNearestFccContextSample,
+} from "./reports/fccReportExport";
 import {
   buildOoklaDeveloperDebugFiles,
   buildOoklaEvidenceExportFile,
@@ -26,6 +38,17 @@ import {
   finalizeOoklaCsvTimeWindowOnExport,
   resolveOoklaDisplayResultId,
 } from "./utils/ooklaCsvImport";
+import {
+  base64ToArrayBuffer,
+  buildFccDedupeKey,
+  buildFccImportDebugPayload,
+  FCC_DEFAULT_BUFFER_SECONDS,
+  finalizeFccTimeWindowOnExport,
+  parseFccExportZip,
+  previewRowToEvidenceIteration,
+  resolveFccIterations,
+  validateFccZipDownloadUrl,
+} from "./utils/fccExportImport";
 import {
   DEFAULT_KPI_WARMUP_DURATION_SEC,
   assignOoklaTrafficStatsWarmupEstimates,
@@ -389,10 +412,25 @@ function ooklaMonitorHeadline(dataTest = {}, session = {}) {
 }
 
 function fccMonitorHeadline(dataTest = {}, session = {}) {
-  if (session?.appFccGeneratedEvidence?.sampleCount > 0 || session?.sampleCount > 0) {
-    return "FCC session context recorded. Import FCC export after session to truncate by BabyDragon timestamps.";
+  const iterations = Array.isArray(dataTest?.fccEvidenceIterations) && dataTest.fccEvidenceIterations.length
+    ? dataTest.fccEvidenceIterations
+    : resolveFccIterations(session || {});
+  const fccImport = dataTest?.appFccImport || session?.appFccImport || null;
+  const sourceTotal = fccImport?.originalSourceSummary?.collapsedTestsTotal
+    ?? fccImport?.collapsedTestCount
+    ?? fccImport?.stats?.collapsedTestCount
+    ?? null;
+  const insideTotal = fccImport?.sessionWindowSummary?.collapsedTestsInsideWindow
+    ?? fccImport?.insideWindowCount
+    ?? fccImport?.stats?.insideWindowCount
+    ?? null;
+  if (sourceTotal != null || iterations.length) {
+    return `FCC source parsed: ${sourceTotal ?? "—"} tests · Inside BabyDragon session: ${insideTotal ?? "—"} tests · Saved FCC evidence: ${iterations.length} tests`;
   }
-  return dataTest.message || "Recording RF/GPS for FCC App session context.";
+  if (session?.appFccGeneratedEvidence?.sampleCount > 0 || session?.sampleCount > 0) {
+    return "FCC session context recorded. Import FCC ZIP and add inside-window rows as evidence.";
+  }
+  return dataTest.message || "Recording RF/GPS for FCC App external evidence.";
 }
 
 function shouldShowDataTestMonitor(selectedMode, dataTest, visibleSession) {
@@ -1218,11 +1256,14 @@ function buildSummaryCsv(session, user, activeTask) {
       ookla_evidence_completeness_summary: "",
     }),
     fcc_import_status: fccSession ? (session?.appFccImport?.status || "not_imported") : "",
-    fcc_generated_evidence_file: fccSession && fccBaseName ? `${fccBaseName}_FCC_Evidence.csv; ${fccBaseName}_FCC_Evidence.json` : "",
+    fcc_iterations_saved: fccSession ? (resolveFccIterations(session).length || 0) : "",
+    fcc_generated_evidence_file: fccSession && fccBaseName
+      ? `${fccBaseName}_FCC_Evidence.csv; ${fccBaseName}_FCC_Evidence.json; ${fccBaseName}_FCC_Import_Metadata.json`
+      : "",
     external_evidence_rule: ooklaSession
       ? "OOKLA App DL/UL/Ping/Jitter are external manual evidence only. APP DL/UL THP columns remain N/A."
       : fccSession
-        ? "FCC App data is external. BabyDragon-generated FCC evidence is session context only; not BabyDragon engine THP."
+        ? "FCC App results are external imported evidence. BabyDragon RF/GPS/TrafficStats fields are context only; APP DL/UL THP remain N/A."
         : "",
     avg_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.avg ?? session?.avgLteRsrp, 1),
     min_lte_rsrp_dbm: compactNumber(stats?.lteRsrp?.min, 1),
@@ -1871,20 +1912,26 @@ function buildJsonDataTest(session) {
 
   if (isFccSession(session)) {
     const generated = session?.appFccGeneratedEvidence || {};
+    const fccIterations = resolveFccIterations(session);
+    const fccSummary = buildFccIterationSummary(fccIterations, session?.appFccImport || null);
     return {
-      type: "fcc_app_context",
-      label: "FCC App Session Context",
+      type: "fcc_app",
+      label: "FCC App External Evidence",
       status: session?.appExportStatus || mapFccExportStatus(session) || null,
-      summary_rule: "FCC App throughput is external. BabyDragon-generated FCC evidence is session context only.",
-      note: "Primary FCC context evidence is exported in dedicated FCC Evidence CSV/JSON files. Native app DL/UL throughput fields remain null.",
+      summary_rule: "FCC App results are external imported evidence. BabyDragon RF/GPS/TrafficStats fields are context captured by BabyDragon and are not FCC official throughput.",
+      note: "APP DL/UL THP remain null/N/A. Imported FCC KPIs are in dedicated FCC Evidence CSV/JSON files.",
       external_evidence: {
         provider: "fcc_app",
       },
       fcc_generated_evidence: generated,
-      fcc_import: session?.appFccImport || { status: "not_imported", truncate_status: "not_run" },
+      fcc_import: session?.appFccImport || { status: "not_imported" },
+      fcc_evidence_iterations: fccIterations,
+      fcc_iteration_summary: fccSummary,
+      appDlMbps: null,
+      appUlMbps: null,
       window: windowBlock,
       averages: { dl_mbps: null, ul_mbps: null },
-      completed_iterations: null,
+      completed_iterations: fccIterations.length || null,
       iterations: [],
     };
   }
@@ -2077,13 +2124,26 @@ function buildReportPackage({
       getTaskGrid,
     }));
   } else if (fccSession) {
-    files.push(...buildFccReportFiles({
+    // Final FCC export contract: exactly 3 FCC evidence files (no THP / OOKLA / extra debug).
+    // Use sessionId as both folder name and file prefix (same Reports/<sessionId>/ pattern as Data RF / OOKLA).
+    const fccFiles = buildFccReportFiles({
       session,
       user,
       activeTask,
       getTaskLabel,
       getTaskGrid,
-    }));
+      baseName: sessionId,
+    });
+    return {
+      sessionId,
+      displayName: sessionId,
+      generatedAt,
+      files: fccFiles,
+      iperfSession: false,
+      ooklaSession: false,
+      fccSession: true,
+      includeDeveloperDebugExport: false,
+    };
   } else {
     files.push({
       fileName: `${baseName}_THP_Iterations.csv`,
@@ -2125,7 +2185,13 @@ function downloadTextFile(file) {
 
 async function saveReportPackage(reportPackage) {
   if (typeof BabyDragonRfKpi.saveReportFiles === "function") {
-    const response = await BabyDragonRfKpi.saveReportFiles(reportPackage);
+    // Pass explicit folder + file payload (native creates Downloads/BabyDragon/Reports/<sessionId>/).
+    const sessionId = cleanFilePart(reportPackage?.sessionId, `bd-rf-${Date.now()}`);
+    const response = await BabyDragonRfKpi.saveReportFiles({
+      sessionId,
+      displayName: String(reportPackage?.displayName || sessionId),
+      files: Array.isArray(reportPackage?.files) ? reportPackage.files : [],
+    });
     if (response?.ok) return response;
     throw new Error(response?.message || response?.status || "Native report save failed.");
   }
@@ -3221,15 +3287,48 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     appTestStatus: appSource.status || "idle",
   };
 
+  const fccEvidenceIterationsRaw = isFcc
+    ? (Array.isArray(appSource.fccEvidenceIterations)
+      ? appSource.fccEvidenceIterations
+      : (Array.isArray(appSource.appFccEvidenceIterations) ? appSource.appFccEvidenceIterations : []))
+    : [];
+  const fccFinalized = isFcc
+    ? finalizeFccTimeWindowOnExport({
+      iterations: fccEvidenceIterationsRaw,
+      fccImport: appSource.appFccImport || null,
+      sessionStartMs: start,
+      sessionEndMs: end,
+      bufferSeconds: appSource.appFccImport?.timestampBufferSeconds ?? appSource.appFccImport?.bufferSeconds,
+    })
+    : null;
+  const fccEvidenceIterations = isFcc
+    ? (fccFinalized.iterations || []).map((item) => ({
+      ...item,
+      matchedContext: matchNearestFccContextSample({
+        ...partialSessionForFcc,
+        exportSamples: list,
+        traceSamples: list,
+      }, item),
+    }))
+    : [];
   const fccMetadata = isFcc ? {
     appTestType: "fcc_app",
     appExternalEvidenceProvider: "fcc_app",
-    appFccGeneratedEvidence: buildFccGeneratedEvidenceSnapshot(partialSessionForFcc, {}),
-    appFccImport: appSource.appFccImport || null,
-    appExportStatus: mapFccExportStatus({ ...partialSessionForFcc, appTestStatus: appSource.status }),
+    appFccGeneratedEvidence: buildFccGeneratedEvidenceSnapshot({
+      ...partialSessionForFcc,
+      appFccImport: fccFinalized?.fccImport || appSource.appFccImport || null,
+      appFccEvidenceIterations: fccEvidenceIterations,
+    }, {}),
+    appFccImport: fccFinalized?.fccImport || appSource.appFccImport || null,
+    appFccEvidenceIterations: fccEvidenceIterations,
+    appExportStatus: mapFccExportStatus({
+      ...partialSessionForFcc,
+      appTestStatus: appSource.status,
+      appFccEvidenceIterations: fccEvidenceIterations,
+    }),
     appTestStartedAt: appSource.startedAt || null,
     appTestEndedAt: appSource.endedAt || end,
-    appTestMessage: appSource.message || "FCC App session context recording.",
+    appTestMessage: appSource.message || "FCC App external evidence recording.",
   } : {};
 
   return {
@@ -5079,77 +5178,356 @@ export default function MobileRfKpi({
     setOoklaDraftResetToken((value) => value + 1);
   }
 
-  function readFccImportFileAsText(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(reader.error || new Error("Unable to read FCC import file."));
-      reader.readAsText(file);
-    });
+  function resolveFccImportSessionWindow(options = {}) {
+    const bufferSeconds = getNumber(options.bufferSeconds)
+      ?? getNumber(fccSetup.timestampBufferSeconds)
+      ?? FCC_DEFAULT_BUFFER_SECONDS;
+    const sessionStartMs = Number.isFinite(options.sessionStartMs)
+      ? options.sessionStartMs
+      : (Number.isFinite(dataTestRef.current.startedAt)
+        ? dataTestRef.current.startedAt
+        : (Number.isFinite(currentSessionRef.current?.startedAt) ? currentSessionRef.current.startedAt : null));
+    const sessionEndMs = Number.isFinite(options.sessionEndMs)
+      ? options.sessionEndMs
+      : (Number.isFinite(dataTestRef.current.endedAt)
+        ? dataTestRef.current.endedAt
+        : Date.now());
+    return { bufferSeconds, sessionStartMs, sessionEndMs };
   }
 
-  async function handleFccImportFile(file) {
-    if (!file) return;
-
-    const fileName = file.name || "fcc-export";
-    const mimeType = file.type || "application/octet-stream";
-    const sizeBytes = Number.isFinite(file.size) ? file.size : 0;
-    const importedAt = new Date().toISOString();
-    const extension = String(fileName.split(".").pop() || "").toLowerCase();
-
-    let detectedFormat = "unknown";
-    let parseStatus = "unknown";
-    let status = "not_imported";
-    let truncateStatus = "not_run";
-    let rawTextPreview = null;
-    let message = "Import metadata captured.";
-
-    if (extension === "zip") {
-      detectedFormat = "zip";
-      parseStatus = "zip_pending_sample";
-      status = "zip_pending_sample";
-      message = "ZIP support pending sample export structure.";
-    } else if (extension === "csv" || extension === "json" || extension === "txt") {
-      detectedFormat = extension;
-      try {
-        const text = await readFccImportFileAsText(file);
-        rawTextPreview = text.slice(0, 2000);
-        parseStatus = "imported_raw";
-        status = "imported_raw";
-        message = "Raw import captured. Truncate will run after FCC parser is implemented with sample schema.";
-      } catch (error) {
-        parseStatus = "read_failed";
-        status = "read_failed";
-        message = String(error?.message || error || "Unable to read FCC import file.");
-      }
-    } else {
-      parseStatus = "unsupported_format";
-      status = "unsupported_format";
-      message = "Unsupported FCC import format. Use CSV, JSON, TXT, or ZIP.";
+  async function ingestFccZipBuffer(buffer, {
+    fileName = "fcc-export.zip",
+    mimeType = "application/zip",
+    sizeBytes = null,
+    importMode = "manual_zip",
+    sourceUrl = null,
+    downloadedFilename = null,
+    downloadedSizeBytes = null,
+    downloadedAtIso = null,
+    contentType = null,
+    statusCode = null,
+    sessionStartMs = null,
+    sessionEndMs = null,
+    bufferSeconds = FCC_DEFAULT_BUFFER_SECONDS,
+    statusMessage = null,
+  } = {}) {
+    if (statusMessage) {
+      const parsingMeta = {
+        status: "parsing",
+        parseStatus: "parsing",
+        importMode,
+        sourceType: importMode === "url_zip" ? "url" : "file",
+        sourceUrl,
+        fileName,
+        downloadedFilename: downloadedFilename || fileName,
+        downloadedSizeBytes,
+        downloadedAtIso,
+        contentType,
+        statusCode,
+        message: statusMessage,
+        timestampBufferSeconds: bufferSeconds,
+        rows: [],
+        stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+      };
+      setFccSetup((prev) => ({ ...prev, appFccImport: parsingMeta }));
+      patchDataTest({ appFccImport: parsingMeta, message: statusMessage });
     }
 
-    const importMeta = {
+    const parsed = await parseFccExportZip(buffer, {
       fileName,
-      mimeType,
-      sizeBytes,
-      importedAt,
-      detectedFormat,
-      parseStatus,
-      status,
-      rawTextPreview,
-      rowCount: null,
-      truncatedRowCount: null,
-      timestampColumn: null,
-      truncateStatus,
-      timestampBufferSeconds: getNumber(fccSetup.timestampBufferSeconds) ?? 30,
-      message,
+      sessionStartMs,
+      sessionEndMs,
+      bufferSeconds,
+      importMode,
+      sourceType: importMode === "url_zip" ? "url" : "file",
+      sourceUrl,
+      downloadedFilename: downloadedFilename || fileName,
+      downloadedSizeBytes: downloadedSizeBytes ?? sizeBytes,
+      downloadedAtIso,
+      contentType: contentType || mimeType,
+      statusCode,
+    });
+    const importMeta = {
+      ...buildFccImportDebugPayload(parsed),
+      mimeType: mimeType || contentType || "application/zip",
+      sizeBytes: Number.isFinite(Number(sizeBytes))
+        ? Number(sizeBytes)
+        : (Number.isFinite(Number(downloadedSizeBytes)) ? Number(downloadedSizeBytes) : null),
+      message: parsed.ok
+        ? (importMode === "url_zip"
+          ? `FCC source parsed · ${parsed.stats?.collapsedTestCount || 0} test(s) from ${parsed.stats?.phaseRowCount || 0} phase row(s).`
+          : `Parsed ${parsed.stats?.collapsedTestCount || 0} FCC test(s) from ${parsed.stats?.phaseRowCount || 0} phase row(s).`)
+        : ((parsed.errors || []).join(" ") || "FCC ZIP parse failed."),
+    };
+    if (parsed.ok) {
+      importMeta.parseStatus = "parsed";
+      importMeta.status = "parsed";
+    }
+    setFccSetup((prev) => ({ ...prev, appFccImport: importMeta, timestampBufferSeconds: bufferSeconds }));
+    patchDataTest({
+      testType: "fcc_app",
+      appFccImport: importMeta,
+      message: importMeta.message,
+    });
+    return importMeta;
+  }
+
+  async function handleFccImportFile(file, options = {}) {
+    if (!file) return;
+
+    const fileName = file.name || "fcc-export.zip";
+    const extension = String(fileName.split(".").pop() || "").toLowerCase();
+    const { bufferSeconds, sessionStartMs, sessionEndMs } = resolveFccImportSessionWindow(options);
+
+    if (extension !== "zip") {
+      const importMeta = {
+        status: "unsupported_format",
+        parseStatus: "unsupported_format",
+        importMode: "manual_zip",
+        sourceType: "file",
+        fileName,
+        message: "Select an FCC App ZIP export (FCC-Mobile-Speed-Test-ANDROID-*.zip).",
+        timestampBufferSeconds: bufferSeconds,
+        rows: [],
+        stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+      };
+      setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
+      patchDataTest({ appFccImport: importMeta, message: importMeta.message });
+      return;
+    }
+
+    try {
+      const buffer = await file.arrayBuffer();
+      await ingestFccZipBuffer(buffer, {
+        fileName,
+        mimeType: file.type || "application/zip",
+        sizeBytes: Number.isFinite(file.size) ? file.size : null,
+        importMode: "manual_zip",
+        sourceType: "file",
+        sessionStartMs,
+        sessionEndMs,
+        bufferSeconds,
+        statusMessage: "Parsing FCC ZIP...",
+      });
+    } catch (error) {
+      const importMeta = {
+        status: "read_failed",
+        parseStatus: "read_failed",
+        importMode: "manual_zip",
+        sourceType: "file",
+        fileName,
+        message: String(error?.message || error || "Unable to read FCC ZIP."),
+        timestampBufferSeconds: bufferSeconds,
+        rows: [],
+        stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+      };
+      setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
+      patchDataTest({ appFccImport: importMeta, message: importMeta.message });
+    }
+  }
+
+  async function handleFccImportFromUrl(rawUrl, options = {}) {
+    const validation = validateFccZipDownloadUrl(rawUrl);
+    const { bufferSeconds, sessionStartMs, sessionEndMs } = resolveFccImportSessionWindow(options);
+
+    if (!validation.ok) {
+      const importMeta = {
+        status: "invalid_url",
+        parseStatus: "invalid_url",
+        importMode: "url_zip",
+        sourceType: "url",
+        sourceUrl: String(rawUrl || "").trim() || null,
+        message: validation.message || "Invalid URL: HTTPS FCC ZIP URL required",
+        timestampBufferSeconds: bufferSeconds,
+        rows: [],
+        stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+      };
+      setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
+      patchDataTest({ appFccImport: importMeta, message: importMeta.message });
+      return importMeta;
+    }
+
+    const sourceUrl = validation.url;
+    const downloadingMeta = {
+      status: "downloading",
+      parseStatus: "downloading",
+      importMode: "url_zip",
+      sourceType: "url",
+      sourceUrl,
+      message: validation.warning
+        ? `Downloading FCC ZIP... (${validation.warning})`
+        : "Downloading FCC ZIP...",
+      timestampBufferSeconds: bufferSeconds,
+      rows: [],
+      stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+    };
+    setFccSetup((prev) => ({ ...prev, fccZipUrl: sourceUrl, appFccImport: downloadingMeta }));
+    patchDataTest({ appFccImport: downloadingMeta, message: downloadingMeta.message });
+
+    if (typeof BabyDragonRfKpi.downloadFccZipFromUrl !== "function") {
+      const importMeta = {
+        ...downloadingMeta,
+        status: "download_failed",
+        parseStatus: "download_failed",
+        message: "Download failed: native FCC ZIP download is unavailable on this build",
+      };
+      setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
+      patchDataTest({ appFccImport: importMeta, message: importMeta.message });
+      return importMeta;
+    }
+
+    try {
+      const response = await BabyDragonRfKpi.downloadFccZipFromUrl({ url: sourceUrl });
+      if (!response?.ok || !response?.base64Zip) {
+        const safeReason = String(response?.message || response?.error || "download failed")
+          .replace(/[\r\n]+/g, " ")
+          .slice(0, 180);
+        const importMeta = {
+          status: "download_failed",
+          parseStatus: "download_failed",
+          importMode: "url_zip",
+          sourceType: "url",
+          sourceUrl,
+          contentType: response?.contentType || null,
+          statusCode: response?.statusCode ?? null,
+          downloadedFilename: response?.filename || null,
+          downloadedSizeBytes: response?.sizeBytes ?? null,
+          message: safeReason.startsWith("Download failed") || safeReason.startsWith("Invalid URL")
+            ? safeReason
+            : `Download failed: ${safeReason}`,
+          timestampBufferSeconds: bufferSeconds,
+          rows: [],
+          stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+        };
+        setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
+        patchDataTest({ appFccImport: importMeta, message: importMeta.message });
+        return importMeta;
+      }
+
+      const downloadedAtIso = new Date().toISOString();
+      const fileName = response.filename || "fcc-export.zip";
+      const downloadedMeta = {
+        status: "downloaded",
+        parseStatus: "downloaded",
+        importMode: "url_zip",
+        sourceType: "url",
+        sourceUrl,
+        fileName,
+        downloadedFilename: fileName,
+        downloadedSizeBytes: response.sizeBytes ?? null,
+        downloadedAtIso,
+        contentType: response.contentType || null,
+        statusCode: response.statusCode ?? null,
+        message: "FCC ZIP downloaded",
+        timestampBufferSeconds: bufferSeconds,
+        rows: [],
+        stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+      };
+      setFccSetup((prev) => ({ ...prev, appFccImport: downloadedMeta }));
+      patchDataTest({ appFccImport: downloadedMeta, message: downloadedMeta.message });
+
+      const buffer = base64ToArrayBuffer(response.base64Zip);
+      return await ingestFccZipBuffer(buffer, {
+        fileName,
+        mimeType: response.contentType || "application/zip",
+        sizeBytes: response.sizeBytes ?? null,
+        importMode: "url_zip",
+        sourceUrl,
+        downloadedFilename: fileName,
+        downloadedSizeBytes: response.sizeBytes ?? null,
+        downloadedAtIso,
+        contentType: response.contentType || null,
+        statusCode: response.statusCode ?? null,
+        sessionStartMs,
+        sessionEndMs,
+        bufferSeconds,
+        statusMessage: "Parsing FCC ZIP...",
+      });
+    } catch (error) {
+      const safeReason = String(error?.message || error || "download failed")
+        .replace(/[\r\n]+/g, " ")
+        .slice(0, 180);
+      const importMeta = {
+        status: "download_failed",
+        parseStatus: "download_failed",
+        importMode: "url_zip",
+        sourceType: "url",
+        sourceUrl,
+        message: `Download failed: ${safeReason}`,
+        timestampBufferSeconds: bufferSeconds,
+        rows: [],
+        stats: { phaseRowCount: 0, collapsedTestCount: 0, selectedCount: 0 },
+      };
+      setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
+      patchDataTest({ appFccImport: importMeta, message: importMeta.message });
+      return importMeta;
+    }
+  }
+
+  async function saveFccEvidenceIterations(rows = [], debugPayload = null) {
+    const incoming = Array.isArray(rows) ? rows : [];
+    const outside = incoming.filter((row) => row?.insideBabyDragonTimeWindow !== "yes");
+    const list = incoming.filter((row) => row?.insideBabyDragonTimeWindow === "yes");
+    if (!incoming.length) return { added: 0, skippedDuplicates: 0, skippedOutsideWindow: 0, addedTestIds: [] };
+
+    if (debugPayload) {
+      setFccSetup((prev) => ({ ...prev, appFccImport: debugPayload }));
+      patchDataTest({ appFccImport: debugPayload });
+    }
+
+    const existing = Array.isArray(dataTestRef.current.fccEvidenceIterations)
+      ? dataTestRef.current.fccEvidenceIterations
+      : [];
+    const existingKeys = new Set(
+      existing.map((item) => buildFccDedupeKey(item)).filter(Boolean),
+    );
+    let nextIterations = [...existing];
+    const savedAt = new Date().toISOString();
+    let added = 0;
+    let skippedDuplicates = 0;
+    const skippedOutsideWindow = outside.length;
+    const addedTestIds = [];
+    const liveSession = {
+      ...(currentSessionRef.current || {}),
+      exportSamples: samplesRef.current || currentSessionRef.current?.exportSamples || [],
+      traceSamples: samplesRef.current || currentSessionRef.current?.traceSamples || [],
     };
 
-    setFccSetup((prev) => ({ ...prev, appFccImport: importMeta }));
-    patchDataTest({
-      appFccImport: importMeta,
-      message: message,
+    list.forEach((row) => {
+      const key = buildFccDedupeKey(row);
+      if (key && existingKeys.has(key)) {
+        skippedDuplicates += 1;
+        return;
+      }
+      const matchedContext = matchNearestFccContextSample(liveSession, row);
+      const iterationNumber = nextIterations.length + 1;
+      const iteration = previewRowToEvidenceIteration(row, {
+        iterationNumber,
+        matchedContext,
+        savedAt,
+      });
+      nextIterations.push(iteration);
+      if (key) existingKeys.add(key);
+      added += 1;
+      if (iteration.fccTestId) addedTestIds.push(iteration.fccTestId);
     });
+
+    const status = nextIterations.length ? "evidence_saved" : (dataTestRef.current.status || "external_ready");
+    const parts = [];
+    if (added) parts.push(`Saved ${added} inside-window FCC evidence iteration(s).`);
+    if (skippedDuplicates) parts.push(`Skipped ${skippedDuplicates} duplicate(s).`);
+    if (skippedOutsideWindow) parts.push(`Blocked ${skippedOutsideWindow} outside-window row(s).`);
+    patchDataTest({
+      testType: "fcc_app",
+      phase: "fcc_app",
+      status,
+      fccEvidenceIterations: nextIterations,
+      appFccEvidenceIterations: nextIterations,
+      appFccImport: debugPayload || dataTestRef.current.appFccImport || fccSetup.appFccImport || null,
+      message: parts.join(" ") || "No FCC rows added.",
+    });
+
+    return { added, skippedDuplicates, skippedOutsideWindow, addedTestIds };
   }
 
   async function armWorkflow(mode) {
@@ -5197,7 +5575,7 @@ export default function MobileRfKpi({
         if (externalTestType === "ookla_app") {
           externalMessage = "OOKLA App selected. BabyDragon is recording RF/GPS timestamps. Run the OOKLA Speedtest app, return here, and save manual FE-confirmed evidence.";
         } else if (externalTestType === "fcc_app") {
-          externalMessage = "FCC App selected. BabyDragon is recording RF/GPS timestamps. Run the FCC app externally. After the session, import the FCC export file to truncate by BabyDragon start/end time.";
+          externalMessage = "FCC App selected. BabyDragon is recording RF/GPS timestamps. Run the FCC app externally, then import the FCC ZIP and add selected rows as external evidence.";
         }
         const ooklaKpiWarmup = resolveKpiWarmupDurationSec({
           kpiWarmupDurationSec: currentDataTestConfig?.ookla?.kpiWarmupDurationSec,
@@ -5287,7 +5665,7 @@ export default function MobileRfKpi({
       return;
     }
     const sessionToExport = savedSession;
-    if (!sessionToExport || (!sessionToExport.sampleCount && !sessionToExport?.appIterationResults?.length && !sessionToExport?.appOoklaEvidence && !sessionToExport?.appOoklaEvidenceIterations?.length && !sessionToExport?.appFccGeneratedEvidence)) {
+    if (!sessionToExport || (!sessionToExport.sampleCount && !sessionToExport?.appIterationResults?.length && !sessionToExport?.appOoklaEvidence && !sessionToExport?.appOoklaEvidenceIterations?.length && !sessionToExport?.appFccGeneratedEvidence && !sessionToExport?.appFccEvidenceIterations?.length)) {
       setExportStatus("Tap Stop / Save first, then export the saved report package.");
       return;
     }
@@ -5308,7 +5686,7 @@ export default function MobileRfKpi({
         : reportPackage.ooklaSession
           ? " OOKLA package: Report.json + RF_GPS_Trace.csv + OOKLA_Evidence.csv."
           : reportPackage.fccSession
-            ? " FCC Evidence CSV + JSON included."
+            ? " FCC package: exactly 3 FCC evidence files."
             : "";
       setExportStatus(result?.fallback
         ? `Report package downloaded: ${files.length} files.${exportExtra}`
@@ -5521,9 +5899,32 @@ export default function MobileRfKpi({
                   <FccTestCard
                     setup={fccSetup}
                     importMeta={dataTest.appFccImport || fccSetup.appFccImport || null}
-                    onChange={setFccSetup}
+                    onChange={(next) => {
+                      setFccSetup(next);
+                      if (next?.appFccImport) {
+                        patchDataTest({ appFccImport: next.appFccImport });
+                      }
+                    }}
                     onImportFile={handleFccImportFile}
-                    disabled={dataTest.status === "running"}
+                    onImportFromUrl={handleFccImportFromUrl}
+                    onAddSelectedRows={saveFccEvidenceIterations}
+                    sessionStartMs={
+                      Number.isFinite(dataTest.startedAt)
+                        ? dataTest.startedAt
+                        : (Number.isFinite(currentSession?.startedAt) ? currentSession.startedAt : null)
+                    }
+                    sessionEndMs={
+                      Number.isFinite(dataTest.endedAt)
+                        ? dataTest.endedAt
+                        : (dataTest.status === "running" || dataTest.status === "paused" || dataTest.status === "external_ready" || String(dataTest.status || "").startsWith("evidence")
+                          ? Date.now()
+                          : (Number.isFinite(currentSession?.endedAt) ? currentSession.endedAt : null))
+                    }
+                    provisionalSessionEnd={
+                      !Number.isFinite(dataTest.endedAt)
+                      && (dataTest.status === "running" || dataTest.status === "paused" || dataTest.status === "external_ready" || String(dataTest.status || "").startsWith("evidence"))
+                    }
+                    disabled={false}
                   />
                 )}
               </div>
@@ -5646,10 +6047,38 @@ export default function MobileRfKpi({
               </div>
             ) : isFccContext({ dataTest, savedSession: visibleSession }) ? (
               <div className="bd-rf-thp-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">
-                <span><b>RF samples</b><strong>{visibleSession?.sampleCount ?? samples.length ?? 0}</strong></span>
-                <span><b>GPS points</b><strong>{visibleSession?.gpsCount ?? 0}</strong></span>
-                <span><b>FCC import</b><strong>{visibleSession?.appFccImport?.status || "not_imported"}</strong></span>
-                <span><b>APP DL/UL THP</b><strong>N/A</strong></span>
+                {(() => {
+                  const iterations = Array.isArray(dataTest?.fccEvidenceIterations) && dataTest.fccEvidenceIterations.length
+                    ? dataTest.fccEvidenceIterations
+                    : resolveFccIterations(visibleSession || {});
+                  const fccImport = dataTest?.appFccImport || visibleSession?.appFccImport || null;
+                  const summary = buildFccIterationSummary(iterations, fccImport);
+                  const latest = iterations[iterations.length - 1] || null;
+                  const sourceTotal = fccImport?.originalSourceSummary?.collapsedTestsTotal
+                    ?? fccImport?.collapsedTestCount
+                    ?? fccImport?.stats?.collapsedTestCount
+                    ?? "—";
+                  const insideTotal = fccImport?.sessionWindowSummary?.collapsedTestsInsideWindow
+                    ?? fccImport?.insideWindowCount
+                    ?? fccImport?.stats?.insideWindowCount
+                    ?? "—";
+                  return (
+                    <>
+                      <span><b>FCC source parsed</b><strong>{sourceTotal} tests</strong></span>
+                      <span><b>Inside BabyDragon session</b><strong>{insideTotal} tests</strong></span>
+                      <span><b>Saved FCC evidence</b><strong>{summary.fccIterationsSaved || 0} tests</strong></span>
+                      <span><b>Import Status</b><strong>{fccImport?.status || "not_imported"}</strong></span>
+                      <span><b>Avg FCC DL Mbps</b><strong>{displayValue(summary.avgFccDlMbps, " Mbps")}</strong></span>
+                      <span><b>Avg FCC UL Mbps</b><strong>{displayValue(summary.avgFccUlMbps, " Mbps")}</strong></span>
+                      <span><b>Avg FCC Ping ms</b><strong>{displayValue(summary.avgFccPingMs, " ms")}</strong></span>
+                      <span><b>Avg FCC Jitter ms</b><strong>{displayValue(summary.avgFccJitterMs, " ms")}</strong></span>
+                      <span><b>Saved Wi‑Fi / Cell</b><strong>{summary.wifiCount || 0} / {summary.cellCount || 0}</strong></span>
+                      <span><b>Latest Server</b><strong>{displayValue(latest?.fccServerName)}</strong></span>
+                      <span><b>APP DL/UL THP</b><strong>N/A</strong></span>
+                      <span><b>Evidence Label</b><strong>Imported FCC App</strong></span>
+                    </>
+                  );
+                })()}
               </div>
             ) : (
               <div className="bd-rf-thp-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">

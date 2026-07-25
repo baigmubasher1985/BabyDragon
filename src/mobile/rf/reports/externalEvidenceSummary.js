@@ -91,3 +91,40 @@ export function isExternalAppSession(session = {}) {
   if (session.appExternalEvidenceProvider === "ookla_app" || session.appExternalEvidenceProvider === "fcc_app") return true;
   return false;
 }
+
+export function resolveFccEvidenceIterations(session = {}) {
+  if (Array.isArray(session.appFccEvidenceIterations) && session.appFccEvidenceIterations.length) {
+    return session.appFccEvidenceIterations;
+  }
+  return [];
+}
+
+export function buildFccIterationSummary(iterations = [], fccImportDebug = null) {
+  const list = Array.isArray(iterations) ? iterations : [];
+  const dl = metricSummary(metricValues(list, "fccDlMbps"), 3);
+  const ul = metricSummary(metricValues(list, "fccUlMbps"), 3);
+  const ping = metricSummary(metricValues(list, "fccPingMs"), 3);
+  const jitter = metricSummary(metricValues(list, "fccJitterMs"), 3);
+  const loss = metricSummary(metricValues(list, "fccLossPct"), 3);
+  const wifiCount = list.filter((item) => String(item?.fccConnectionType || "").toUpperCase() === "WIFI").length;
+  const cellCount = list.filter((item) => String(item?.fccConnectionType || "").toUpperCase() === "CELL").length;
+  return {
+    label: "Imported FCC App evidence",
+    count: list.length,
+    fccIterationsSaved: list.length,
+    wifiCount,
+    cellCount,
+    phaseRowsImported: fccImportDebug?.phaseRowCount ?? fccImportDebug?.stats?.phaseRowCount ?? null,
+    collapsedTestCount: fccImportDebug?.collapsedTestCount ?? fccImportDebug?.stats?.collapsedTestCount ?? null,
+    insideWindowCount: fccImportDebug?.insideWindowCount ?? fccImportDebug?.stats?.insideWindowCount ?? null,
+    avgFccDlMbps: dl.avg,
+    avgFccUlMbps: ul.avg,
+    avgFccPingMs: ping.avg,
+    avgFccJitterMs: jitter.avg,
+    avgFccLossPct: loss.avg,
+    minFccDlMbps: dl.min,
+    maxFccDlMbps: dl.max,
+    minFccUlMbps: ul.min,
+    maxFccUlMbps: ul.max,
+  };
+}
