@@ -1,4 +1,5 @@
 const VALUE_SHORT_FLAGS = new Set(["c", "p", "t", "i", "P", "b", "w", "A"]);
+const NUMERIC_VALUE_FLAGS = new Set(["p", "t", "i", "P"]);
 const BOOL_SHORT_FLAGS = new Set(["R", "J", "u", "4", "6", "d"]);
 
 export function tokenizeIperf3Command(commandText = "") {
@@ -63,6 +64,17 @@ function splitGluedShortFlags(token = "") {
 
     if (VALUE_SHORT_FLAGS.has(flagChar)) {
       parts.push(`-${flagChar}`);
+
+      if (NUMERIC_VALUE_FLAGS.has(flagChar)) {
+        let value = "";
+        while (index < token.length && /\d/.test(token[index])) {
+          value += token[index];
+          index += 1;
+        }
+        if (value) parts.push(value);
+        continue;
+      }
+
       let value = "";
       while (index < token.length) {
         if (isNextShortFlag(token, index)) break;
@@ -144,6 +156,7 @@ export function parseIperf3Command(commandText = "", existingSetup = {}) {
   const previousPort = previousPortFromSetup(existingSetup);
   const result = {
     ok: false,
+    errors: [],
     warnings: [],
     values: {
       rawCommand: String(commandText || "").trim(),
@@ -153,7 +166,7 @@ export function parseIperf3Command(commandText = "", existingSetup = {}) {
   };
 
   if (!tokens.length) {
-    result.warnings.push("Command is empty. Form values were kept unchanged.");
+    result.errors.push("Command is empty.");
     return result;
   }
 
@@ -306,17 +319,17 @@ export function parseIperf3Command(commandText = "", existingSetup = {}) {
     );
   }
 
-  if (!sawClient) {
-    result.warnings.push("No -c / --client server found. Form values were kept unchanged.");
+  if (!sawClient || !String(result.values.server || "").trim()) {
+    result.errors.push("Missing client server (-c / --client).");
   }
   if (!sawJson) {
-    result.warnings.push("No -J / --json flag found. BabyDragon will add JSON mode when executing.");
+    result.warnings.push("No -J / --json flag. BabyDragon will add JSON when executing.");
   }
   if (!sawPortFlag && !result.warnings.some((item) => item.includes("Invalid port"))) {
     result.values.port = previousPort;
   }
 
-  result.ok = sawClient;
+  result.ok = result.errors.length === 0;
   return result;
 }
 
@@ -328,8 +341,19 @@ export function buildIperf3CommandFromSetup(setup = {}) {
   const streams = resolveDigits(String(setup.streams ?? ""), "1");
   const protocol = String(setup.protocol || "TCP").toUpperCase();
   const direction = String(setup.direction || "").toLowerCase();
-  const reverse = setup.reverseMode === true;
-  const bidir = setup.bidirMode === true || (isDlUlDirection(direction) && protocol === "TCP");
+  // Direction is authoritative: UL never inherits stale bidir/reverse form state.
+  let reverse = setup.reverseMode === true;
+  let bidir = setup.bidirMode === true;
+  if (direction === "ul") {
+    reverse = false;
+    bidir = false;
+  } else if (direction === "dl") {
+    reverse = true;
+    bidir = false;
+  } else if (isDlUlDirection(direction)) {
+    reverse = false;
+    bidir = protocol === "TCP" ? true : bidir;
+  }
   const udpBitrateMbps = resolveDigits(String(setup.udpBitrateMbps ?? ""), "10");
   const parts = ["iperf3", "-c", server, "-p", port, "-t", duration, "-i", interval];
   if (Number(streams) > 1) parts.push("-P", streams);
@@ -338,6 +362,61 @@ export function buildIperf3CommandFromSetup(setup = {}) {
   else if (reverse) parts.push("-R");
   parts.push("-J");
   return parts.join(" ");
+}
+
+/**
+ * Consistency check between saved command text and direction / process stdout flags.
+ * Hard-fails on direction/command mismatches (STEP 1J2-F9). Does not alter execution.
+ */
+export function assertIperfCommandConsistency({
+  command = "",
+  directionKey = "",
+  reverseMode = false,
+  bidirMode = false,
+  processReverse = null,
+  processBidir = null,
+} = {}) {
+  const warnings = [];
+  const errors = [];
+  const tokens = String(command || "").trim().split(/\s+/).filter(Boolean);
+  const hasBidir = tokens.includes("--bidir");
+  const hasReverse = tokens.includes("-R") || tokens.includes("--reverse");
+  const dir = String(directionKey || "").toLowerCase();
+
+  if (dir === "ul" && (hasBidir || bidirMode === true)) {
+    errors.push("UL direction must not include --bidir.");
+  }
+  if (dir === "ul" && (hasReverse || reverseMode === true)) {
+    errors.push("UL direction must not include reverse (-R).");
+  }
+  if (dir === "dl" && hasBidir) {
+    errors.push("DL direction should use reverse (-R), not --bidir.");
+  }
+  if (dir === "dl" && !hasReverse && reverseMode !== true) {
+    errors.push("INTERNAL_DIRECTION_MISMATCH: selected DL but executed command lacks -R.");
+  }
+  if (dir === "dl_ul" && !hasBidir && bidirMode !== true) {
+    errors.push("INTERNAL_DIRECTION_MISMATCH: bidirectional direction expects --bidir.");
+  }
+  if (processReverse != null && Boolean(processReverse) !== hasReverse && dir !== "dl_ul") {
+    errors.push(`Saved command reverse flag mismatch vs process test_start.reverse=${processReverse}.`);
+  }
+  if (processBidir != null && Boolean(processBidir) !== hasBidir) {
+    errors.push(`Saved command bidir flag mismatch vs process test_start.bidir=${processBidir}.`);
+  }
+  if (dir === "dl" && processReverse === false) {
+    errors.push("INTERNAL_DIRECTION_MISMATCH: selected DL but process test_start.reverse=0.");
+  }
+  if (dir === "dl_ul" && processBidir === false) {
+    errors.push("INTERNAL_DIRECTION_MISMATCH: selected DL+UL but process test_start.bidir=0.");
+  }
+  return {
+    ok: errors.length === 0,
+    hardFail: errors.length > 0,
+    errors,
+    warnings,
+    message: errors[0] || warnings[0] || null,
+  };
 }
 
 export function sanitizeIperfSetup(setup = {}, fallback = {}) {
@@ -439,6 +518,24 @@ export function resolveIperf3RunSetup(setup = {}, fallback = {}) {
     const { _bidirError, ...cleanSetup } = result.setup;
     result.setup = cleanSetup;
     return result;
+  }
+
+  // Enforce direction → flag mapping unless a pasted command already set modes.
+  if (!usedParsedCommand) {
+    const dir = String(result.setup.direction || "").toLowerCase();
+    if (dir === "dl") {
+      result.setup.reverseMode = true;
+      result.setup.bidirMode = false;
+    } else if (dir === "ul") {
+      result.setup.reverseMode = false;
+      result.setup.bidirMode = false;
+    } else if (dir === "dl_ul") {
+      // applyDlUlBidirPolicy already forced bidir for TCP; keep reverse off.
+      result.setup.reverseMode = false;
+      if (String(result.setup.protocol || "TCP").toUpperCase() === "TCP") {
+        result.setup.bidirMode = true;
+      }
+    }
   }
 
   result.setup.reverseMode = result.setup.reverseMode === true;

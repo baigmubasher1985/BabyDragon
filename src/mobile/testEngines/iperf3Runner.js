@@ -93,24 +93,33 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
   }
 
   const setup = resolved.setup;
-  const iterations = clamp(asNumber(setup.iterations, 1), 1, 20);
+  const continuous = String(setup.runMode || config.runMode || "fixed").toLowerCase() === "continuous";
+  const MAX_IPERF_ITERATIONS = 999999;
+  const iterations = continuous
+    ? null
+    : clamp(asNumber(setup.iterations, 1), 1, MAX_IPERF_ITERATIONS);
   const waitSeconds = clamp(asNumber(setup.waitSeconds, 0), 0, 120);
   const iterationResults = [];
   let lastMapped = null;
 
-  for (let iteration = 1; iteration <= iterations; iteration += 1) {
+  for (let iteration = 1; continuous ? !signal?.aborted : iteration <= iterations; iteration += 1) {
     if (signal?.aborted) {
       await cancelIperf3();
       throw makeAbortError();
     }
 
+    const iterLabel = continuous
+      ? `Continuous · iter ${iteration}`
+      : `iPerf3 iteration ${iteration}/${iterations}`;
+
     onProgress?.({
       phase: "iperf",
       status: "running",
       currentIteration: iteration,
-      completedIterations: iterationResults.length,
-      iterationsRequested: iterations,
-      message: `iPerf3 iteration ${iteration}/${iterations} starting on ${setup.server}:${setup.port}...`,
+      completedIterations: iterationResults.filter((r) => r.status === "complete").length,
+      iterationsRequested: continuous ? null : iterations,
+      runMode: continuous ? "continuous" : "fixed",
+      message: `${iterLabel} starting on ${setup.server}:${setup.port}...`,
       warnings: resolved.warnings,
     });
 
@@ -122,8 +131,9 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
           phase: "iperf",
           status: "running",
           currentIteration: iteration,
-          completedIterations: iterationResults.length,
-          iterationsRequested: iterations,
+          completedIterations: iterationResults.filter((r) => r.status === "complete").length,
+          iterationsRequested: continuous ? null : iterations,
+          runMode: continuous ? "continuous" : "fixed",
         });
       });
     } catch (error) {
@@ -131,7 +141,45 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
         await cancelIperf3();
         throw makeAbortError();
       }
-      throw error;
+      // Runtime iteration failure: record and continue (do not abort sequence).
+      const failMapped = {
+        ok: false,
+        message: error?.message || "iPerf3 iteration failed.",
+        errorCode: "IPERF3_ITERATION_FAILED",
+        dlMbps: null,
+        ulMbps: null,
+      };
+      lastMapped = failMapped;
+      iterationResults.push(buildIperfIterationResult(iteration, failMapped, setup, null));
+      onProgress?.({
+        phase: "iperf",
+        status: "running",
+        currentIteration: iteration,
+        completedIterations: iterationResults.filter((r) => r.status === "complete").length,
+        iterationsRequested: continuous ? null : iterations,
+        runMode: continuous ? "continuous" : "fixed",
+        iterationResults: [...iterationResults],
+        dlMbps: averageMbps(iterationResults, "dlMbps"),
+        ulMbps: averageMbps(iterationResults, "ulMbps"),
+        message: `${iterLabel} failed (${failMapped.message}). Continuing...`,
+      });
+      const shouldWaitFail = continuous ? waitSeconds > 0 : (iteration < iterations && waitSeconds > 0);
+      if (shouldWaitFail) {
+        await waitWithSignal(waitSeconds, signal, (remaining) => {
+          onProgress?.({
+            phase: "wait",
+            status: "running",
+            currentIteration: iteration + 1,
+            completedIterations: iterationResults.filter((r) => r.status === "complete").length,
+            iterationsRequested: continuous ? null : iterations,
+            runMode: continuous ? "continuous" : "fixed",
+            message: continuous
+              ? `Waiting ${remaining}s before continuous iter ${iteration + 1}...`
+              : `Waiting ${remaining}s before iPerf3 iteration ${iteration + 1}/${iterations}...`,
+          });
+        });
+      }
+      continue;
     }
 
     if (signal?.aborted) {
@@ -147,25 +195,30 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
       phase: "iperf",
       status: "running",
       currentIteration: iteration,
-      completedIterations: iterationResults.length,
-      iterationsRequested: iterations,
+      completedIterations: iterationResults.filter((r) => r.status === "complete").length,
+      iterationsRequested: continuous ? null : iterations,
+      runMode: continuous ? "continuous" : "fixed",
       iterationResults: [...iterationResults],
       dlMbps: averageMbps(iterationResults, "dlMbps"),
       ulMbps: averageMbps(iterationResults, "ulMbps"),
       message: lastMapped.ok
-        ? `iPerf3 iteration ${iteration}/${iterations} complete.`
-        : (lastMapped.message || `iPerf3 iteration ${iteration}/${iterations} failed.`),
+        ? `${iterLabel} complete.`
+        : (lastMapped.message || `${iterLabel} failed.`),
     });
 
-    if (iteration < iterations && waitSeconds > 0) {
+    const shouldWait = continuous ? waitSeconds > 0 : (iteration < iterations && waitSeconds > 0);
+    if (shouldWait) {
       await waitWithSignal(waitSeconds, signal, (remaining) => {
         onProgress?.({
           phase: "wait",
           status: "running",
           currentIteration: iteration + 1,
-          completedIterations: iterationResults.length,
-          iterationsRequested: iterations,
-          message: `Waiting ${remaining}s before iPerf3 iteration ${iteration + 1}/${iterations}...`,
+          completedIterations: iterationResults.filter((r) => r.status === "complete").length,
+          iterationsRequested: continuous ? null : iterations,
+          runMode: continuous ? "continuous" : "fixed",
+          message: continuous
+            ? `Waiting ${remaining}s before continuous iter ${iteration + 1}...`
+            : `Waiting ${remaining}s before iPerf3 iteration ${iteration + 1}/${iterations}...`,
         });
       });
     }
@@ -175,13 +228,16 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
   const avgUl = averageMbps(iterationResults, "ulMbps");
   const totalDlBytes = iterationResults.reduce((sum, item) => sum + (item.dlMeasuredBytes || 0), 0);
   const totalUlBytes = iterationResults.reduce((sum, item) => sum + (item.ulMeasuredBytes || 0), 0);
-  const allOk = iterationResults.every((item) => item.status === "complete");
+  const completed = iterationResults.filter((item) => item.status === "complete").length;
+  const failed = iterationResults.length - completed;
+  const allOk = failed === 0 && completed > 0;
 
   return {
     ok: allOk,
     source: "native-iperf3-v1g4b",
     setup,
     warnings: resolved.warnings,
+    runMode: continuous ? "continuous" : "fixed",
     iterations: iterationResults,
     iterationResults,
     avgDlMbps: avgDl,
@@ -189,9 +245,11 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
     downloadBytes: totalDlBytes,
     uploadBytes: totalUlBytes,
     lastMapped,
-    message: allOk
-      ? `iPerf3 complete ${iterationResults.length}/${iterations}.`
-      : (lastMapped?.message || "iPerf3 test finished with errors."),
+    message: continuous
+      ? `iPerf3 continuous stopped. Attempted ${iterationResults.length}, completed ${completed}, failed ${failed}.`
+      : (allOk
+        ? `iPerf3 complete ${iterationResults.length}/${iterations}.`
+        : (lastMapped?.message || "iPerf3 test finished with errors.")),
   };
 }
 

@@ -4,10 +4,16 @@ import {
   finalizeFccTimeWindowOnExport,
   resolveFccIterations,
 } from "../utils/fccExportImport.js";
+import {
+  classifyEvidenceMatchTier,
+  EVIDENCE_MATCH_TIERS,
+  isFreshOrRestoredGpsStatus,
+  gpsMatchConfidence,
+} from "./externalEvidenceMatchTiers.js";
 
 export const FCC_REPORT_VERSION = "1.1.5-fcc-external-evidence";
 
-const FCC_RF_MATCH_WINDOW_MS = 60_000;
+const FCC_RF_MATCH_WINDOW_MS = EVIDENCE_MATCH_TIERS.NEAR_MAX_MS;
 
 function getNumber(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -198,7 +204,16 @@ export function matchNearestFccContextSample(session = {}, iteration = {}, maxDe
     }
   });
 
-  if (!nearest || minDelta > maxDeltaMs) return emptyMatchedContext();
+  const tierInfo = classifyEvidenceMatchTier(minDelta);
+  if (!nearest || !tierInfo.matched || minDelta > maxDeltaMs) {
+    return {
+      ...emptyMatchedContext(),
+      matchedRfStatus: "unmatched",
+      matchedRfTimeDeltaSec: nearest ? Number((minDelta / 1000).toFixed(3)) : null,
+      matchTier: tierInfo.tier,
+      matchConfidence: "unmatched",
+    };
+  }
 
   const snapshot = nearest.snapshot || {};
   const serving = snapshot.serving && typeof snapshot.serving === "object" ? snapshot.serving : {};
@@ -210,13 +225,20 @@ export function matchNearestFccContextSample(session = {}, iteration = {}, maxDe
     : (String(serving.rat || "").toUpperCase() === "NR" ? serving : {});
   const rat = snapshot.currentRatName || serving.technology || snapshot.dataNetworkTypeName || null;
   const traffic = nearest.trafficStats || {};
+  const gpsStatus = nearest.gps?.gps_status;
+  const gpsOk = !gpsStatus || isFreshOrRestoredGpsStatus(gpsStatus);
+  const conf = gpsMatchConfidence({ tier: tierInfo.tier, gpsStatus, source: "babydragon_session_rf" });
 
   return {
-    matchedRfStatus: "matched",
+    matchedRfStatus: conf.status,
+    matchTier: tierInfo.tier,
+    matchConfidence: conf.confidence,
     matchedRfTimeDeltaSec: Number((minDelta / 1000).toFixed(3)),
-    bdGpsLatitude: jsonNumber(nearest.gps?.lat, 7),
-    bdGpsLongitude: jsonNumber(nearest.gps?.lng, 7),
-    bdGpsAccuracyM: jsonNumber(nearest.gps?.accuracy, 1),
+    bdGpsLatitude: gpsOk ? jsonNumber(nearest.gps?.lat, 7) : null,
+    bdGpsLongitude: gpsOk ? jsonNumber(nearest.gps?.lng, 7) : null,
+    bdGpsAccuracyM: gpsOk ? jsonNumber(nearest.gps?.accuracy, 1) : null,
+    matchedGpsStatus: gpsStatus || null,
+    matchedGpsFreshness: gpsOk ? "fresh_or_restored" : "rejected_stale_or_lost",
     bdRat: jsonText(rat),
     bdLteRsrp: jsonNumber(lte.rsrp ?? lte.dbm, 1),
     bdLteRsrq: jsonNumber(lte.rsrq, 1),

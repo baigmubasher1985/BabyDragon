@@ -8,13 +8,19 @@ import {
   flattenWarmupEstimateForCsv,
   resolveKpiWarmupDurationSec,
 } from "../utils/ooklaTrafficStatsWarmup.js";
+import {
+  classifyEvidenceMatchTier,
+  EVIDENCE_MATCH_TIERS,
+  isFreshOrRestoredGpsStatus,
+  gpsMatchConfidence,
+} from "./externalEvidenceMatchTiers.js";
 
 export const OOKLA_REPORT_VERSION = "1.1.12-ookla-warmup-empty-guard";
 
 /** Default: normal OOKLA ZIP excludes developer debug files. */
 export const INCLUDE_DEVELOPER_DEBUG_EXPORT_DEFAULT = false;
 
-const OOKLA_RF_MATCH_WINDOW_MS = 60_000;
+const OOKLA_RF_MATCH_WINDOW_MS = EVIDENCE_MATCH_TIERS.NEAR_MAX_MS;
 
 function getNumber(value) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -252,7 +258,16 @@ export function matchNearestActiveRfSample(session = {}, iteration = {}, maxDelt
     }
   });
 
-  if (!nearest || minDelta > maxDeltaMs) return emptyMatchedRfFields();
+  const tierInfo = classifyEvidenceMatchTier(minDelta);
+  if (!nearest || !tierInfo.matched || minDelta > maxDeltaMs) {
+    return {
+      ...emptyMatchedRfFields(),
+      matchedRfStatus: "unmatched",
+      matchedRfTimeDeltaSec: nearest ? Number((minDelta / 1000).toFixed(3)) : null,
+      matchTier: tierInfo.tier,
+      matchConfidence: "unmatched",
+    };
+  }
 
   const snapshot = nearest.snapshot || {};
   const serving = snapshot.serving && typeof snapshot.serving === "object" ? snapshot.serving : {};
@@ -264,14 +279,21 @@ export function matchNearestActiveRfSample(session = {}, iteration = {}, maxDelt
     : (String(serving.rat || "").toUpperCase() === "NR" ? serving : {});
   const rat = snapshot.currentRatName || serving.technology || snapshot.dataNetworkTypeName || null;
   const traffic = nearest.trafficStats || {};
+  const gpsStatus = nearest.gps?.gps_status;
+  const gpsOk = !gpsStatus || isFreshOrRestoredGpsStatus(gpsStatus);
+  const conf = gpsMatchConfidence({ tier: tierInfo.tier, gpsStatus, source: "babydragon_session_rf" });
 
   return {
-    matchedRfStatus: "matched",
+    matchedRfStatus: conf.status,
+    matchTier: tierInfo.tier,
+    matchConfidence: conf.confidence,
     matchedRfTimestamp: nearest.timestamp ? new Date(nearest.timestamp).toISOString() : null,
     matchedRfTimeDeltaSec: Number((minDelta / 1000).toFixed(3)),
-    matchedLatitude: jsonNumber(nearest.gps?.lat, 7),
-    matchedLongitude: jsonNumber(nearest.gps?.lng, 7),
-    matchedGpsAccuracyM: jsonNumber(nearest.gps?.accuracy, 1),
+    matchedLatitude: gpsOk ? jsonNumber(nearest.gps?.lat, 7) : null,
+    matchedLongitude: gpsOk ? jsonNumber(nearest.gps?.lng, 7) : null,
+    matchedGpsAccuracyM: gpsOk ? jsonNumber(nearest.gps?.accuracy, 1) : null,
+    matchedGpsStatus: gpsStatus || null,
+    matchedGpsFreshness: gpsOk ? "fresh_or_restored" : "rejected_stale_or_lost",
     matchedRat: jsonText(rat),
     matchedLteRsrp: jsonNumber(lte.rsrp ?? lte.dbm, 1),
     matchedLteRsrq: jsonNumber(lte.rsrq, 1),
@@ -842,7 +864,15 @@ export function mapOoklaExportStatus(status, evidence = {}, iterations = null) {
     return "draft";
   }
   const confirmed = list.filter((item) => item.confirmation === "fe_confirmed");
-  if (confirmed.length === list.length) return "saved";
-  if (confirmed.length > 0 || list.some(hasOoklaIterationContent)) return confirmed.length ? "partial" : "draft";
+  const complete = list.filter((item) => {
+    const completeness = String(item.evidenceCompleteness || "").toLowerCase();
+    const source = String(item.evidenceSource || item.source || "").toLowerCase();
+    return completeness === "complete"
+      || source.includes("csv")
+      || (hasOoklaIterationContent(item) && (item.dlMbps != null || item.ulMbps != null) && (item.resultId || item.ooklaDateTime || item.capturedAt));
+  });
+  if (confirmed.length === list.length || complete.length === list.length) return "saved";
+  if (confirmed.length > 0 || complete.length > 0) return "partial";
+  if (list.some(hasOoklaIterationContent)) return "partial";
   return "draft";
 }

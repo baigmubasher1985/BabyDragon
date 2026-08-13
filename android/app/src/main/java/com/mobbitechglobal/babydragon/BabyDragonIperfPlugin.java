@@ -134,7 +134,9 @@ public class BabyDragonIperfPlugin extends Plugin {
                     result.put("ok", finished && exitCode == 0);
                     result.put("status", finished && exitCode == 0 ? "complete" : result.optString("status", "error"));
                     result.put("error_code", finished && exitCode == 0 ? "" : result.optString("error_code", "IPERF_EXIT_" + exitCode));
-                    result.put("message", finished && exitCode == 0 ? "iPerf3 test completed." : safeErrorMessage(stderrText, exitCode));
+                    result.put("message", finished && exitCode == 0
+                        ? "iPerf3 test completed."
+                        : safeErrorMessage(stderrText, stdoutText, exitCode));
                     result.put("started_at_ms", startedMs);
                     result.put("ended_at_ms", endedMs);
                     result.put("elapsed_ms", endedMs - startedMs);
@@ -659,6 +661,25 @@ public class BabyDragonIperfPlugin extends Plugin {
             return stderr.trim();
         }
 
+        return "iPerf3 exited with code " + exitCode + ".";
+    }
+
+    /** Prefer stdout JSON "error" when stderr is empty (common for iperf3 -J failures). */
+    private String safeErrorMessage(String stderr, String stdout, int exitCode) {
+        if (stderr != null && !stderr.trim().isEmpty()) {
+            return stderr.trim();
+        }
+        if (stdout != null && !stdout.trim().isEmpty()) {
+            try {
+                JSONObject json = new JSONObject(stdout);
+                String error = json.optString("error", "").trim();
+                if (!error.isEmpty()) {
+                    return error;
+                }
+            } catch (Exception ignored) {
+                // not JSON — fall through
+            }
+        }
         return "iPerf3 exited with code " + exitCode + ".";
     }
 

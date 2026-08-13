@@ -55,6 +55,65 @@ import {
   isExportableOoklaIteration,
   resolveKpiWarmupDurationSec,
 } from "./utils/ooklaTrafficStatsWarmup";
+import {
+  buildExcelPlotReportModel,
+  isExcelPlotExportableSession,
+} from "./reports/excelPlotReportExport";
+import { buildExcelPlotReportFile } from "./reports/excelPlotWorkbook";
+import { classifyFtpFailure, classifyIperfFailure, classifyNativeHttpFailure } from "./reports/dataTestOutcome";
+import { hasMeaningfulTrafficStatsMovement } from "./reports/trafficStatsMeasurement";
+import {
+  buildContinuousCanonicalOutcome,
+  controlledEngineDisplayName,
+  countControlledIterations,
+  deriveContinuousOutcomeStatus,
+  deriveControlledRunStatus,
+  formatControlledIterationsDisplay,
+  formatControlledRunStatusLabel,
+  isCompletedIterationRow,
+  isControlledTestIncomplete,
+  isFailedIterationRow,
+  successfulDirectionMbps,
+} from "./reports/controlledIterationContract";
+import { buildUiKpiLegends, classifyMetricValue } from "./config/rfKpiDisplayConfig";
+import { buildVoiceEvents } from "./utils/rfEventDetector";
+import {
+  MOBILITY_MODE,
+  ensureLiveRfPreview,
+  promoteToRecordingMode,
+  demoteToPreviewMode,
+  startMobilitySession,
+  stopMobilitySession,
+  getMobilityGps,
+  getMobilityGpsEvents,
+  updateMobilityTestStatus,
+  drainNativeMobilitySamples,
+  takePendingMobilityRfSamples,
+  isMobilitySessionActive,
+  getMobilityMode,
+  fetchMobilityDiagnostics,
+  describeGpsUiStatus,
+  describeRfStreamUiStatus,
+  getMobilityStartError,
+  getLastMobilityStartAck,
+  getLatestMobilityRfSample,
+  subscribeMobilitySession,
+  getMobilitySessionSnapshot,
+} from "./session/mobilitySessionController";
+import {
+  enrichMobilityGpsSample,
+  GPS_FRESH_MAX_AGE_MS,
+  GPS_LOST_AFTER_MS,
+} from "./session/mobilityGpsFreshness";
+import {
+  ENGINE_IDS,
+  engineIdFromUiTestType,
+  engineDisplayName,
+  jsonDataTestType,
+  isControlledEngineId,
+  normalizeEngineId,
+  uiTestTypeFromEngineId,
+} from "./config/engineIdentity";
 
 
 const BabyDragonRfKpi = registerPlugin("BabyDragonRfKpi");
@@ -75,8 +134,10 @@ const KPI_ROW_SETS = {
     { group: "NR Secondary", kpi: "SS-SINR", unit: "dB", metric: "nrSinr" },
     { group: "Data KPIs", kpi: "APP DL THP", unit: "Mbps", avgMode: "data", dataMetric: "dl" },
     { group: "Data KPIs", kpi: "APP UL THP", unit: "Mbps", avgMode: "data", dataMetric: "ul" },
-    { group: "Data KPIs", kpi: "Android TrafficStats DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl" },
-    { group: "Data KPIs", kpi: "Android TrafficStats UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Mobile DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl", trafficScope: "mobile" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Mobile UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul", trafficScope: "mobile" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Total DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl", trafficScope: "total" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Total UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul", trafficScope: "total" },
     { group: "Voice KPIs", kpi: "Call State", unit: "", avgMode: "none" },
   ],
   nrLte: [
@@ -94,8 +155,10 @@ const KPI_ROW_SETS = {
     { group: "NR Secondary", kpi: "SS-SINR", unit: "dB", metric: "nrSinr" },
     { group: "Data KPIs", kpi: "APP DL THP", unit: "Mbps", avgMode: "data", dataMetric: "dl" },
     { group: "Data KPIs", kpi: "APP UL THP", unit: "Mbps", avgMode: "data", dataMetric: "ul" },
-    { group: "Data KPIs", kpi: "Android TrafficStats DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl" },
-    { group: "Data KPIs", kpi: "Android TrafficStats UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Mobile DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl", trafficScope: "mobile" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Mobile UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul", trafficScope: "mobile" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Total DL", unit: "Mbps", avgMode: "traffic", trafficMetric: "dl", trafficScope: "total" },
+    { group: "Data KPIs", kpi: "Android TrafficStats Total UL", unit: "Mbps", avgMode: "traffic", trafficMetric: "ul", trafficScope: "total" },
     { group: "Voice KPIs", kpi: "VoLTE / VoNR State", unit: "", avgMode: "none" },
   ],
   wcdma: [
@@ -127,79 +190,9 @@ const RAT_OPTIONS = [
   { key: "gsm", label: "2G", hint: "GSM" },
 ];
 
+/** Legends/thresholds/colors from shared rfKpiDisplayConfig (also used by Excel Plot Report). */
 const KPI_LEGENDS = [
-  {
-    name: "NR/LTE RSRP",
-    unit: "dBm",
-    note: "5G/LTE reference signal power family",
-    bands: [
-      { label: "Excellent", range: ">= -80", className: "excellent" },
-      { label: "Good", range: "-81 to -90", className: "good" },
-      { label: "Fair", range: "-91 to -100", className: "fair" },
-      { label: "Poor", range: "-101 to -110", className: "poor" },
-      { label: "Bad", range: "< -110", className: "bad" },
-    ],
-  },
-  {
-    name: "NR/LTE RSRQ",
-    unit: "dB",
-    note: "5G/LTE reference signal quality family",
-    bands: [
-      { label: "Excellent", range: ">= -10", className: "excellent" },
-      { label: "Good", range: "-11 to -15", className: "good" },
-      { label: "Fair", range: "-16 to -20", className: "fair" },
-      { label: "Poor", range: "-21 to -25", className: "poor" },
-      { label: "Bad", range: "< -25", className: "bad" },
-    ],
-  },
-  {
-    name: "NR/LTE SINR",
-    unit: "dB",
-    note: "Signal to interference plus noise family",
-    bands: [
-      { label: "Excellent", range: ">= 20", className: "excellent" },
-      { label: "Good", range: "13 to 19", className: "good" },
-      { label: "Fair", range: "5 to 12", className: "fair" },
-      { label: "Poor", range: "0 to 4", className: "poor" },
-      { label: "Bad", range: "< 0", className: "bad" },
-    ],
-  },
-  {
-    name: "3G RSCP / EcNo",
-    unit: "dBm / dB",
-    note: "WCDMA signal level and quality families",
-    bands: [
-      { label: "Excellent", range: "RSCP >= -75", className: "excellent" },
-      { label: "Good", range: "-76 to -85", className: "good" },
-      { label: "Fair", range: "-86 to -95", className: "fair" },
-      { label: "Poor", range: "-96 to -105", className: "poor" },
-      { label: "Bad", range: "< -105", className: "bad" },
-    ],
-  },
-  {
-    name: "2G RSSI / RxLev",
-    unit: "dBm",
-    note: "GSM signal strength family",
-    bands: [
-      { label: "Excellent", range: ">= -65", className: "excellent" },
-      { label: "Good", range: "-66 to -75", className: "good" },
-      { label: "Fair", range: "-76 to -85", className: "fair" },
-      { label: "Poor", range: "-86 to -95", className: "poor" },
-      { label: "Bad", range: "< -95", className: "bad" },
-    ],
-  },
-  {
-    name: "APP THP",
-    unit: "Mbps",
-    note: "Application-layer DL/UL throughput thresholds",
-    bands: [
-      { label: "Excellent", range: "Project target +", className: "excellent" },
-      { label: "Good", range: "Meets target", className: "good" },
-      { label: "Fair", range: "Watch zone", className: "fair" },
-      { label: "Poor", range: "Below target", className: "poor" },
-      { label: "Bad", range: "Severe fail", className: "bad" },
-    ],
-  },
+  ...buildUiKpiLegends(),
   {
     name: "Voice",
     unit: "Events",
@@ -242,7 +235,7 @@ const DEFAULT_THP_WAIT_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.waitSeconds ||
 const DEFAULT_THP_DURATION_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.durationSeconds || 10);
 const DEFAULT_THP_INTERVAL_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.intervalSeconds || 1);
 const DEFAULT_THP_WARMUP_SECONDS = Number(DEFAULT_NATIVE_HTTP_SETUP.warmupSeconds ?? 3);
-const MAX_THP_ITERATIONS = 20;
+const MAX_THP_ITERATIONS = 999999;
 const MAX_THP_WAIT_SECONDS = 120;
 const MAX_THP_DURATION_SECONDS = 300;
 const MAX_THP_INTERVAL_SECONDS = 10;
@@ -267,9 +260,13 @@ function makeDataTestIdle() {
     uploadUrl: DEFAULT_NATIVE_HTTP_SETUP.uploadUrl,
     currentIteration: 0,
     completedIterations: 0,
+    failedIterations: 0,
+    attemptedIterations: 0,
+    remainingIterations: DEFAULT_THP_ITERATIONS,
     iterationResults: [],
     message: "Internal DL/UL test ready.",
     error: "",
+    endReason: null,
     startedAt: null,
     endedAt: null,
   };
@@ -310,21 +307,44 @@ function formatThroughputValue(value) {
   return value.toFixed(2);
 }
 
+function directionAppliesToMetric(direction, metric) {
+  const d = String(direction || "").toLowerCase();
+  if (!d || d === "n/a" || d === "na") return true;
+  if (metric === "dl") {
+    return d === "dl" || d === "download" || d === "dl_ul" || d === "both"
+      || d.includes("dl") || d.includes("down");
+  }
+  if (metric === "ul") {
+    return d === "ul" || d === "upload" || d === "dl_ul" || d === "both"
+      || d.includes("ul") || d.includes("up");
+  }
+  return true;
+}
+
 function formatThroughputLive(metric, dataContext = {}) {
   const value = pickThroughputValue(metric, dataContext);
   if (value !== null) return formatThroughputValue(value);
 
   const active = dataContext.dataTest || {};
   if (active.status === "running") {
+    if (active.phase === "session_paused") return "N/A";
+    // Native HTTP uses download/upload phases.
     if (metric === "dl" && active.phase === "download") return "Testing...";
     if (metric === "ul" && active.phase === "upload") return "Testing...";
+    // FTP / iPerf (and waiting between iterations) use engine phase names.
+    const tt = String(active.testType || "").toLowerCase();
+    if (tt === "ftp" || tt === "iperf" || tt.includes("http") || tt === "native_http") {
+      if (!directionAppliesToMetric(active.direction, metric)) return "N/A";
+      return "Testing...";
+    }
   }
 
   return "N/A";
 }
 
 function formatThroughputWithUnit(value) {
-  const shown = String(value || "N/A");
+  if (value === null || value === undefined || value === "") return "N/A";
+  const shown = String(value);
   if (shown === "N/A" || shown.includes("Testing") || shown.includes("Queued")) return shown;
   return `${shown} Mbps`;
 }
@@ -568,10 +588,68 @@ function commitIntegerDraft(value, min, max, fallback) {
 
 function averageThroughput(results, key) {
   const values = (Array.isArray(results) ? results : [])
+    .filter((row) => isCompletedIterationRow(row))
     .map((row) => getNumber(row?.[key]))
     .filter((value) => typeof value === "number" && Number.isFinite(value));
   if (!values.length) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+/** APP throughput from successful directions only (includes partial FTP iterations). */
+function averageSuccessfulDirectionThroughput(results, direction) {
+  const values = (Array.isArray(results) ? results : [])
+    .map((row) => successfulDirectionMbps(row, direction))
+    .filter((value) => typeof value === "number" && Number.isFinite(value));
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function isRealFtpFailureText(text = "") {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return false;
+  if (["complete", "success", "ok", "passed", "n/a", "na", "measured"].includes(t)) return false;
+  return /fail|error|denied|550|530|timeout|timed out|reject|unable|cannot|refused|not found|permission|passive/.test(t);
+}
+
+function resolveContinuousStopPresentation(iterationResults = [], engineLabel = "Data test") {
+  const counts = summarizeControlledIterationCounts(iterationResults, null, "continuous_complete");
+  const failedRow = [...iterationResults].reverse().find(isFailedIterationRow);
+  const reason = String(
+    failedRow?.conciseReason
+    || failedRow?.error
+    || failedRow?.errorMessage
+    || failedRow?.message
+    || "",
+  ).trim();
+  const canonical = buildContinuousCanonicalOutcome({
+    attempted: counts.attemptedIterations,
+    completed: counts.completedIterations,
+    failed: counts.failedIterations,
+    engineLabel,
+    failureReason: reason,
+  });
+  return {
+    counts,
+    status: canonical.status,
+    error: canonical.error,
+    message: canonical.message,
+    overall: canonical.overall,
+    errorSummary: reason,
+    endReason: canonical.endReason,
+    title: canonical.status === "failed"
+      ? `Continuous ${engineLabel} Failed`
+      : canonical.status === "complete_with_failures"
+        ? `Continuous ${engineLabel} Saved with Failures`
+        : `Continuous ${engineLabel} Saved`,
+  };
+}
+
+function summarizeControlledIterationCounts(iterationResults, requested, status) {
+  return countControlledIterations({
+    requested,
+    iterationResults,
+    status,
+  });
 }
 
 function splitIterationDuration(totalSeconds, direction) {
@@ -625,21 +703,44 @@ function flattenIperfIntervalRows(iterationRows = []) {
   return flat;
 }
 
+function isContinuousDataMode(dataTest = {}, visibleSession = {}) {
+  const mode = String(
+    dataTest.runMode
+    || dataTest.setupSnapshot?.runMode
+    || visibleSession?.appRunMode
+    || visibleSession?.appSetupSnapshot?.runMode
+    || "",
+  ).toLowerCase();
+  const status = String(dataTest.status || visibleSession?.appTestStatus || "").toLowerCase();
+  const endReason = String(dataTest.endReason || visibleSession?.appEndReason || "").toLowerCase();
+  return mode === "continuous"
+    || status === "continuous_complete"
+    || endReason === "user_stopped_continuous";
+}
+
 function iperfMonitorHeadline(dataTest = {}, visibleSession = {}) {
-  const completed = dataTest.completedIterations || visibleSession?.appCompletedIterations || 0;
-  const requested = dataTest.iterationsRequested || visibleSession?.appIterationsRequested || 1;
+  const completed = dataTest.completedIterations
+    ?? visibleSession?.appCompletedIterations
+    ?? 0;
+  const continuous = isContinuousDataMode(dataTest, visibleSession);
+  const requestedRaw = continuous
+    ? null
+    : (dataTest.iterationsRequested ?? visibleSession?.appIterationsRequested ?? null);
+  const requested = requestedRaw == null || requestedRaw === "" ? null : Number(requestedRaw);
   const statusWord = dataTest.status === "running"
     ? "running"
-    : dataTest.status === "complete"
+    : dataTest.status === "complete" || dataTest.status === "continuous_complete"
       ? "complete"
       : dataTest.status === "partial"
         ? "partial"
         : dataTest.status === "error"
           ? "failed"
-          : dataTest.status === "stopped"
+          : dataTest.status === "stopped" || dataTest.status === "incomplete"
             ? "stopped"
             : "ready";
-  return `iPerf3 ${statusWord} ${completed}/${requested}`;
+  if (continuous) return `iPerf3 ${statusWord} · Completed ${completed}`;
+  if (requested != null && Number.isFinite(requested)) return `iPerf3 ${statusWord} ${completed}/${requested}`;
+  return `iPerf3 ${statusWord} · Completed ${completed}`;
 }
 
 function iperfMonitorInfoLine(dataTest = {}) {
@@ -1094,17 +1195,47 @@ function buildVoiceSummary(session) {
   const finalCallState = callStates[callStates.length - 1] || "N/A";
   const offhookCount = callStates.filter((state) => String(state).toLowerCase() === "offhook").length;
   const voiceMode = session?.mode === "voice";
+  const voice = buildVoiceEvents({ samples, session });
+  const events = voice.events || [];
+  const ringingEpisodes = events.filter((e) => e.eventType === "CALL_STATE_RINGING").length;
+  const answeredObserved = events.filter((e) => e.eventType === "CALL_STATE_OFFHOOK").length;
+  const ringingToIdleWithoutOffhook = events.filter((e) => String(e.notes || "").includes("without observed offhook")).length;
+  const offhookTransitionCount = answeredObserved;
+  const offhookDurations = events
+    .map((e) => getNumber(e.observedOffhookDurationSec))
+    .filter((n) => n !== null);
+  const setupTimes = events
+    .map((e) => getNumber(e.setupTimeMs))
+    .filter((n) => n !== null);
+  const avgRingToOffhookSec = setupTimes.length
+    ? Number((setupTimes.reduce((a, b) => a + b, 0) / setupTimes.length / 1000).toFixed(3))
+    : null;
+  const observedOffhookDurationSec = offhookDurations.length
+    ? Number(offhookDurations.reduce((a, b) => a + b, 0).toFixed(3))
+    : null;
+  const hasPassive = !voiceMode && events.length > 0;
   return {
-    voice_monitor_status: voiceMode ? "recorded" : "not_run_in_data_mode",
+    voice_monitor_status: voiceMode
+      ? "recorded"
+      : (hasPassive ? "passive_call_state_observation_in_data_mode" : "not_run_in_data_mode"),
     final_call_state: finalCallState,
     offhook_samples: offhookCount,
+    ringing_episodes: ringingEpisodes,
+    answered_observed: answeredObserved,
+    ringing_to_idle_without_offhook: ringingToIdleWithoutOffhook,
+    offhook_transition_count: offhookTransitionCount,
+    observed_offhook_duration_sec: observedOffhookDurationSec ?? "N/A",
+    average_ringing_to_offhook_sec: avgRingToOffhookSec ?? "N/A",
     attempts: "N/A",
-    connected: offhookCount > 0 ? "observed_by_call_state" : "N/A",
+    connected: offhookCount > 0 || answeredObserved > 0 ? "observed_by_call_state" : "N/A",
     drops: "N/A",
     failures: "N/A",
+    events,
     remarks: voiceMode
       ? "Public Android call-state samples captured. Manual attempt/connect/drop counters will be added in the dedicated Voice KPI step."
-      : "Data session. Voice KPIs are exported as placeholders until Voice Mode is run.",
+      : (hasPassive
+        ? "Data session with passive TelephonyManager call-state observation. Drops/failures/MO/MT/SRVCC/CSFB are N/A."
+        : "Data session. No call-state transitions observed."),
   };
 }
 
@@ -1113,6 +1244,17 @@ function getThpWindow(session) {
   const rows = Array.isArray(session?.appIterationResults) ? session.appIterationResults : [];
   const starts = rows.map((row) => getNumber(row.startedAt)).filter((value) => value !== null);
   const ends = rows.map((row) => getNumber(row.endedAt)).filter((value) => value !== null);
+  const fallbackStart = getNumber(session?.appTestStartedAt);
+  const fallbackEnd = getNumber(session?.appTestEndedAt);
+  if ((!starts.length || !ends.length) && fallbackStart !== null && fallbackEnd !== null) {
+    const durationMs = Math.max(0, fallbackEnd - fallbackStart);
+    return {
+      startedAt: fallbackStart,
+      endedAt: fallbackEnd,
+      durationMs,
+      duration: formatDuration(durationMs),
+    };
+  }
   if (!starts.length || !ends.length) return { startedAt: "", endedAt: "", durationMs: "", duration: "" };
   const startedAt = Math.min(...starts);
   const endedAt = Math.max(...ends);
@@ -1144,7 +1286,7 @@ function buildSummaryCsv(session, user, activeTask) {
     "thp_started_local", "thp_ended_local", "thp_duration", "thp_duration_ms",
     "app_dl_avg_mbps", "app_ul_avg_mbps", "thp_iterations_requested", "thp_iterations_completed",
     "thp_requested_duration_sec", "thp_warmup_sec", "thp_interval_sec", "thp_wait_between_iterations_sec", "thp_direction",
-    "thp_status", "thp_summary_rule", "report_scope",
+    "thp_status", "thp_iterations_attempted", "thp_iterations_failed", "thp_iterations_remaining", "thp_error", "thp_failure_stage", "thp_summary_rule", "thp_end_reason", "report_scope",
     "external_evidence_provider", "ookla_iteration_count", "ookla_evidence_mode", "ookla_iterations_saved",
     "ookla_csv_rows_imported", "ookla_csv_rows_inside_window", "ookla_csv_rows_selected",
     "avg_ookla_dl_mbps", "avg_ookla_ul_mbps", "avg_ookla_ping_ms", "avg_ookla_jitter_ms",
@@ -1161,6 +1303,9 @@ function buildSummaryCsv(session, user, activeTask) {
     "avg_3g_rscp_dbm", "avg_3g_ecno_db", "avg_3g_rssi_dbm",
     "avg_2g_rssi_dbm", "avg_2g_ber", "avg_2g_timing_advance",
     "traffic_stats_avg_dl_mbps", "traffic_stats_avg_ul_mbps", "traffic_stats_sample_count",
+    "traffic_stats_mobile_avg_dl_mbps", "traffic_stats_mobile_avg_ul_mbps", "traffic_stats_mobile_sample_count",
+    "traffic_stats_total_avg_dl_mbps", "traffic_stats_total_avg_ul_mbps", "traffic_stats_total_sample_count",
+    "traffic_stats_active_source_note",
     "traffic_stats_supported", "traffic_stats_source", "traffic_stats_summary_rule",
     "voice_monitor_status", "final_call_state", "offhook_samples", "remarks"
   ];
@@ -1189,8 +1334,32 @@ function buildSummaryCsv(session, user, activeTask) {
     thp_ended_local: formatLocalDateTime(thpWindow.endedAt),
     thp_duration: thpWindow.duration,
     thp_duration_ms: thpWindow.durationMs,
-    app_dl_avg_mbps: (ooklaSession || fccSession) ? "N/A" : compactNumber(session?.appDlMbps, 2),
-    app_ul_avg_mbps: (ooklaSession || fccSession) ? "N/A" : compactNumber(session?.appUlMbps, 2),
+    app_dl_avg_mbps: (ooklaSession || fccSession)
+      ? "N/A"
+      : (() => {
+        const rows = Array.isArray(session?.appIterationResults) ? session.appIterationResults : [];
+        const hasDl = rows.some((r) => {
+          if (String(r.dl_status || r.dlStatus || "").toLowerCase() === "failed" || r.dlOk === false) return false;
+          return getNumber(r.dlMbps) !== null;
+        });
+        if (["error", "failed", "failed_before_start"].includes(String(session?.appTestStatus || "").toLowerCase()) && !hasDl) {
+          return "N/A";
+        }
+        return compactNumber(session?.appDlMbps, 2);
+      })(),
+    app_ul_avg_mbps: (ooklaSession || fccSession)
+      ? "N/A"
+      : (() => {
+        const rows = Array.isArray(session?.appIterationResults) ? session.appIterationResults : [];
+        const hasUl = rows.some((r) => {
+          if (String(r.ul_status || r.ulStatus || "").toLowerCase() === "failed" || r.ulOk === false) return false;
+          return getNumber(r.ulMbps) !== null;
+        });
+        if (["error", "failed", "failed_before_start"].includes(String(session?.appTestStatus || "").toLowerCase()) && !hasUl) {
+          return "N/A";
+        }
+        return compactNumber(session?.appUlMbps, 2);
+      })(),
     thp_iterations_requested: session?.appIterationsRequested ?? "",
     thp_iterations_completed: session?.appCompletedIterations ?? "",
     thp_requested_duration_sec: session?.appDurationSeconds ?? "",
@@ -1202,14 +1371,81 @@ function buildSummaryCsv(session, user, activeTask) {
       ? (session?.appExportStatus || mapOoklaExportStatus(session?.appTestStatus, ooklaEvidence, ooklaIterations) || "draft")
       : fccSession
         ? (session?.appExportStatus || mapFccExportStatus(session) || "draft")
-        : (session?.appCompletedIterations && session?.appCompletedIterations === session?.appIterationsRequested ? "complete" : session?.appCompletedIterations ? "partial" : "not_run"),
+        : (() => {
+          const counts = countControlledIterations({
+            requested: session?.appIterationsRequested,
+            iterationResults: session?.appIterationResults,
+            completedIterations: session?.appCompletedIterations,
+            failedIterations: session?.appFailedIterations,
+            status: session?.appTestStatus,
+          });
+          return deriveControlledRunStatus({
+            requested: counts.requestedIterations,
+            attempted: counts.attemptedIterations,
+            completed: counts.completedIterations,
+            failed: counts.failedIterations,
+            remaining: counts.remainingIterations,
+            rawStatus: session?.appTestStatus,
+            endReason: session?.appEndReason,
+          });
+        })(),
+    thp_error: (() => {
+      const st = String(session?.appTestStatus || "").toLowerCase();
+      if (st === "error" || st === "failed" || st === "complete_with_failures" || st === "failed_before_start") {
+        return session?.appTestError || session?.appTestMessage || "";
+      }
+      const rows = Array.isArray(session?.appIterationResults) ? session.appIterationResults : [];
+      if (rows.some(isFailedIterationRow)) {
+        return session?.appTestError || rows.filter(isFailedIterationRow).map((r) => r.error || r.errorCode).filter(Boolean).join("; ") || "";
+      }
+      return "";
+    })(),
+    thp_failure_stage: (() => {
+      const rows = Array.isArray(session?.appIterationResults) ? session.appIterationResults : [];
+      const failed = rows.find(isFailedIterationRow);
+      if (failed?.failureStage) return failed.failureStage;
+      const st = String(session?.appTestStatus || "").toLowerCase();
+      if (st !== "error" && st !== "failed" && st !== "complete_with_failures" && st !== "failed_before_start") return "";
+      return "before_transfer";
+    })(),
+    thp_iterations_attempted: (() => {
+      const counts = countControlledIterations({
+        requested: session?.appIterationsRequested,
+        iterationResults: session?.appIterationResults,
+        completedIterations: session?.appCompletedIterations,
+        failedIterations: session?.appFailedIterations,
+        status: session?.appTestStatus,
+      });
+      return counts.attemptedIterations;
+    })(),
+    thp_iterations_failed: (() => {
+      const counts = countControlledIterations({
+        requested: session?.appIterationsRequested,
+        iterationResults: session?.appIterationResults,
+        completedIterations: session?.appCompletedIterations,
+        failedIterations: session?.appFailedIterations,
+        status: session?.appTestStatus,
+      });
+      return counts.failedIterations;
+    })(),
+    thp_iterations_remaining: (() => {
+      const counts = countControlledIterations({
+        requested: session?.appIterationsRequested,
+        iterationResults: session?.appIterationResults,
+        completedIterations: session?.appCompletedIterations,
+        failedIterations: session?.appFailedIterations,
+        status: session?.appTestStatus,
+      });
+      return counts.remainingIterations ?? "";
+    })(),
+    thp_end_reason: session?.appEndReason || "",
     thp_summary_rule: iperfSession
       ? "Avg DL/UL THP is the arithmetic average of completed iPerf3 iteration rows only."
       : ooklaSession
         ? "OOKLA App DL/UL are FE-confirmed external manual evidence only. Native app DL/UL throughput columns remain N/A."
         : fccSession
           ? "FCC App data is external. BabyDragon-generated FCC evidence is session context only; not BabyDragon engine THP."
-          : "Avg DL/UL THP is the arithmetic average of completed THP iterations only.",
+          : "Avg DL/UL THP is the arithmetic average of completed THP iterations only. Failed attempts before transfer keep APP DL/UL N/A. Averages label as based on completed iterations.",
     report_scope: iperfSession
       ? "Summary has one row. iPerf3 summary and interval details are in dedicated iPerf3 CSV/JSON files. RF/GPS sample rows are in RF_GPS_Trace CSV."
       : ooklaSession
@@ -1295,8 +1531,16 @@ function buildSummaryCsv(session, user, activeTask) {
     traffic_stats_avg_dl_mbps: compactNumber(session?.trafficStatsAvgDlMbps ?? stats?.trafficStatsDl?.avg, 2),
     traffic_stats_avg_ul_mbps: compactNumber(session?.trafficStatsAvgUlMbps ?? stats?.trafficStatsUl?.avg, 2),
     traffic_stats_sample_count: session?.trafficStatsSampleCount ?? stats?.trafficStatsDl?.count ?? "",
+    traffic_stats_mobile_avg_dl_mbps: compactNumber(session?.trafficStatsAvgDlMbps ?? stats?.trafficStatsDl?.avg, 2),
+    traffic_stats_mobile_avg_ul_mbps: compactNumber(session?.trafficStatsAvgUlMbps ?? stats?.trafficStatsUl?.avg, 2),
+    traffic_stats_mobile_sample_count: session?.trafficStatsSampleCount ?? stats?.trafficStatsDl?.count ?? "",
+    traffic_stats_total_avg_dl_mbps: compactNumber(session?.trafficStatsTotalAvgDlMbps ?? stats?.trafficStatsTotalDl?.avg, 2),
+    traffic_stats_total_avg_ul_mbps: compactNumber(session?.trafficStatsTotalAvgUlMbps ?? stats?.trafficStatsTotalUl?.avg, 2),
+    traffic_stats_total_sample_count: session?.trafficStatsTotalSampleCount ?? stats?.trafficStatsTotalDl?.count ?? "",
+    traffic_stats_active_source_note: session?.trafficStatsActiveSourceNote
+      || resolveTrafficStatsSummaryNote(session, stats),
     traffic_stats_supported: session?.trafficStatsSupported ? "yes" : "no",
-    traffic_stats_source: "mobile",
+    traffic_stats_source: "mobile_and_total",
     traffic_stats_summary_rule: TRAFFIC_STATS_SUMMARY_RULE,
     voice_monitor_status: voice.voice_monitor_status,
     final_call_state: voice.final_call_state,
@@ -1379,7 +1623,9 @@ function buildTraceCsv(session) {
   const samples = session?.exportSamples || session?.traceSamples || [];
   const headers = [
     "sample_index", "sample_id", "session_id", "timestamp_local", "timestamp_iso", "mode", "record_state", "recorded",
-    "latitude", "longitude", "gps_accuracy_m", "gps_speed_mps", "rat", "carrier", "sim_carrier", "network_operator", "data_network_type", "call_state",
+    "latitude", "longitude", "gps_accuracy_m", "gps_speed_mps", "gps_status", "gps_fix_age_ms",
+    "location_fix_timestamp_iso", "gps_provider",
+    "rat", "carrier", "sim_carrier", "network_operator", "data_network_type", "call_state",
     "lte_pci", "lte_earfcn", "lte_tac", "lte_cell_id", "lte_rsrp_dbm", "lte_rsrq_db", "lte_sinr_db", "lte_sinr_source", "lte_rssi_dbm",
     "nr_pci", "nr_nrarfcn", "nr_tac", "nr_nci", "nr_ss_rsrp_dbm", "nr_ss_rsrq_db", "nr_ss_sinr_db", "nr_status",
     "threeg_uarfcn", "threeg_psc", "threeg_lac", "threeg_cell_id", "threeg_rscp_dbm", "threeg_ecno_db",
@@ -1411,8 +1657,12 @@ function buildTraceCsv(session) {
       recorded: sample?.recorded ? "yes" : "no",
       latitude: compactNumber(sample?.gps?.lat, 7),
       longitude: compactNumber(sample?.gps?.lng, 7),
-      gps_accuracy_m: compactNumber(sample?.gps?.accuracy, 1),
-      gps_speed_mps: compactNumber(sample?.gps?.speed, 2),
+      gps_accuracy_m: compactNumber(sample?.gps?.accuracy ?? sample?.gps?.accuracy_m, 1),
+      gps_speed_mps: compactNumber(sample?.gps?.speed ?? sample?.gps?.speed_mps, 2),
+      gps_status: sample?.gps?.gps_status || "",
+      gps_fix_age_ms: compactNumber(sample?.gps?.gps_fix_age_ms, 0),
+      location_fix_timestamp_iso: sample?.gps?.location_fix_timestamp_iso || "",
+      gps_provider: sample?.gps?.provider || "",
       ...fields,
       ...trafficFields,
     };
@@ -1426,41 +1676,64 @@ function buildThpCsv(session) {
     "iteration", "status", "task", "grid", "session_id",
     "started_at_local", "ended_at_local", "wall_seconds",
     "direction", "requested_duration_sec", "warmup_sec", "requested_dl_duration_sec", "requested_ul_duration_sec", "interval_sec", "wait_after_iteration_sec",
-    "dl_mbps", "ul_mbps", "dl_warmup_bytes", "ul_warmup_bytes", "dl_measured_bytes", "ul_measured_bytes", "dl_total_bytes", "ul_total_bytes", "dl_transfer_seconds", "ul_transfer_seconds", "dl_wall_seconds", "ul_wall_seconds", "dl_source", "ul_source", "summary_note"
+    "dl_mbps", "ul_mbps", "dl_warmup_bytes", "ul_warmup_bytes", "dl_measured_bytes", "ul_measured_bytes", "dl_total_bytes", "ul_total_bytes", "dl_transfer_seconds", "ul_transfer_seconds", "dl_wall_seconds", "ul_wall_seconds", "dl_source", "ul_source",
+    "failure_stage", "error_code", "error_message", "summary_note",
   ];
   const totalRows = (session?.appIterationResults || []).length;
-  const rows = (session?.appIterationResults || []).map((item) => ({
-    iteration: item.iteration,
-    status: item.status || "complete",
-    task: session?.taskLabel || "",
-    grid: session?.grid || "",
-    session_id: session?.id || "",
-    started_at_local: formatLocalDateTime(item.startedAt),
-    ended_at_local: formatLocalDateTime(item.endedAt),
-    wall_seconds: compactNumber(((getNumber(item.endedAt) || 0) - (getNumber(item.startedAt) || 0)) / 1000, 2),
-    direction: item.direction || session?.appDirection || "",
-    requested_duration_sec: item.durationSeconds ?? session?.appDurationSeconds ?? "",
-    warmup_sec: item.warmupSeconds ?? session?.appWarmupSeconds ?? 0,
-    requested_dl_duration_sec: item.dlDurationSeconds ?? "",
-    requested_ul_duration_sec: item.ulDurationSeconds ?? "",
-    interval_sec: item.intervalSeconds ?? session?.appIntervalSeconds ?? "",
-    wait_after_iteration_sec: item.iteration < totalRows ? (item.waitSeconds ?? session?.appWaitSeconds ?? "") : 0,
-    dl_mbps: compactNumber(item.dlMbps, 2),
-    ul_mbps: compactNumber(item.ulMbps, 2),
-    dl_warmup_bytes: item.dlWarmupBytes || 0,
-    ul_warmup_bytes: item.ulWarmupBytes || 0,
-    dl_measured_bytes: item.dlMeasuredBytes || item.dlBytes || 0,
-    ul_measured_bytes: item.ulMeasuredBytes || item.ulBytes || 0,
-    dl_total_bytes: (item.dlBytes || 0) + (item.dlWarmupBytes || 0),
-    ul_total_bytes: (item.ulBytes || 0) + (item.ulWarmupBytes || 0),
-    dl_transfer_seconds: compactNumber(item.dlSeconds, 3),
-    ul_transfer_seconds: compactNumber(item.ulSeconds, 3),
-    dl_wall_seconds: compactNumber(item.dlWallSeconds, 3),
-    ul_wall_seconds: compactNumber(item.ulWallSeconds, 3),
-    dl_source: item.dlSource || item.source || "",
-    ul_source: item.ulSource || item.source || "",
-    summary_note: "One THP iteration. Averages are calculated from all completed iteration rows.",
-  }));
+  const rows = (session?.appIterationResults || []).map((item) => {
+    const failed = String(item.status || "").toLowerCase() === "failed" || Boolean(item.error || item.errorMessage);
+    return {
+      iteration: item.iteration,
+      status: item.status || (failed ? "failed" : "complete"),
+      task: session?.taskLabel || "",
+      grid: session?.grid || "",
+      session_id: session?.id || "",
+      started_at_local: formatLocalDateTime(item.startedAt),
+      ended_at_local: formatLocalDateTime(item.endedAt),
+      wall_seconds: compactNumber(((getNumber(item.endedAt) || 0) - (getNumber(item.startedAt) || 0)) / 1000, 2),
+      direction: item.direction || session?.appDirection || "",
+      requested_duration_sec: item.durationSeconds ?? session?.appDurationSeconds ?? "",
+      warmup_sec: item.warmupSeconds ?? session?.appWarmupSeconds ?? 0,
+      requested_dl_duration_sec: item.dlDurationSeconds ?? "",
+      requested_ul_duration_sec: item.ulDurationSeconds ?? "",
+      interval_sec: item.intervalSeconds ?? session?.appIntervalSeconds ?? "",
+      wait_after_iteration_sec: item.iteration < totalRows ? (item.waitSeconds ?? session?.appWaitSeconds ?? "") : 0,
+      dl_mbps: failed ? "N/A" : compactNumber(item.dlMbps, 2),
+      ul_mbps: failed ? "N/A" : compactNumber(item.ulMbps, 2),
+      dl_warmup_bytes: item.dlWarmupBytes || 0,
+      ul_warmup_bytes: item.ulWarmupBytes || 0,
+      dl_measured_bytes: item.dlMeasuredBytes || item.dlBytes || 0,
+      ul_measured_bytes: item.ulMeasuredBytes || item.ulBytes || 0,
+      dl_total_bytes: (item.dlBytes || 0) + (item.dlWarmupBytes || 0),
+      ul_total_bytes: (item.ulBytes || 0) + (item.ulWarmupBytes || 0),
+      dl_transfer_seconds: compactNumber(item.dlSeconds, 3),
+      ul_transfer_seconds: compactNumber(item.ulSeconds, 3),
+      dl_wall_seconds: compactNumber(item.dlWallSeconds, 3),
+      ul_wall_seconds: compactNumber(item.ulWallSeconds, 3),
+      dl_source: item.dlSource || item.source || "",
+      ul_source: item.ulSource || item.source || "",
+      failure_stage: item.failureStage || (() => {
+        if (!failed || item.failureStage) return item.failureStage || "";
+        const msg = item.error || item.errorMessage || "";
+        if (!msg) return "";
+        const isFtp = String(session?.appTestType || session?.appEngineId || item.source || "").toLowerCase().includes("ftp");
+        if (!isFtp) return "";
+        return classifyFtpFailure(msg).failureStage || "";
+      })(),
+      error_code: item.errorCode || (() => {
+        if (!failed || item.errorCode) return item.errorCode || "";
+        const msg = item.error || item.errorMessage || "";
+        if (!msg) return "";
+        const isFtp = String(session?.appTestType || session?.appEngineId || item.source || "").toLowerCase().includes("ftp");
+        if (!isFtp) return "";
+        return classifyFtpFailure(msg).errorCode || "";
+      })(),
+      error_message: item.error || item.errorMessage || "",
+      summary_note: failed
+        ? "Failed attempt before successful transfer. APP DL/UL unavailable for this row."
+        : "One THP iteration. Averages are calculated from all completed iteration rows.",
+    };
+  });
   return makeCsv(headers, rows);
 }
 
@@ -1469,8 +1742,11 @@ function buildVoiceCsv(session, activeTask) {
   const samples = session?.exportSamples || session?.traceSamples || [];
   const voice = buildVoiceSummary(session);
   const headers = [
-    "row_type", "session_id", "mode", "task", "grid", "timestamp_local", "timestamp_iso", "call_state",
-    "voice_monitor_status", "offhook_samples", "voice_attempts", "voice_connected", "voice_drops", "voice_failures", "remarks"
+    "row_type", "session_id", "mode", "task", "grid", "timestamp_local", "timestamp_iso",
+    "monitor_status", "call_state", "transition", "duration_sec", "source", "confidence", "notes",
+    "voice_monitor_status", "offhook_samples", "voice_attempts", "voice_connected", "voice_drops", "voice_failures",
+    "ringing_episodes", "answered_observed", "ringing_to_idle_without_offhook", "offhook_transition_count",
+    "observed_offhook_duration_sec", "average_ringing_to_offhook_sec", "remarks",
   ];
   const summaryRow = {
     row_type: "voice_summary",
@@ -1480,18 +1756,60 @@ function buildVoiceCsv(session, activeTask) {
     grid: session?.grid || getTaskGrid(activeTask),
     timestamp_local: formatLocalDateTime(session?.endedAt),
     timestamp_iso: formatIso(session?.endedAt),
+    monitor_status: voice.voice_monitor_status,
     call_state: voice.final_call_state,
+    transition: "",
+    duration_sec: voice.observed_offhook_duration_sec,
+    source: "android_public_api",
+    confidence: "confirmed",
+    notes: "",
     voice_monitor_status: voice.voice_monitor_status,
     offhook_samples: voice.offhook_samples,
     voice_attempts: voice.attempts,
     voice_connected: voice.connected,
     voice_drops: voice.drops,
     voice_failures: voice.failures,
+    ringing_episodes: voice.ringing_episodes,
+    answered_observed: voice.answered_observed,
+    ringing_to_idle_without_offhook: voice.ringing_to_idle_without_offhook,
+    offhook_transition_count: voice.offhook_transition_count,
+    observed_offhook_duration_sec: voice.observed_offhook_duration_sec,
+    average_ringing_to_offhook_sec: voice.average_ringing_to_offhook_sec,
     remarks: voice.remarks,
   };
 
+  const eventRows = (voice.events || []).map((evt) => ({
+    row_type: "voice_event",
+    session_id: session?.id || "",
+    mode: session?.mode || "",
+    task: session?.taskLabel || getTaskLabel(activeTask),
+    grid: session?.grid || getTaskGrid(activeTask),
+    timestamp_local: formatLocalDateTime(evt.timestampMs),
+    timestamp_iso: evt.timestampIso || formatIso(evt.timestampMs),
+    monitor_status: voice.voice_monitor_status,
+    call_state: evt.callState || "",
+    transition: `${evt.transitionFrom || "n/a"} → ${evt.transitionTo || ""}`,
+    duration_sec: evt.observedOffhookDurationSec ?? "",
+    source: evt.source || "android_public_api",
+    confidence: evt.confidence || "confirmed",
+    notes: evt.notes || "",
+    voice_monitor_status: voice.voice_monitor_status,
+    offhook_samples: "",
+    voice_attempts: "",
+    voice_connected: "",
+    voice_drops: "N/A",
+    voice_failures: "N/A",
+    ringing_episodes: evt.ringingEpisode ?? "",
+    answered_observed: "",
+    ringing_to_idle_without_offhook: "",
+    offhook_transition_count: "",
+    observed_offhook_duration_sec: evt.observedOffhookDurationSec ?? "",
+    average_ringing_to_offhook_sec: "",
+    remarks: evt.details || "",
+  }));
+
   if (session?.mode !== "voice") {
-    return makeCsv(headers, [summaryRow]);
+    return makeCsv(headers, [summaryRow, ...eventRows]);
   }
 
   const sampleRows = samples.map((sample) => ({
@@ -1502,16 +1820,28 @@ function buildVoiceCsv(session, activeTask) {
     grid: session?.grid || getTaskGrid(activeTask),
     timestamp_local: formatLocalDateTime(sample?.timestamp),
     timestamp_iso: formatIso(sample?.timestamp),
+    monitor_status: voice.voice_monitor_status,
     call_state: sample?.snapshot?.callState || "N/A",
+    transition: "",
+    duration_sec: "",
+    source: "android_public_api",
+    confidence: "confirmed",
+    notes: "",
     voice_monitor_status: voice.voice_monitor_status,
     offhook_samples: "",
     voice_attempts: "",
     voice_connected: "",
     voice_drops: "",
     voice_failures: "",
+    ringing_episodes: "",
+    answered_observed: "",
+    ringing_to_idle_without_offhook: "",
+    offhook_transition_count: "",
+    observed_offhook_duration_sec: "",
+    average_ringing_to_offhook_sec: "",
     remarks: "Public Android call-state snapshot.",
   }));
-  return makeCsv(headers, [summaryRow, ...sampleRows]);
+  return makeCsv(headers, [summaryRow, ...eventRows, ...sampleRows]);
 }
 
 
@@ -1589,6 +1919,7 @@ function buildJsonRfSummary(session) {
       supported: session?.trafficStatsSupported === true,
       summary_rule: TRAFFIC_STATS_SUMMARY_RULE,
       note: TRAFFIC_STATS_NOTE,
+      active_source_note: resolveTrafficStatsSummaryNote(session, stats),
       mobile: {
         supported: session?.trafficStatsMobileSupported !== false && session?.trafficStatsSupported === true,
         source: "mobile",
@@ -1631,9 +1962,17 @@ function buildJsonTraceSamples(session) {
       gps: {
         latitude: jsonNumber(sample?.gps?.lat, 7),
         longitude: jsonNumber(sample?.gps?.lng, 7),
-        accuracy_m: jsonNumber(sample?.gps?.accuracy, 1),
-        speed_mps: jsonNumber(sample?.gps?.speed, 2),
-        bearing_deg: jsonNumber(sample?.gps?.bearing, 1),
+        accuracy_m: jsonNumber(sample?.gps?.accuracy ?? sample?.gps?.accuracy_m, 1),
+        speed_mps: jsonNumber(sample?.gps?.speed ?? sample?.gps?.speed_mps, 2),
+        bearing_deg: jsonNumber(sample?.gps?.bearing ?? sample?.gps?.bearing_deg, 1),
+        altitude_m: jsonNumber(sample?.gps?.altitude ?? sample?.gps?.altitude_m, 1),
+        gps_status: jsonText(sample?.gps?.gps_status),
+        gps_fix_age_ms: jsonNumber(sample?.gps?.gps_fix_age_ms),
+        location_fix_timestamp_iso: jsonText(sample?.gps?.location_fix_timestamp_iso),
+        location_fix_timestamp_ms: jsonNumber(sample?.gps?.location_fix_timestamp_ms),
+        gps_provider: jsonText(sample?.gps?.provider || sample?.gps?.gps_provider),
+        gps_is_mock: sample?.gps?.gps_is_mock === true || sample?.gps?.is_mock === true ? true : (sample?.gps?.gps_is_mock === false ? false : null),
+        gps_freshness_source: jsonText(sample?.gps?.gps_freshness_source || sample?.source || null),
       },
     };
 
@@ -1705,43 +2044,79 @@ function buildJsonTraceSamples(session) {
 
 function buildJsonThpIterations(session) {
   const totalRows = (session?.appIterationResults || []).length;
-  return (session?.appIterationResults || []).map((item) => ({
-    iteration: item.iteration,
-    status: item.status || "complete",
-    started_at_local: formatLocalDateTime(item.startedAt) || null,
-    started_at_iso: jsonTimestamp(item.startedAt),
-    ended_at_local: formatLocalDateTime(item.endedAt) || null,
-    ended_at_iso: jsonTimestamp(item.endedAt),
-    wall_seconds: jsonNumber(((getNumber(item.endedAt) || 0) - (getNumber(item.startedAt) || 0)) / 1000, 2),
-    direction: item.direction || session?.appDirection || null,
-    requested_duration_sec: jsonNumber(item.durationSeconds ?? session?.appDurationSeconds),
-    warmup_sec: jsonNumber(item.warmupSeconds ?? session?.appWarmupSeconds ?? 0),
-    requested_dl_duration_sec: jsonNumber(item.dlDurationSeconds),
-    requested_ul_duration_sec: jsonNumber(item.ulDurationSeconds),
-    interval_sec: jsonNumber(item.intervalSeconds ?? session?.appIntervalSeconds),
-    wait_after_iteration_sec: item.iteration < totalRows ? jsonNumber(item.waitSeconds ?? session?.appWaitSeconds) : 0,
-    dl: {
-      mbps: jsonNumber(item.dlMbps, 2),
-      measured_bytes: jsonNumber(item.dlMeasuredBytes ?? item.dlBytes),
-      warmup_bytes: jsonNumber(item.dlWarmupBytes || 0),
-      total_bytes: jsonNumber((item.dlBytes || 0) + (item.dlWarmupBytes || 0)),
-      transfer_seconds: jsonNumber(item.dlSeconds, 3),
-      wall_seconds: jsonNumber(item.dlWallSeconds, 3),
-      source: jsonText(item.dlSource || item.source),
-    },
-    ul: {
-      mbps: jsonNumber(item.ulMbps, 2),
-      measured_bytes: jsonNumber(item.ulMeasuredBytes ?? item.ulBytes),
-      warmup_bytes: jsonNumber(item.ulWarmupBytes || 0),
-      total_bytes: jsonNumber((item.ulBytes || 0) + (item.ulWarmupBytes || 0)),
-      transfer_seconds: jsonNumber(item.ulSeconds, 3),
-      wall_seconds: jsonNumber(item.ulWallSeconds, 3),
-      source: jsonText(item.ulSource || item.source),
-    },
-  }));
+  return (session?.appIterationResults || []).map((item) => {
+    const failed = String(item.status || "").toLowerCase() === "failed"
+      || String(item.status || "").toLowerCase() === "error"
+      || Boolean(item.error || item.errorMessage);
+    const engineHint = String(session?.appTestType || session?.appEngineId || item.source || "").toLowerCase();
+    const isFtp = engineHint.includes("ftp");
+    const isIperf = engineHint.includes("iperf");
+    const failText = item.conciseReason || item.error || item.errorMessage || item.message || "";
+    const classif = failed && failText
+      ? (isFtp
+        ? classifyFtpFailure(failText)
+        : isIperf
+          ? classifyIperfFailure(failText)
+          : null)
+      : null;
+    return {
+      iteration: item.iteration,
+      status: item.status || (failed ? "failed" : "complete"),
+      started_at_local: formatLocalDateTime(item.startedAt) || null,
+      started_at_iso: jsonTimestamp(item.startedAt),
+      ended_at_local: formatLocalDateTime(item.endedAt) || null,
+      ended_at_iso: jsonTimestamp(item.endedAt),
+      wall_seconds: jsonNumber(((getNumber(item.endedAt) || 0) - (getNumber(item.startedAt) || 0)) / 1000, 2),
+      direction: item.direction || session?.appDirection || null,
+      requested_duration_sec: jsonNumber(item.durationSeconds ?? session?.appDurationSeconds),
+      warmup_sec: jsonNumber(item.warmupSeconds ?? session?.appWarmupSeconds ?? 0),
+      requested_dl_duration_sec: jsonNumber(item.dlDurationSeconds),
+      requested_ul_duration_sec: jsonNumber(item.ulDurationSeconds),
+      interval_sec: jsonNumber(item.intervalSeconds ?? session?.appIntervalSeconds),
+      wait_after_iteration_sec: item.iteration < totalRows ? jsonNumber(item.waitSeconds ?? session?.appWaitSeconds) : 0,
+      dl: {
+        mbps: failed ? null : jsonNumber(item.dlMbps, 2),
+        measured_bytes: jsonNumber(item.dlMeasuredBytes ?? item.dlBytes),
+        warmup_bytes: jsonNumber(item.dlWarmupBytes || 0),
+        total_bytes: jsonNumber((item.dlBytes || 0) + (item.dlWarmupBytes || 0)),
+        transfer_seconds: jsonNumber(item.dlSeconds, 3),
+        wall_seconds: jsonNumber(item.dlWallSeconds, 3),
+        source: jsonText(item.dlSource || item.source),
+      },
+      ul: {
+        mbps: failed ? null : jsonNumber(item.ulMbps, 2),
+        measured_bytes: jsonNumber(item.ulMeasuredBytes ?? item.ulBytes),
+        warmup_bytes: jsonNumber(item.ulWarmupBytes || 0),
+        total_bytes: jsonNumber((item.ulBytes || 0) + (item.ulWarmupBytes || 0)),
+        transfer_seconds: jsonNumber(item.ulSeconds, 3),
+        wall_seconds: jsonNumber(item.ulWallSeconds, 3),
+        source: jsonText(item.ulSource || item.source),
+      },
+      failure_stage: item.failureStage || classif?.failureStage || null,
+      error_code: item.errorCode || classif?.errorCode || null,
+      error_message: item.conciseReason || item.error || item.errorMessage || classif?.conciseReason || null,
+      failure_reason: item.conciseReason || classif?.conciseReason || item.error || item.errorMessage || null,
+    };
+  });
+}
+
+function resolveSessionEngineId(session = {}) {
+  if (session?.appEngineId) return normalizeEngineId(session.appEngineId);
+  if (session?.engineId) return normalizeEngineId(session.engineId);
+  const type = session?.appTestType || session?.appSetupSnapshot?.testType || "";
+  if (isOoklaSession(session) || String(type).includes("ookla")) return ENGINE_IDS.OOKLA_EXTERNAL;
+  if (isFccSession(session) || String(type).includes("fcc")) return ENGINE_IDS.FCC_EXTERNAL;
+  if (isIperf3Session(session) || String(type).includes("iperf")) return ENGINE_IDS.IPERF3;
+  if (String(type).toLowerCase().includes("ftp") || session?.appSource?.includes?.("ftp")) return ENGINE_IDS.FTP;
+  if (String(type).includes("http") || String(type).includes("native")) return ENGINE_IDS.NATIVE_HTTP;
+  if (Array.isArray(session?.appIterationResults) && session.appIterationResults.length) {
+    return ENGINE_IDS.NATIVE_HTTP;
+  }
+  return ENGINE_IDS.RF_ONLY;
 }
 
 function buildJsonDataTest(session) {
+  const engineId = resolveSessionEngineId(session);
   const thpWindow = getThpWindow(session);
   const thpRows = session?.appIterationResults || [];
   const windowBlock = {
@@ -1757,13 +2132,70 @@ function buildJsonDataTest(session) {
     ul_mbps: jsonNumber(session?.appUlMbps, 2),
   };
 
-  if (isIperf3Session(session)) {
-    const iperfModes = resolveIperfExportModes(session?.appCommand || "", session?.appSetupSnapshot || {});
+  if (engineId === ENGINE_IDS.RF_ONLY) {
     return {
-      type: "iperf3_native",
-      label: "iPerf3 Native",
+      type: jsonDataTestType(ENGINE_IDS.RF_ONLY),
+      engine_id: ENGINE_IDS.RF_ONLY,
+      label: engineDisplayName(ENGINE_IDS.RF_ONLY),
+      status: session?.appTestStatus || "rf_only",
+      note: "No controlled data-test engine iterations were attempted for this session.",
+      requested: null,
+      attempted_iterations: 0,
+      completed_iterations: 0,
+      failed_iterations: 0,
+      iterations: [],
+      averages: { dl_mbps: null, ul_mbps: null },
+    };
+  }
+
+  if (engineId === ENGINE_IDS.IPERF3 || isIperf3Session(session)) {
+    const iperfModes = resolveIperfExportModes(session?.appCommand || "", session?.appSetupSnapshot || {});
+    const iperfFailedRows = thpRows.filter((r) => isFailedIterationRow(r));
+    const iperfCompletedRows = thpRows.filter((r) => String(r.status || "").toLowerCase() === "complete");
+    const iperfContinuous = String(session?.appRunMode || "").toLowerCase() === "continuous"
+      || String(session?.appEndReason || "").toLowerCase() === "user_stopped_continuous"
+      || String(session?.appTestStatus || "").toLowerCase() === "continuous_complete";
+    const iperfCounts = countControlledIterations({
+      requested: iperfContinuous ? null : session?.appIterationsRequested,
+      iterationResults: thpRows,
+      completedIterations: session?.appCompletedIterations,
+      failedIterations: session?.appFailedIterations,
+      status: session?.appTestStatus,
+    });
+    const iperfCanonicalStatus = iperfContinuous
+      ? deriveContinuousOutcomeStatus({
+        attempted: iperfCounts.attemptedIterations,
+        completed: iperfCounts.completedIterations,
+        failed: iperfCounts.failedIterations,
+      })
+      : null;
+    const iperfStatus = iperfCanonicalStatus
+      || session?.appExportStatus
+      || mapIperfExportStatus(session?.appTestStatus)
+      || null;
+    const iperfFailMessage = (iperfStatus === "continuous_complete" || iperfStatus === "cancelled")
+      ? null
+      : (session?.appTestError
+        || (String(session?.appTestMessage || "").toLowerCase().includes("no attempts") ? "" : session?.appTestMessage)
+        || iperfFailedRows.map((r) => r.error || r.errorMessage || r.message).filter(Boolean).join("; ")
+        || null);
+    const iperfMessage = iperfContinuous
+      ? buildContinuousCanonicalOutcome({
+        attempted: iperfCounts.attemptedIterations,
+        completed: iperfCounts.completedIterations,
+        failed: iperfCounts.failedIterations,
+        engineLabel: "iPerf3",
+        failureReason: session?.appTestError || "",
+      }).message
+      : (session?.appTestMessage || iperfFailMessage);
+    return {
+      type: jsonDataTestType(ENGINE_IDS.IPERF3),
+      engine_id: ENGINE_IDS.IPERF3,
+      label: engineDisplayName(ENGINE_IDS.IPERF3),
       direction: session?.appDirectionLabel || session?.appDirection || null,
-      status: session?.appExportStatus || mapIperfExportStatus(session?.appTestStatus) || null,
+      status: iperfStatus,
+      error: iperfFailMessage,
+      message: iperfMessage,
       summary_rule: "Average DL/UL THP is the arithmetic average of completed iPerf3 iteration rows only.",
       note: "Primary iPerf3 evidence is exported in dedicated iPerf3 CSV/JSON files.",
       requested: {
@@ -1771,7 +2203,9 @@ function buildJsonDataTest(session) {
         port: jsonNumber(session?.appPort),
         protocol: jsonText(session?.appProtocol),
         streams: jsonNumber(session?.appStreams),
-        iterations: jsonNumber(session?.appIterationsRequested ?? thpRows.length),
+        iterations: session?.appRunMode === "continuous" || session?.appIterationsRequested == null
+          ? null
+          : jsonNumber(session?.appIterationsRequested ?? thpRows.length),
         duration_sec: jsonNumber(session?.appDurationSeconds),
         warmup_sec: jsonNumber(session?.appWarmupSeconds || 0),
         interval_sec: jsonNumber(session?.appIntervalSeconds),
@@ -1782,12 +2216,53 @@ function buildJsonDataTest(session) {
       },
       window: windowBlock,
       averages: averagesBlock,
-      completed_iterations: jsonNumber(session?.appCompletedIterations ?? thpRows.length),
+      attempted_iterations: jsonNumber(thpRows.length),
+      completed_iterations: jsonNumber(session?.appCompletedIterations ?? iperfCompletedRows.length),
+      failed_iterations: jsonNumber(
+        session?.appFailedIterations != null
+          ? session.appFailedIterations
+          : iperfFailedRows.length
+            || (String(session?.appTestStatus || session?.appExportStatus || "").toLowerCase().includes("fail")
+              || String(session?.appTestStatus || "").toLowerCase() === "error"
+              ? Math.max(1, thpRows.length)
+              : 0),
+      ),
       iterations: buildJsonThpIterations(session),
     };
   }
 
-  if (isOoklaSession(session)) {
+  if (engineId === ENGINE_IDS.FTP) {
+    return {
+      type: jsonDataTestType(ENGINE_IDS.FTP),
+      engine_id: ENGINE_IDS.FTP,
+      label: engineDisplayName(ENGINE_IDS.FTP),
+      direction: session?.appDirection || null,
+      status: session?.appTestStatus || null,
+      error: session?.appTestError || null,
+      message: session?.appTestMessage || null,
+      summary_rule: "Average DL/UL THP is the arithmetic average of completed FTP iteration rows only.",
+      requested: {
+        iterations: session?.appRunMode === "continuous" || session?.appIterationsRequested == null
+          ? null
+          : jsonNumber(session?.appIterationsRequested ?? session?.appIterations ?? thpRows.length),
+        duration_sec: jsonNumber(session?.appDurationSeconds),
+        warmup_sec: jsonNumber(session?.appWarmupSeconds || 0),
+        interval_sec: jsonNumber(session?.appIntervalSeconds),
+        wait_between_iterations_sec: jsonNumber(session?.appWaitSeconds),
+        host: jsonText(session?.appSetupSnapshot?.host),
+        port: jsonNumber(session?.appSetupSnapshot?.port),
+      },
+      window: windowBlock,
+      averages: averagesBlock,
+      attempted_iterations: jsonNumber(thpRows.length || (String(session?.appTestStatus || "").toLowerCase() === "error" ? 1 : 0)),
+      completed_iterations: jsonNumber(session?.appCompletedIterations ?? thpRows.filter((r) => String(r.status || "").toLowerCase() === "complete").length),
+      failed_iterations: jsonNumber(thpRows.filter((r) => String(r.status || "").toLowerCase() === "failed" || r.error).length
+        || (String(session?.appTestStatus || "").toLowerCase() === "error" ? 1 : 0)),
+      iterations: buildJsonThpIterations(session),
+    };
+  }
+
+  if (isOoklaSession(session) || engineId === ENGINE_IDS.OOKLA_EXTERNAL) {
     const finalized = finalizeOoklaCsvTimeWindowOnExport({
       iterations: resolveOoklaIterations(session),
       csvImportDebug: session?.appOoklaCsvImportDebug || null,
@@ -1937,12 +2412,23 @@ function buildJsonDataTest(session) {
   }
 
   return {
-    type: "native_android_http",
+    type: jsonDataTestType(ENGINE_IDS.NATIVE_HTTP),
+    engine_id: ENGINE_IDS.NATIVE_HTTP,
+    label: engineDisplayName(ENGINE_IDS.NATIVE_HTTP),
     direction: session?.appDirection || null,
     status: session?.appTestStatus || null,
-    summary_rule: "Average DL/UL THP is the arithmetic average of completed iteration rows only.",
+    error: session?.appTestError || null,
+    message: session?.appTestMessage || null,
+    failure_stage: (() => {
+      const rows = session?.appIterationResults || [];
+      const failed = rows.find((r) => String(r.status || "").toLowerCase() === "failed");
+      return failed?.failureStage || (String(session?.appTestStatus || "").toLowerCase() === "error" ? "before_transfer" : null);
+    })(),
+    summary_rule: "Average DL/UL THP is the arithmetic average of completed iteration rows only. Failed attempts before transfer keep APP DL/UL null.",
     requested: {
-      iterations: jsonNumber(session?.appIterationsRequested ?? session?.appIterations ?? thpRows.length),
+      iterations: session?.appRunMode === "continuous" || session?.appIterationsRequested == null
+        ? null
+        : jsonNumber(session?.appIterationsRequested ?? session?.appIterations ?? thpRows.length),
       duration_sec: jsonNumber(session?.appDurationSeconds),
       warmup_sec: jsonNumber(session?.appWarmupSeconds || 0),
       interval_sec: jsonNumber(session?.appIntervalSeconds),
@@ -1950,7 +2436,10 @@ function buildJsonDataTest(session) {
     },
     window: windowBlock,
     averages: averagesBlock,
-    completed_iterations: jsonNumber(session?.appCompletedIterations ?? thpRows.length),
+    completed_iterations: jsonNumber(session?.appCompletedIterations ?? thpRows.filter((r) => String(r.status || "").toLowerCase() === "complete").length),
+    attempted_iterations: jsonNumber(thpRows.length || (String(session?.appTestStatus || "").toLowerCase() === "error" ? 1 : 0)),
+    failed_iterations: jsonNumber(thpRows.filter((r) => String(r.status || "").toLowerCase() === "failed" || r.error).length
+      || (String(session?.appTestStatus || "").toLowerCase() === "error" ? 1 : 0)),
     iterations: buildJsonThpIterations(session),
   };
 }
@@ -2172,7 +2661,13 @@ function buildReportPackage({
 
 function downloadTextFile(file) {
   if (typeof document === "undefined") return;
-  const blob = new Blob([file.content || ""], { type: `${file.mimeType || "text/plain"};charset=utf-8` });
+  let blob;
+  if (file?.encoding === "base64" && file?.contentBase64) {
+    const buffer = base64ToArrayBuffer(file.contentBase64);
+    blob = new Blob([buffer], { type: file.mimeType || "application/octet-stream" });
+  } else {
+    blob = new Blob([file.content || ""], { type: `${file.mimeType || "text/plain"};charset=utf-8` });
+  }
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -2186,6 +2681,7 @@ function downloadTextFile(file) {
 async function saveReportPackage(reportPackage) {
   if (typeof BabyDragonRfKpi.saveReportFiles === "function") {
     // Pass explicit folder + file payload (native creates Downloads/BabyDragon/Reports/<sessionId>/).
+    // Text files use content; binary .xlsx uses encoding=base64 + contentBase64.
     const sessionId = cleanFilePart(reportPackage?.sessionId, `bd-rf-${Date.now()}`);
     const response = await BabyDragonRfKpi.saveReportFiles({
       sessionId,
@@ -2196,12 +2692,12 @@ async function saveReportPackage(reportPackage) {
     throw new Error(response?.message || response?.status || "Native report save failed.");
   }
 
-  reportPackage.files.forEach(downloadTextFile);
+  (reportPackage.files || []).forEach(downloadTextFile);
   return {
     ok: true,
     fallback: true,
     message: "Report files downloaded by browser fallback.",
-    savedFiles: reportPackage.files.map((file) => ({ fileName: file.fileName, path: "browser-download" })),
+    savedFiles: (reportPackage.files || []).map((file) => ({ fileName: file.fileName, path: "browser-download" })),
   };
 }
 
@@ -2267,13 +2763,57 @@ function getTwoGServing(snapshot) {
   return String(serving.rat || "").toUpperCase() === "GSM" ? serving : {};
 }
 
-function getCurrentRatName(snapshot) {
+function getCurrentRatName(snapshot, waitLabel = "Waiting for Android") {
   return (
     snapshot?.currentRatName ||
     getServing(snapshot).technology ||
     snapshot?.dataNetworkTypeName ||
-    "Waiting for Android"
+    waitLabel
   );
+}
+
+function formatAgeSeconds(timestampMs, nowMs = Date.now()) {
+  const ts = Number(timestampMs);
+  if (!Number.isFinite(ts) || ts <= 0) return "—";
+  const ageSec = Math.max(0, Math.round((nowMs - ts) / 1000));
+  if (ageSec > 86400 * 365) return "—";
+  if (ageSec < 1) return "just now";
+  return `${ageSec}s ago`;
+}
+
+function resolveNativeRfWaitLabel({
+  nativeSnapshot,
+  streamStartedAt,
+  diagnostics,
+  startError,
+  lastDrainError,
+  firstSampleReceived,
+  nowMs = Date.now(),
+}) {
+  // Valid RF sample (RAT/network) means stream is live — never fail solely due to missing GPS.
+  if (
+    nativeSnapshot?.ok
+    || getServing(nativeSnapshot).technology
+    || nativeSnapshot?.dataNetworkTypeName
+    || nativeSnapshot?.currentRatName
+    || firstSampleReceived
+  ) {
+    return null;
+  }
+  const ageMs = streamStartedAt != null ? nowMs - streamStartedAt : null;
+  const stream = describeRfStreamUiStatus({
+    diagnostics,
+    firstSampleReceived,
+    startError,
+    streamAgeMs: ageMs,
+  });
+  if (stream.label === "Live") return null;
+  if (stream.label === "Starting") {
+    if (ageMs != null && ageMs >= 3000) return "Waiting for first native RF sample";
+    return "Starting native RF service";
+  }
+  const reason = stream.reason || startError || lastDrainError || "first_sample_timeout";
+  return `Native RF stream unavailable · ${reason}`;
 }
 
 function hasLteOrNr(snapshot) {
@@ -2434,7 +2974,7 @@ function getLiveForRow(row, snapshot, selectedRatKey = "auto", activeFamily = tr
 
   if (row.dataMetric) return formatThroughputLive(row.dataMetric, dataContext);
   if (row.trafficMetric) {
-    const live = getTrafficStatsLive(row.trafficMetric, dataContext.samples || []);
+    const live = getTrafficStatsLive(row.trafficMetric, dataContext.samples || [], row.trafficScope || "mobile");
     return live === "N/A" ? live : formatThroughputWithUnit(live);
   }
 
@@ -2473,7 +3013,7 @@ function averageForRow(row, samples, snapshot, activeFamily = true, dataContext 
     return value === null ? "N/A" : formatThroughputValue(value);
   }
   if (row.trafficMetric) {
-    const stats = metricStatsFromTrafficSamples(samples, row.trafficMetric);
+    const stats = metricStatsFromTrafficSamples(samples, row.trafficMetric, row.trafficScope || "mobile");
     if (stats.avg === null) return "N/A";
     return formatThroughputValue(stats.avg);
   }
@@ -2493,7 +3033,7 @@ function averageForRow(row, samples, snapshot, activeFamily = true, dataContext 
 function statusForRow(row, snapshot, selectedRatKey = "auto", activeFamily = true, dataContext = {}) {
   if (row.dataMetric) return throughputStatus(row.dataMetric, dataContext);
   if (row.trafficMetric) {
-    const live = getTrafficStatsLive(row.trafficMetric, dataContext.samples || []);
+    const live = getTrafficStatsLive(row.trafficMetric, dataContext.samples || [], row.trafficScope || "mobile");
     return live === "N/A" ? "N/A" : "Live";
   }
   if (!snapshot) return "Pending";
@@ -2740,21 +3280,62 @@ function RfCellCard({ title, status, children }) {
 }
 
 function normalizeGps(point) {
-  const lat = getNumber(point?.lat ?? point?.latitude);
-  const lng = getNumber(point?.lng ?? point?.longitude ?? point?.lon);
-  if (lat === null || lng === null) return null;
+  if (!point) return null;
+  const enriched = enrichMobilityGpsSample(point, {
+    nowMs: Date.now(),
+    previousStatus: point?.gps_status || null,
+    source: point?.source || "rf_sample",
+  });
+  if (enriched.lat == null || enriched.lng == null) return null;
   return {
-    lat,
-    lng,
-    accuracy: getNumber(point?.accuracy),
-    speed: getNumber(point?.speed),
-    heading: getNumber(point?.heading),
-    timestamp: point?.timestamp || point?.time || Date.now(),
+    lat: enriched.lat,
+    lng: enriched.lng,
+    accuracy: enriched.accuracy_m ?? enriched.accuracy,
+    accuracy_m: enriched.accuracy_m ?? enriched.accuracy,
+    speed: enriched.speed_mps ?? enriched.speed,
+    speed_mps: enriched.speed_mps ?? enriched.speed,
+    heading: enriched.bearing_deg ?? enriched.heading,
+    bearing_deg: enriched.bearing_deg ?? enriched.heading,
+    altitude: enriched.altitude_m ?? enriched.altitude,
+    altitude_m: enriched.altitude_m ?? enriched.altitude,
+    provider: enriched.provider,
+    location_fix_timestamp_iso: enriched.location_fix_timestamp_iso,
+    location_fix_timestamp_ms: enriched.location_fix_timestamp_ms,
+    elapsed_realtime_nanos: enriched.elapsed_realtime_nanos,
+    gps_fix_age_ms: enriched.gps_fix_age_ms,
+    is_mock: enriched.is_mock,
+    gps_status: enriched.gps_status,
+    timestamp: enriched.location_fix_timestamp_ms || enriched.timestamp || Date.now(),
   };
+}
+
+function resolveGpsForSample(fallbackGps) {
+  return getMobilityGps() || fallbackGps || null;
 }
 
 const TRAFFIC_STATS_NOTE = "android_mobile_and_total_byte_delta";
 const TRAFFIC_STATS_SUMMARY_RULE = "Android mobile/total byte deltas; not OOKLA result; not BabyDragon engine THP";
+const TRAFFIC_STATS_ENGINE_CONTEXT_NOTE = "BabyDragon engine throughput remains the application test result; TrafficStats is device-network context only.";
+const TRAFFIC_STATS_MOBILE_ZERO_TOTAL_MOVED_NOTE = `Mobile-interface counters did not move; total-device counters moved. This may indicate Wi-Fi/routed/offload traffic. ${TRAFFIC_STATS_ENGINE_CONTEXT_NOTE}`;
+
+function resolveTrafficStatsSummaryNote(session = {}, stats = {}) {
+  if (session?.trafficStatsActiveSourceNote) return session.trafficStatsActiveSourceNote;
+  const mobileMoved = hasMeaningfulTrafficStatsMovement(
+    { avg: session?.trafficStatsAvgDlMbps ?? stats?.trafficStatsDl?.avg, max: stats?.trafficStatsDl?.max },
+    { avg: session?.trafficStatsAvgUlMbps ?? stats?.trafficStatsUl?.avg, max: stats?.trafficStatsUl?.max },
+  );
+  const totalMoved = hasMeaningfulTrafficStatsMovement(
+    { avg: session?.trafficStatsTotalAvgDlMbps ?? stats?.trafficStatsTotalDl?.avg, max: stats?.trafficStatsTotalDl?.max },
+    { avg: session?.trafficStatsTotalAvgUlMbps ?? stats?.trafficStatsTotalUl?.avg, max: stats?.trafficStatsTotalUl?.max },
+  );
+  if (mobileMoved && totalMoved) return `Mobile and total device counters moved. ${TRAFFIC_STATS_ENGINE_CONTEXT_NOTE}`;
+  if (!mobileMoved && totalMoved) return TRAFFIC_STATS_MOBILE_ZERO_TOTAL_MOVED_NOTE;
+  if (mobileMoved && !totalMoved) {
+    return `Mobile counters moved; total-device counters did not show meaningful movement. ${TRAFFIC_STATS_ENGINE_CONTEXT_NOTE}`;
+  }
+  if (!mobileMoved && !totalMoved) return "No meaningful TrafficStats movement observed.";
+  return TRAFFIC_STATS_SUMMARY_RULE;
+}
 
 function readNativeTrafficStatsBlock(snapshot = {}) {
   const block = snapshot?.trafficStats && typeof snapshot.trafficStats === "object"
@@ -2920,27 +3501,57 @@ function trafficStatsField(metric, scope = "mobile") {
   return metric === "ul" ? "trafficStatsUlMbps" : "trafficStatsDlMbps";
 }
 
-function isValidTrafficStatsSample(sample) {
+function isValidTrafficStatsSample(sample, scope = "mobile") {
   const stats = sample?.trafficStats;
-  return Boolean(stats?.trafficStatsSupported && !stats?.trafficStatsInvalid);
+  if (!stats || stats.trafficStatsSupported !== true) return false;
+  // Prefer non-invalid samples, but still allow reading an explicit 0.00 rate when present.
+  const dlField = trafficStatsField("dl", scope);
+  const ulField = trafficStatsField("ul", scope);
+  const hasScopedRate = getNumber(stats?.[dlField]) !== null || getNumber(stats?.[ulField]) !== null;
+  if (hasScopedRate) return true;
+  return stats.trafficStatsInvalid !== true;
 }
 
-function getTrafficStatsLive(metric, samples = []) {
-  const field = trafficStatsField(metric);
+function getTrafficStatsLive(metric, samples = [], scope = "mobile") {
+  const field = trafficStatsField(metric, scope);
   for (let index = samples.length - 1; index >= 0; index -= 1) {
     const sample = samples[index];
     if (!isActiveRfSample(sample)) continue;
-    if (!isValidTrafficStatsSample(sample)) continue;
+    if (!isValidTrafficStatsSample(sample, scope)) continue;
     const value = getNumber(sample.trafficStats?.[field]);
+    // Nullish check only — 0 must display as 0.00.
     if (value !== null) return formatThroughputValue(value);
   }
   return "N/A";
 }
 
+function buildTrafficStatsActiveSourceNote(samples = []) {
+  const mobileDl = metricStatsFromTrafficSamples(samples, "dl", "mobile");
+  const mobileUl = metricStatsFromTrafficSamples(samples, "ul", "mobile");
+  const totalDl = metricStatsFromTrafficSamples(samples, "dl", "total");
+  const totalUl = metricStatsFromTrafficSamples(samples, "ul", "total");
+  const mobileMoved = hasMeaningfulTrafficStatsMovement(mobileDl, mobileUl);
+  const totalMoved = hasMeaningfulTrafficStatsMovement(totalDl, totalUl);
+  if (mobileMoved && totalMoved) {
+    return `Mobile and total device counters moved. ${TRAFFIC_STATS_ENGINE_CONTEXT_NOTE}`;
+  }
+  if (!mobileMoved && totalMoved) return TRAFFIC_STATS_MOBILE_ZERO_TOTAL_MOVED_NOTE;
+  if (mobileMoved && !totalMoved) {
+    return `Mobile counters moved; total-device counters did not show meaningful movement. ${TRAFFIC_STATS_ENGINE_CONTEXT_NOTE}`;
+  }
+  return "No meaningful TrafficStats movement observed.";
+}
+
+function sessionHasMeaningfulMobileTraffic(samples = []) {
+  const mobileDl = metricStatsFromTrafficSamples(samples, "dl", "mobile");
+  const mobileUl = metricStatsFromTrafficSamples(samples, "ul", "mobile");
+  return hasMeaningfulTrafficStatsMovement(mobileDl, mobileUl);
+}
+
 function metricStatsFromTrafficSamples(samples, metric, scope = "mobile") {
   const field = trafficStatsField(metric, scope);
   const values = (samples || [])
-    .filter((sample) => isActiveRfSample(sample) && isValidTrafficStatsSample(sample))
+    .filter((sample) => isActiveRfSample(sample) && isValidTrafficStatsSample(sample, scope))
     .map((sample) => getNumber(sample.trafficStats?.[field]))
     .filter((value) => value !== null);
 
@@ -3157,12 +3768,30 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     : (Array.isArray(appSource.iterationResults) ? appSource.iterationResults : []);
   const appDlMbps = (isOokla || isFcc) ? null : getNumber(appSource.dlMbps);
   const appUlMbps = (isOokla || isFcc) ? null : getNumber(appSource.ulMbps);
+  const isContinuousApp = String(appSource.runMode || appSource.setupSnapshot?.runMode || "").toLowerCase() === "continuous"
+    || String(appSource.status || "").toLowerCase() === "continuous_complete"
+    || String(appSource.endReason || "").toLowerCase() === "user_stopped_continuous";
+  // Continuous must never invent Requested=1 from placeholder defaults.
   const appIterationsRequested = (isOokla || isFcc)
     ? 0
-    : clampInteger(appSource.iterationsRequested || appSource.iterations || DEFAULT_THP_ITERATIONS, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
-  const appCompletedIterations = (isOokla || isFcc)
-    ? 0
-    : clampInteger(appSource.completedIterations || appIterationResults.length || 0, 0, MAX_THP_ITERATIONS, 0);
+    : (isContinuousApp
+      ? null
+      : (appSource.iterationsRequested != null && appSource.iterationsRequested !== ""
+        ? clampInteger(appSource.iterationsRequested, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS)
+        : clampInteger(appSource.iterations || DEFAULT_THP_ITERATIONS, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS)));
+  const iterationCounts = (isOokla || isFcc)
+    ? { requestedIterations: 0, attemptedIterations: 0, completedIterations: 0, failedIterations: 0, remainingIterations: 0 }
+    : countControlledIterations({
+      requested: isContinuousApp ? null : appIterationsRequested,
+      iterationResults: appIterationResults,
+      completedIterations: appSource.completedIterations,
+      failedIterations: appSource.failedIterations,
+      status: appSource.status,
+    });
+  const appCompletedIterations = iterationCounts.completedIterations;
+  const appAttemptedIterations = iterationCounts.attemptedIterations;
+  const appFailedIterations = iterationCounts.failedIterations;
+  const appRemainingIterations = isContinuousApp ? null : iterationCounts.remainingIterations;
   const appWaitSeconds = clampInteger(appSource.waitSeconds ?? DEFAULT_THP_WAIT_SECONDS, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
   const appDurationSeconds = clampInteger(appSource.durationSeconds ?? DEFAULT_THP_DURATION_SECONDS, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
   const appIntervalSeconds = clampInteger(appSource.intervalSeconds ?? DEFAULT_THP_INTERVAL_SECONDS, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
@@ -3183,10 +3812,23 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
   const diagnosticIperfIter = failedIperfIter || lastIperfIter;
 
   function resolveSavedIperfCommand() {
-    const customer = String(setupSnapshot?.customerCommand || setupSnapshot?.rawCommand || "").trim();
-    if (customer) return customer;
+    // Prefer the exact argv list returned by the native process for the executed iteration.
+    const rows = Array.isArray(appIterationResults) ? appIterationResults : [];
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const command = rows[index]?.command;
+      if (Array.isArray(command) && command.length) {
+        const text = command.map((part) => String(part)).join(" ").trim();
+        if (text) return text;
+      }
+      if (typeof command === "string" && command.trim()) return command.trim();
+    }
     if (Array.isArray(diagnosticIperfIter?.command) && diagnosticIperfIter.command.length) {
-      return diagnosticIperfIter.command.join(" ");
+      return diagnosticIperfIter.command.map((part) => String(part)).join(" ").trim();
+    }
+    // Only use a pasted customer command when commandMode was the execution path.
+    if (setupSnapshot?.commandMode === true) {
+      const customer = String(setupSnapshot?.customerCommand || setupSnapshot?.rawCommand || "").trim();
+      if (customer) return customer;
     }
     try {
       return buildIperf3CommandFromSetup(setupSnapshot || {});
@@ -3197,6 +3839,37 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
 
   const savedIperfCommand = isIperf ? resolveSavedIperfCommand() : "";
   const iperfExportModes = isIperf ? resolveIperfExportModes(savedIperfCommand, setupSnapshot || {}) : null;
+
+  // Continuous: canonicalize status/message from frozen iteration counts (never keep stale cancelled/no-attempts).
+  const continuousCanonical = (() => {
+    if (!isContinuousApp) return null;
+    const reason = String(appSource.endReason || "").toLowerCase();
+    const st = String(appSource.status || "").toLowerCase();
+    const shouldCanonicalize = reason === "user_stopped_continuous"
+      || st === "cancelled"
+      || st === "continuous_complete"
+      || st === "complete_with_failures"
+      || st === "failed"
+      || st === "stopped"
+      || st === "incomplete";
+    if (!shouldCanonicalize) return null;
+    const failedRow = [...appIterationResults].reverse().find(isFailedIterationRow);
+    return buildContinuousCanonicalOutcome({
+      attempted: appAttemptedIterations,
+      completed: appCompletedIterations,
+      failed: appFailedIterations,
+      engineLabel: isIperf ? "iPerf3" : controlledEngineDisplayName(appSource.testType),
+      failureReason: failedRow?.conciseReason || failedRow?.error || appSource.error || "",
+    });
+  })();
+  const resolvedAppTestStatus = continuousCanonical?.status || appSource.status || "idle";
+  const resolvedAppTestMessage = continuousCanonical?.message
+    || appSource.message
+    || "Internal DL/UL test ready.";
+  const resolvedAppTestError = continuousCanonical
+    ? continuousCanonical.error
+    : (appSource.error || "");
+  const resolvedAppEndReason = continuousCanonical?.endReason || appSource.endReason || null;
 
   const iperfMetadata = isIperf ? {
     appTestType: "iperf",
@@ -3213,7 +3886,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     appStderrSummary: String(diagnosticIperfIter?.stderr || "").trim().slice(0, 1200),
     appTestStartedAt: appSource.startedAt || null,
     appTestEndedAt: appSource.endedAt || end,
-    appExportStatus: mapIperfExportStatus(appSource.status),
+    appExportStatus: mapIperfExportStatus(resolvedAppTestStatus),
     appDirectionLabel: DATA_DIRECTIONS.find((item) => item.key === appDirection)?.label || appDirection,
   } : {};
 
@@ -3279,6 +3952,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     trafficStatsTotalAvgDlMbps: trafficStatsTotalDlStats.avg,
     trafficStatsTotalAvgUlMbps: trafficStatsTotalUlStats.avg,
     trafficStatsTotalSampleCount: Math.max(trafficStatsTotalDlStats.count, trafficStatsTotalUlStats.count),
+    trafficStatsActiveSourceNote: buildTrafficStatsActiveSourceNote(activeList),
     kpiWarmupDurationSec,
     recordingStateSummary,
     activeRecordingDurationMs: recordingStateSummary.activeDurationMs,
@@ -3371,6 +4045,7 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     trafficStatsTotalAvgDlMbps: trafficStatsTotalDlStats.avg,
     trafficStatsTotalAvgUlMbps: trafficStatsTotalUlStats.avg,
     trafficStatsTotalSampleCount: Math.max(trafficStatsTotalDlStats.count, trafficStatsTotalUlStats.count),
+    trafficStatsActiveSourceNote: buildTrafficStatsActiveSourceNote(activeList),
     kpiWarmupDurationSec,
     appDlMbps,
     appUlMbps,
@@ -3378,16 +4053,44 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     appUploadBytes: appSource.uploadBytes || 0,
     appIterationsRequested,
     appCompletedIterations,
+    appAttemptedIterations,
+    appFailedIterations,
+    appRemainingIterations,
     appWaitSeconds,
     appDurationSeconds,
     appIntervalSeconds,
     appWarmupSeconds,
     appDirection,
     appIterationResults,
-    appTestStatus: appSource.status || "idle",
-    appTestPhase: appSource.phase || "idle",
-    appTestMessage: appSource.message || "Internal DL/UL test ready.",
-    appTestError: appSource.error || "",
+    appTestStatus: resolvedAppTestStatus,
+    appTestPhase: continuousCanonical?.status || appSource.phase || "idle",
+    appTestMessage: resolvedAppTestMessage,
+    appTestError: resolvedAppTestError,
+    appEndReason: resolvedAppEndReason,
+    appTestStartedAt: appSource.startedAt || null,
+    appTestEndedAt: appSource.endedAt || null,
+    appEngineId: (() => {
+      if (appSource.engineId) return normalizeEngineId(appSource.engineId);
+      if (isIperf) return ENGINE_IDS.IPERF3;
+      if (isOokla) return ENGINE_IDS.OOKLA_EXTERNAL;
+      if (isFcc) return ENGINE_IDS.FCC_EXTERNAL;
+      if (appSource.testType === "ftp") return ENGINE_IDS.FTP;
+      if (appSource.testType === "native_http") return ENGINE_IDS.NATIVE_HTTP;
+      if (appSource.testType === "iperf") return ENGINE_IDS.IPERF3;
+      if (appSource.testType === "ookla_app") return ENGINE_IDS.OOKLA_EXTERNAL;
+      if (appSource.testType === "fcc_app") return ENGINE_IDS.FCC_EXTERNAL;
+      if (appSource.testType === "rf_only") return ENGINE_IDS.RF_ONLY;
+      return ENGINE_IDS.RF_ONLY;
+    })(),
+    appTestType: appSource.testType
+      || (isIperf ? "iperf" : isOokla ? "ookla_app" : isFcc ? "fcc_app" : "rf_only"),
+    appRunMode: String(appSource.runMode || appSource.setupSnapshot?.runMode || "fixed").toLowerCase() === "continuous"
+      ? "continuous"
+      : "fixed",
+    appRunModeLabel: String(appSource.runMode || appSource.setupSnapshot?.runMode || "").toLowerCase() === "continuous"
+      ? "Continuous"
+      : (isOokla || isFcc ? "External Evidence" : "Fixed"),
+    appSetupSnapshot: appSource.setupSnapshot || null,
     ...iperfMetadata,
     ...ooklaMetadata,
     ...fccMetadata,
@@ -3412,6 +4115,13 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     },
     firstGps: first?.gps || null,
     lastGps: [...list].reverse().find((sample) => sample.gps)?.gps || null,
+    connectivitySnapshot: (() => {
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const c = list[i]?.snapshot?.connectivity;
+        if (c && typeof c === "object") return c;
+      }
+      return null;
+    })(),
     traceSamples: list.slice(-240),
     exportSamples: list,
     frozen: Boolean(session?.endedAt || endedAt),
@@ -3423,10 +4133,12 @@ function getSampleRsrp(sample) {
 }
 
 function getRsrpQualityClass(rsrp) {
-  if (typeof rsrp !== "number" || !Number.isFinite(rsrp)) return "unknown";
-  if (rsrp >= -90) return "good";
-  if (rsrp >= -105) return "fair";
-  return "poor";
+  const classified = classifyMetricValue("lte_rsrp", rsrp);
+  if (!classified?.className || classified.className === "missing") return "unknown";
+  // Live map CSS historically used 3 bands; collapse excellent→good and bad→poor for class names.
+  if (classified.className === "excellent") return "good";
+  if (classified.className === "bad") return "poor";
+  return classified.className;
 }
 function getBestTraceSamples({ currentSession, sessionSamples, savedSession, samples }) {
   if (currentSession && sessionSamples.length) return sessionSamples;
@@ -3863,6 +4575,8 @@ export default function MobileRfKpi({
   gpsStatusMessage,
   gpsChecking,
   onRefreshGpsNow,
+  mobilityGpsStatus = null,
+  rfWorkspaceActive = false,
 }) {
   const [selectedMode, setSelectedMode] = useState("data");
   const [testState, setTestState] = useState("idle");
@@ -3871,7 +4585,22 @@ export default function MobileRfKpi({
   const [nativeSnapshot, setNativeSnapshot] = useState(null);
   const [collectorBusy, setCollectorBusy] = useState(false);
   const [collectorRunning, setCollectorRunning] = useState(false);
-  const [collectorMessage, setCollectorMessage] = useState("Native collector waiting for first read.");
+  const [collectorMessage, setCollectorMessage] = useState("Starting native RF preview…");
+  const [mobilityDiagnostics, setMobilityDiagnostics] = useState(null);
+  const [nativeStreamStartedAt, setNativeStreamStartedAt] = useState(null);
+  const [nativeGpsUiStatus, setNativeGpsUiStatus] = useState(null);
+  const [mobilityStartError, setMobilityStartError] = useState(null);
+  const [lastMobilityDrainError, setLastMobilityDrainError] = useState(null);
+  const [clockForNativeWait, setClockForNativeWait] = useState(Date.now());
+  const [firstNativeSampleReceived, setFirstNativeSampleReceived] = useState(false);
+  const [lastUiRfTimestamp, setLastUiRfTimestamp] = useState(null);
+  const [checkingStartedAt, setCheckingStartedAt] = useState(null);
+  const [checkingTimeoutReason, setCheckingTimeoutReason] = useState(null);
+  const [rfStreamUi, setRfStreamUi] = useState({ label: "Starting", reason: null });
+  const previewEnsureRef = useRef(false);
+  const checkingStartedAtRef = useRef(null);
+  const firstNativeSampleReceivedRef = useRef(false);
+  const collectorBusyRef = useRef(false);
   const [samples, setSamples] = useState([]);
   const [lastRfReadTime, setLastRfReadTime] = useState(null);
   const [permissionStatus, setPermissionStatus] = useState(null);
@@ -3882,6 +4611,10 @@ export default function MobileRfKpi({
   const [exportFiles, setExportFiles] = useState([]);
   const [exportPackageName, setExportPackageName] = useState("");
   const [exportBasePath, setExportBasePath] = useState("");
+  const [excelPlotExportStatus, setExcelPlotExportStatus] = useState("");
+  const [excelPlotExportBusy, setExcelPlotExportBusy] = useState(false);
+  const [iterationRunMode, setIterationRunMode] = useState("fixed"); // fixed | continuous
+  const [controlledTestDialog, setControlledTestDialog] = useState(null);
   const [dataSetupOpen, setDataSetupOpen] = useState(true);
   const [advancedRfOpen, setAdvancedRfOpen] = useState(false);
   const [dataTestType, setDataTestType] = useState(DEFAULT_DATA_TEST_TYPE);
@@ -3913,10 +4646,15 @@ export default function MobileRfKpi({
   const selectedModeRef = useRef(selectedMode);
   const currentSessionRef = useRef(currentSession);
   const samplesRef = useRef(samples);
+  const exportSamplesRef = useRef([]);
+  const LIVE_SAMPLE_PREVIEW_CAP = 900;
   const gpsRef = useRef(lastGpsLocation);
   const dataTestRef = useRef(dataTest);
   const throughputAbortRef = useRef(null);
+  const throughputRunPromiseRef = useRef(null);
+  const continuousSaveInFlightRef = useRef(false);
   const throughputPhaseAbortRef = useRef(null);
+  const controlledTestCompletionRef = useRef(null);
   const rfReadInFlightRef = useRef(false);
   const collectorRunningRef = useRef(collectorRunning);
   const sessionPausedRef = useRef(false);
@@ -3934,6 +4672,7 @@ export default function MobileRfKpi({
   const currentNativeHttpSetup = useMemo(() => ({
     ...DEFAULT_NATIVE_HTTP_SETUP,
     direction: dataDirection,
+    runMode: iterationRunMode,
     iterations: thpIterations,
     waitSeconds: thpWaitSeconds,
     durationSeconds: thpDurationSeconds,
@@ -3941,12 +4680,13 @@ export default function MobileRfKpi({
     warmupSeconds: thpWarmupSeconds,
     downloadUrl: nativeDownloadUrl,
     uploadUrl: nativeUploadUrl,
-  }), [dataDirection, thpIterations, thpWaitSeconds, thpDurationSeconds, thpIntervalSeconds, thpWarmupSeconds, nativeDownloadUrl, nativeUploadUrl]);
+  }), [dataDirection, iterationRunMode, thpIterations, thpWaitSeconds, thpDurationSeconds, thpIntervalSeconds, thpWarmupSeconds, nativeDownloadUrl, nativeUploadUrl]);
 
   // Run setup is resolved/clamped only when BabyDragon actually starts the test.
   const currentNativeHttpRunSetup = useMemo(() => ({
     ...DEFAULT_NATIVE_HTTP_SETUP,
     direction: dataDirection,
+    runMode: iterationRunMode,
     iterations: resolvedThpIterations,
     waitSeconds: resolvedThpWaitSeconds,
     durationSeconds: resolvedThpDurationSeconds,
@@ -3954,52 +4694,75 @@ export default function MobileRfKpi({
     warmupSeconds: resolvedThpWarmupSeconds,
     downloadUrl: nativeDownloadUrl?.trim() || DEFAULT_NATIVE_HTTP_SETUP.downloadUrl,
     uploadUrl: nativeUploadUrl?.trim() || DEFAULT_NATIVE_HTTP_SETUP.uploadUrl,
-  }), [dataDirection, resolvedThpIterations, resolvedThpWaitSeconds, resolvedThpDurationSeconds, resolvedThpIntervalSeconds, resolvedThpWarmupSeconds, nativeDownloadUrl, nativeUploadUrl]);
+  }), [dataDirection, iterationRunMode, resolvedThpIterations, resolvedThpWaitSeconds, resolvedThpDurationSeconds, resolvedThpIntervalSeconds, resolvedThpWarmupSeconds, nativeDownloadUrl, nativeUploadUrl]);
 
-  const currentFtpRunSetup = useMemo(() => ({
-    ...DEFAULT_FTP_SETUP,
-    ...(ftpSetup || {}),
-    testType: "ftp",
-    direction: ftpSetup?.direction || DEFAULT_FTP_SETUP.direction,
-    iterations: clampInteger(ftpSetup?.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_FTP_SETUP.iterations),
-    waitSeconds: clampInteger(ftpSetup?.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_FTP_SETUP.waitSeconds),
-    durationSeconds: clampInteger(ftpSetup?.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_FTP_SETUP.durationSeconds),
-    intervalSeconds: clampInteger(ftpSetup?.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_FTP_SETUP.intervalSeconds),
-    warmupSeconds: clampInteger(ftpSetup?.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_FTP_SETUP.warmupSeconds),
-    port: clampInteger(ftpSetup?.port, 1, 65535, DEFAULT_FTP_SETUP.port),
-    uploadFileSizeMb: clampInteger(ftpSetup?.uploadFileSizeMb, 1, 2048, DEFAULT_FTP_SETUP.uploadFileSizeMb),
-    host: String(ftpSetup?.host || "").trim(),
-    username: String(ftpSetup?.username || DEFAULT_FTP_SETUP.username).trim(),
-    password: String(ftpSetup?.password || ""),
-    downloadRemotePath: String(ftpSetup?.downloadRemotePath || "").trim(),
-    uploadRemotePath: String(ftpSetup?.uploadRemotePath || "").trim(),
-    passiveMode: ftpSetup?.passiveMode !== false,
-    secure: Boolean(ftpSetup?.secure),
-  }), [ftpSetup]);
+  const currentFtpRunSetup = useMemo(() => {
+    const runMode = String(ftpSetup?.runMode || iterationRunMode || "fixed").toLowerCase() === "continuous"
+      ? "continuous"
+      : "fixed";
+    return {
+      ...DEFAULT_FTP_SETUP,
+      ...(ftpSetup || {}),
+      testType: "ftp",
+      runMode,
+      direction: ftpSetup?.direction || DEFAULT_FTP_SETUP.direction,
+      iterations: clampInteger(ftpSetup?.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_FTP_SETUP.iterations),
+      waitSeconds: clampInteger(ftpSetup?.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_FTP_SETUP.waitSeconds),
+      durationSeconds: clampInteger(ftpSetup?.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_FTP_SETUP.durationSeconds),
+      intervalSeconds: clampInteger(ftpSetup?.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_FTP_SETUP.intervalSeconds),
+      warmupSeconds: clampInteger(ftpSetup?.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_FTP_SETUP.warmupSeconds),
+      port: clampInteger(ftpSetup?.port, 1, 65535, DEFAULT_FTP_SETUP.port),
+      uploadFileSizeMb: clampInteger(ftpSetup?.uploadFileSizeMb, 1, 2048, DEFAULT_FTP_SETUP.uploadFileSizeMb),
+      host: String(ftpSetup?.host || "").trim(),
+      username: String(ftpSetup?.username || DEFAULT_FTP_SETUP.username).trim(),
+      password: String(ftpSetup?.password || ""),
+      downloadRemotePath: String(ftpSetup?.downloadRemotePath || "").trim(),
+      uploadRemotePath: String(ftpSetup?.uploadRemotePath || "").trim(),
+      passiveMode: ftpSetup?.passiveMode !== false,
+      secure: Boolean(ftpSetup?.secure),
+    };
+  }, [ftpSetup, iterationRunMode]);
 
-  const currentIperfRunSetup = useMemo(() => ({
-    ...DEFAULT_IPERF_SETUP,
-    ...(iperfSetup || {}),
-    testType: "iperf",
-    direction: iperfSetup?.direction || DEFAULT_IPERF_SETUP.direction,
-    iterations: clampInteger(iperfSetup?.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_IPERF_SETUP.iterations),
-    waitSeconds: clampInteger(iperfSetup?.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_IPERF_SETUP.waitSeconds),
-    durationSeconds: clampInteger(iperfSetup?.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_IPERF_SETUP.durationSeconds),
-    intervalSeconds: clampInteger(iperfSetup?.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_IPERF_SETUP.intervalSeconds),
-    warmupSeconds: clampInteger(iperfSetup?.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_IPERF_SETUP.warmupSeconds),
-    port: clampInteger(iperfSetup?.port, 1, 65535, DEFAULT_IPERF_SETUP.port),
-    streams: clampInteger(iperfSetup?.streams, 1, 64, DEFAULT_IPERF_SETUP.streams),
-    udpBitrateMbps: clampInteger(iperfSetup?.udpBitrateMbps, 1, 100000, DEFAULT_IPERF_SETUP.udpBitrateMbps),
-    server: String(iperfSetup?.server || DEFAULT_IPERF_SETUP.server || "").trim(),
-    protocol: String(iperfSetup?.protocol || DEFAULT_IPERF_SETUP.protocol || "TCP").toUpperCase(),
-    reverseMode: iperfSetup?.reverseMode === true,
-    bidirMode: iperfSetup?.bidirMode === true
-      || (String(iperfSetup?.direction || "").toLowerCase() === "dl_ul"
-        && String(iperfSetup?.protocol || "TCP").toUpperCase() === "TCP"
-        && iperfSetup?.reverseMode !== true),
-  }), [iperfSetup]);
+  const currentIperfRunSetup = useMemo(() => {
+    const runMode = String(iperfSetup?.runMode || iterationRunMode || "fixed").toLowerCase() === "continuous"
+      ? "continuous"
+      : "fixed";
+    const direction = String(iperfSetup?.direction || DEFAULT_IPERF_SETUP.direction || "ul").toLowerCase();
+    const protocol = String(iperfSetup?.protocol || DEFAULT_IPERF_SETUP.protocol || "TCP").toUpperCase();
+    const reverseMode = direction === "dl";
+    const bidirMode = direction === "dl_ul" && protocol === "TCP";
+    return {
+      ...DEFAULT_IPERF_SETUP,
+      ...(iperfSetup || {}),
+      testType: "iperf",
+      runMode,
+      direction,
+      iterations: clampInteger(iperfSetup?.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_IPERF_SETUP.iterations),
+      waitSeconds: clampInteger(iperfSetup?.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_IPERF_SETUP.waitSeconds),
+      durationSeconds: clampInteger(iperfSetup?.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_IPERF_SETUP.durationSeconds),
+      intervalSeconds: clampInteger(iperfSetup?.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_IPERF_SETUP.intervalSeconds),
+      warmupSeconds: clampInteger(iperfSetup?.warmupSeconds, 0, MAX_THP_WARMUP_SECONDS, DEFAULT_IPERF_SETUP.warmupSeconds),
+      port: clampInteger(iperfSetup?.port, 1, 65535, DEFAULT_IPERF_SETUP.port),
+      streams: clampInteger(iperfSetup?.streams, 1, 64, DEFAULT_IPERF_SETUP.streams),
+      udpBitrateMbps: clampInteger(iperfSetup?.udpBitrateMbps, 1, 100000, DEFAULT_IPERF_SETUP.udpBitrateMbps),
+      server: String(iperfSetup?.server || DEFAULT_IPERF_SETUP.server || "").trim(),
+      protocol,
+      reverseMode,
+      bidirMode,
+    };
+  }, [iperfSetup, iterationRunMode]);
 
   const currentDataTestConfig = useMemo(() => {
+    if (dataTestType === "rf_only") {
+      return {
+        testType: "rf_only",
+        engineId: ENGINE_IDS.RF_ONLY,
+        ftp: currentFtpRunSetup,
+        iperf: currentIperfRunSetup,
+        ookla: ooklaSetup,
+        fcc: fccSetup,
+      };
+    }
     if (dataTestType === "ftp") {
       return {
         ...currentFtpRunSetup,
@@ -4030,6 +4793,9 @@ export default function MobileRfKpi({
 
   const currentDataTestSummary = useMemo(() => {
     const label = DATA_TEST_TYPES.find((item) => item.key === dataTestType)?.label || "Data Test";
+    if (dataTestType === "rf_only") {
+      return `${label} · RF/GPS recording only · no data engine`;
+    }
     const directionLabel = DATA_DIRECTIONS.find((item) => item.key === currentDataTestConfig.direction)?.label || "DL + UL";
     const ftpHostText = dataTestType === "ftp" && currentDataTestConfig.host ? ` · ${currentDataTestConfig.host}:${currentDataTestConfig.port}` : "";
     if (dataTestType === "iperf") {
@@ -4050,7 +4816,29 @@ export default function MobileRfKpi({
     [baseTableRows, nativeSnapshot, samples, effectiveRatView, dataTest, savedSession, collectorRunning]
   );
   const hasRunningTask = inProcessTasks.length > 0;
-  const servingTechnology = getCurrentRatName(nativeSnapshot);
+  const streamAgeMs = nativeStreamStartedAt != null ? clockForNativeWait - nativeStreamStartedAt : null;
+  const nativeRfWaitLabel = resolveNativeRfWaitLabel({
+    nativeSnapshot,
+    streamStartedAt: nativeStreamStartedAt,
+    diagnostics: mobilityDiagnostics,
+    startError: mobilityStartError || getMobilityStartError(),
+    lastDrainError: lastMobilityDrainError,
+    firstSampleReceived: firstNativeSampleReceived,
+    nowMs: clockForNativeWait,
+  });
+  const servingTechnology = getCurrentRatName(
+    nativeSnapshot,
+    rfStreamUi.label === "Live" ? "Waiting for RAT" : (nativeRfWaitLabel || rfStreamUi.label || "Starting native RF service")
+  );
+  const showRecordingControls = Boolean(
+    collectorRunning
+    && currentSession?.id
+    && (testState === "recording" || testState === "paused")
+  );
+  const lastGpsFixMs = mobilityDiagnostics?.lastNativeLocationTimestamp
+    || mobilityDiagnostics?.lastGpsFixMs
+    || getMobilitySessionSnapshot()?.lastNativeGpsFixMs
+    || null;
   const sampleCount = samples.length;
   const sessionSamples = useMemo(() => {
     if (!currentSession) return [];
@@ -4101,8 +4889,12 @@ export default function MobileRfKpi({
   const summaryAppUl = (isOoklaContext({ dataTest, savedSession: visibleSession }) || isFccContext({ dataTest, savedSession: visibleSession }))
     ? "N/A"
     : formatThroughputWithUnit(formatThroughputLive("ul", { dataTest, savedSession: visibleSession }));
-  const summaryTrafficDl = getTrafficStatsLive("dl", samples);
-  const summaryTrafficUl = getTrafficStatsLive("ul", samples);
+  const summaryTrafficMobileDl = getTrafficStatsLive("dl", samples, "mobile");
+  const summaryTrafficMobileUl = getTrafficStatsLive("ul", samples, "mobile");
+  const summaryTrafficTotalDl = getTrafficStatsLive("dl", samples, "total");
+  const summaryTrafficTotalUl = getTrafficStatsLive("ul", samples, "total");
+  const showLiveMobileTraffic = sessionHasMeaningfulMobileTraffic(samples);
+  const trafficStatsUiNote = buildTrafficStatsActiveSourceNote(samples);
   const summaryCallState = nativeSnapshot?.callState || "N/A";
 
   useEffect(() => {
@@ -4135,6 +4927,12 @@ export default function MobileRfKpi({
   }, [dataTest]);
 
   useEffect(() => {
+    controlledTestCompletionRef.current = (payload) => {
+      setControlledTestDialog(payload);
+    };
+  }, []);
+
+  useEffect(() => {
     gpsRef.current = lastGpsLocation;
   }, [lastGpsLocation]);
 
@@ -4149,13 +4947,32 @@ export default function MobileRfKpi({
   function handleNativeHttpSetupChange(nextSetup) {
     const setup = { ...DEFAULT_NATIVE_HTTP_SETUP, ...(nextSetup || {}) };
     setDataDirection(setup.direction || DEFAULT_DATA_DIRECTION);
-    setThpIterations(cleanIntegerDraft(String(setup.iterations ?? ""), 2));
+    setThpIterations(cleanIntegerDraft(String(setup.iterations ?? ""), 6));
     setThpWaitSeconds(cleanIntegerDraft(String(setup.waitSeconds ?? ""), 3));
     setThpDurationSeconds(cleanIntegerDraft(String(setup.durationSeconds ?? ""), 3));
     setThpIntervalSeconds(cleanIntegerDraft(String(setup.intervalSeconds ?? ""), 2));
     setThpWarmupSeconds(cleanIntegerDraft(String(setup.warmupSeconds ?? ""), 2));
     setNativeDownloadUrl(setup.downloadUrl ?? DEFAULT_NATIVE_HTTP_SETUP.downloadUrl);
     setNativeUploadUrl(setup.uploadUrl ?? DEFAULT_NATIVE_HTTP_SETUP.uploadUrl);
+    if (setup.runMode === "continuous" || setup.runMode === "fixed") {
+      setIterationRunMode(setup.runMode);
+    }
+  }
+
+  function handleFtpSetupChange(nextSetup) {
+    const setup = { ...DEFAULT_FTP_SETUP, ...(nextSetup || {}) };
+    setFtpSetup(setup);
+    if (setup.runMode === "continuous" || setup.runMode === "fixed") {
+      setIterationRunMode(setup.runMode);
+    }
+  }
+
+  function handleIperfSetupChange(nextSetup) {
+    const setup = { ...DEFAULT_IPERF_SETUP, ...(nextSetup || {}) };
+    setIperfSetup(setup);
+    if (setup.runMode === "continuous" || setup.runMode === "fixed") {
+      setIterationRunMode(setup.runMode);
+    }
   }
 
   async function requestRfPermissionsIfNeeded() {
@@ -4163,7 +4980,11 @@ export default function MobileRfKpi({
     permissionRequestStarted.current = true;
     try {
       if (typeof BabyDragonRfKpi.requestRfPermissions === "function") {
-        const response = await BabyDragonRfKpi.requestRfPermissions();
+        // Never block GPS+RF / mobility start on a stuck permission callback.
+        const response = await Promise.race([
+          BabyDragonRfKpi.requestRfPermissions(),
+          new Promise((resolve) => window.setTimeout(() => resolve({ timedOut: true }), 1500)),
+        ]);
         if (response?.permissions) {
           setPermissionStatus(response.permissions);
         }
@@ -4173,69 +4994,189 @@ export default function MobileRfKpi({
     }
   }
 
-  async function refreshNativeSnapshot({ append = true } = {}) {
+  function appendBuiltRfSample(snapshot, readNow, { recording = true } = {}) {
+    setSamples((current) => {
+      const previousSample = [...current].reverse().find((item) => isActiveRfSample(item)) || current[current.length - 1] || null;
+      const skipTrafficDelta = trafficStatsSkipBaselineRef.current === true;
+      if (skipTrafficDelta) trafficStatsSkipBaselineRef.current = false;
+      const gps = resolveGpsForSample(gpsRef.current);
+      const sample = buildRfSample({
+        snapshot: { ...snapshot, babyDragonReadAt: readNow },
+        now: readNow,
+        gps,
+        session: currentSessionRef.current,
+        mode: selectedModeRef.current,
+        recording,
+      });
+      sample.source = snapshot?.mobilityOwned ? "android_mobility_service" : (sample.source || "react_poll");
+      sample.trafficStats = buildSampleTrafficStats(snapshot, previousSample, readNow, { skipDelta: skipTrafficDelta });
+      exportSamplesRef.current = [...(exportSamplesRef.current || []), sample];
+      return [...current.slice(-(LIVE_SAMPLE_PREVIEW_CAP - 1)), sample];
+    });
+  }
+
+  async function drainAndAppendMobilitySamples() {
+    if (!isMobilitySessionActive()) return 0;
     const isPausedSession = testStateRef.current === "paused" && collectorRunningRef.current;
     const isRecordingSession = testStateRef.current === "recording" && collectorRunningRef.current;
+
+    await drainNativeMobilitySamples();
+    const batch = takePendingMobilityRfSamples();
+    if (!batch.length) return 0;
+
+    let appended = 0;
+    for (const raw of batch) {
+      const readNow = getNumber(raw?.timestamp) || Date.now();
+      const snapshot = raw?.snapshot || raw;
+      if (raw?.gps) {
+        const lat = raw.gps.lat ?? raw.gps.latitude;
+        const lng = raw.gps.lng ?? raw.gps.longitude;
+        if (Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {
+          gpsRef.current = {
+            ...(gpsRef.current || {}),
+            ...raw.gps,
+            lat: Number(lat),
+            lng: Number(lng),
+          };
+        }
+      }
+      // Preview + recording: always update Live RF from native samples (RF independent of GPS).
+      setNativeSnapshot(snapshot);
+      setFirstNativeSampleReceived(true);
+      setLastUiRfTimestamp(readNow);
+      setCollectorBusy(false);
+      setCheckingTimeoutReason(null);
+      if (isPausedSession) {
+        setSamples((current) => {
+          const sample = buildPausedGpsSample({
+            now: readNow,
+            gps: resolveGpsForSample(raw?.gps || gpsRef.current),
+            session: currentSessionRef.current,
+            mode: selectedModeRef.current,
+          });
+          sample.source = "android_mobility_service";
+          exportSamplesRef.current = [...(exportSamplesRef.current || []), sample];
+          return [...current.slice(-(LIVE_SAMPLE_PREVIEW_CAP - 1)), sample];
+        });
+      } else if (isRecordingSession) {
+        appendBuiltRfSample({ ...snapshot, mobilityOwned: true }, readNow, { recording: true });
+      }
+      appended += 1;
+      setLastRfReadTime(readNow);
+      setRfPollCount((count) => count + 1);
+    }
+    if (appended) {
+      setCollectorMessage(`Native RF live · ${appended} sample(s)`);
+      setLastMobilityDrainError(null);
+      setRfStreamUi({ label: "Live", reason: null });
+    }
+    return appended;
+  }
+
+  async function refreshNativeSnapshot({ append = true } = {}) {
+    const isPausedSession = testStateRef.current === "paused" && collectorRunningRef.current;
+
+    // Mobility preview/recording owns Live RF — drain only; never gate on Saved/engine/GPS.
+    if (isMobilitySessionActive()) {
+      const drained = await drainAndAppendMobilitySamples();
+      if (drained > 0) return { ok: true, drained };
+      if (Date.now() % 3000 < 1100) {
+        try {
+          const diagnostics = await fetchMobilityDiagnostics();
+          setMobilityDiagnostics(diagnostics);
+          setNativeGpsUiStatus(describeGpsUiStatus(diagnostics));
+          setLastMobilityDrainError(diagnostics?.lastDrainError || getMobilityStartError() || null);
+          const stream = describeRfStreamUiStatus({
+            diagnostics,
+            firstSampleReceived: firstNativeSampleReceived,
+            mode: getMobilityMode(),
+            startError: mobilityStartError || getMobilityStartError(),
+            streamAgeMs: nativeStreamStartedAt != null ? Date.now() - nativeStreamStartedAt : null,
+          });
+          setRfStreamUi(stream);
+          if (stream.reason && stream.label === "Unavailable") {
+            setCheckingTimeoutReason(stream.reason);
+            setCollectorBusy(false);
+          }
+        } catch {
+          // keep prior diagnostics
+        }
+      }
+      return { ok: true, drained: 0, waiting_native: true };
+    }
 
     if (isPausedSession && append) {
       const readNow = Date.now();
       setSamples((current) => {
         const sample = buildPausedGpsSample({
           now: readNow,
-          gps: gpsRef.current,
+          gps: resolveGpsForSample(gpsRef.current),
           session: currentSessionRef.current,
           mode: selectedModeRef.current,
         });
-        return [...current.slice(-899), sample];
+        exportSamplesRef.current = [...(exportSamplesRef.current || []), sample];
+        return [...current.slice(-(LIVE_SAMPLE_PREVIEW_CAP - 1)), sample];
       });
       setCollectorMessage("Session paused. GPS-only samples continue.");
       return null;
     }
 
-    if (!isRecordingSession && append) return null;
+    return null;
+  }
 
-    if (rfReadInFlightRef.current) return null;
-    rfReadInFlightRef.current = true;
+  async function bootstrapLiveRfPreview({ forceRestart = false } = {}) {
     setCollectorBusy(true);
+    if (!checkingStartedAtRef.current) {
+      const startedAt = Date.now();
+      checkingStartedAtRef.current = startedAt;
+      setCheckingStartedAt(startedAt);
+    }
+    if (forceRestart) {
+      setCheckingTimeoutReason(null);
+      setMobilityStartError(null);
+    }
+    if (!nativeStreamStartedAt || forceRestart) {
+      setNativeStreamStartedAt(Date.now());
+    }
+    setRfStreamUi({ label: "Starting", reason: null });
     try {
-      const snapshot = await Promise.race([
-        BabyDragonRfKpi.getSnapshot(),
-        new Promise((_, reject) => {
-          window.setTimeout(() => reject(new Error("RF read timeout. Retrying next second.")), 850);
-        }),
-      ]);
-      setNativeSnapshot(snapshot);
-      if (snapshot?.permissions) {
-        setPermissionStatus(snapshot.permissions);
-      }
-      setCollectorMessage(snapshot?.message || snapshot?.status || "RF snapshot refreshed.");
-      const readNow = Date.now();
-      setLastRfReadTime(readNow);
-      setRfPollCount((count) => count + 1);
-
-      if (append && snapshot?.ok && isRecordingSession) {
-        setSamples((current) => {
-          const previousSample = [...current].reverse().find((item) => isActiveRfSample(item)) || current[current.length - 1] || null;
-          const skipTrafficDelta = trafficStatsSkipBaselineRef.current === true;
-          if (skipTrafficDelta) trafficStatsSkipBaselineRef.current = false;
-          const sample = buildRfSample({
-            snapshot: { ...snapshot, babyDragonReadAt: readNow },
-            now: readNow,
-            gps: gpsRef.current,
-            session: currentSessionRef.current,
-            mode: selectedModeRef.current,
-            recording: true,
-          });
-          sample.trafficStats = buildSampleTrafficStats(snapshot, previousSample, readNow, { skipDelta: skipTrafficDelta });
-          return [...current.slice(-899), sample];
+      void requestRfPermissionsIfNeeded();
+      const started = await ensureLiveRfPreview({
+        forceRestart,
+        notificationText: collectorRunningRef.current
+          ? "Recording RF / GPS / data test"
+          : "Live RF / GPS preview",
+      });
+      setMobilityDiagnostics(started?.diagnostics || null);
+      setNativeGpsUiStatus(describeGpsUiStatus(started?.diagnostics, started?.gpsStatus));
+      if (started?.firstSampleReceived || started?.lastNativeRfTimestamp) {
+        setFirstNativeSampleReceived(true);
+        setRfStreamUi({ label: "Live", reason: null });
+        setCollectorMessage("Native RF stream live");
+        await drainAndAppendMobilitySamples();
+      } else if (started?.ok === false && !started?.pendingReady && started?.reason !== "waiting_first_sample") {
+        const reason = started?.reason || started?.message || "service_start_failed";
+        setMobilityStartError(reason);
+        setCheckingTimeoutReason(reason);
+        setRfStreamUi({
+          label: reason === "permission_error" ? "Permission required" : "Unavailable",
+          reason,
         });
+        setCollectorMessage(started?.message || reason);
+      } else {
+        setRfStreamUi({ label: "Starting", reason: started?.reason || "waiting_first_sample" });
+        setCollectorMessage(started?.attached ? "Attached — waiting for first RF sample" : "Native RF preview starting");
+        await drainAndAppendMobilitySamples();
       }
-      return snapshot;
+      return started;
     } catch (error) {
-      setCollectorMessage(error?.message || "Native RF collector is not available yet.");
+      const reason = "native_exception";
+      setMobilityStartError(reason);
+      setCheckingTimeoutReason(reason);
+      setRfStreamUi({ label: "Unavailable", reason });
+      setCollectorMessage(error?.message || reason);
       return null;
     } finally {
-      rfReadInFlightRef.current = false;
       setCollectorBusy(false);
     }
   }
@@ -4282,11 +5223,11 @@ export default function MobileRfKpi({
   }
 
   function patchDataTest(patch) {
-    setDataTest((current) => {
-      const next = { ...current, ...patch, updatedAt: Date.now() };
-      dataTestRef.current = next;
-      return next;
-    });
+    // Keep dataTestRef synchronous so Stop & Save never finalizes from a stale empty list
+    // while React still has a pending setState updater from native progress events.
+    const next = { ...dataTestRef.current, ...patch, updatedAt: Date.now() };
+    dataTestRef.current = next;
+    setDataTest(next);
   }
 
   async function runInternalThroughputTest(sessionId, options = {}) {
@@ -4297,7 +5238,10 @@ export default function MobileRfKpi({
     }
 
     const config = { ...DEFAULT_NATIVE_HTTP_SETUP, ...(options || {}) };
-    const iterations = clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
+    const continuous = String(config.runMode || iterationRunMode || "fixed").toLowerCase() === "continuous";
+    const iterations = continuous
+      ? null
+      : clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
     const waitSeconds = clampInteger(config.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
     const durationSeconds = clampInteger(config.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
     const intervalSeconds = clampInteger(config.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
@@ -4310,13 +5254,19 @@ export default function MobileRfKpi({
     const phasesPerIteration = (runDl ? 1 : 0) + (runUl ? 1 : 0);
     const controller = new AbortController();
     throughputAbortRef.current = controller;
-    const sequenceTimeoutMs = ((maxPhaseDurationSeconds * 1000 + 12000) * Math.max(1, phasesPerIteration) * iterations)
-      + (waitSeconds * 1000 * Math.max(0, iterations - 1))
-      + 8000
-      + (2 * 60 * 60 * 1000);
+    const sequenceTimeoutMs = continuous
+      ? (24 * 60 * 60 * 1000)
+      : (((maxPhaseDurationSeconds * 1000 + 12000) * Math.max(1, phasesPerIteration) * iterations)
+        + (waitSeconds * 1000 * Math.max(0, iterations - 1))
+        + 8000
+        + (2 * 60 * 60 * 1000));
     const clearTimeout = buildTimedSignal(controller, sequenceTimeoutMs);
     const startedAt = Date.now();
     const iterationResults = [];
+    let currentAttempt = 0;
+    let settleThroughputRun = null;
+    const throughputSettlePromise = new Promise((resolve) => { settleThroughputRun = resolve; });
+    throughputRunPromiseRef.current = throughputSettlePromise;
 
     const reportNativeHttpPaused = () => {
       if (throughputAbortRef.current !== controller) return;
@@ -4336,7 +5286,8 @@ export default function MobileRfKpi({
       uploadBytes: 0,
       testType: config.testType || DEFAULT_DATA_TEST_TYPE,
       direction,
-      iterationsRequested: iterations,
+      runMode: continuous ? "continuous" : "fixed",
+      iterationsRequested: continuous ? null : iterations,
       waitSeconds,
       durationSeconds,
       intervalSeconds,
@@ -4350,133 +5301,212 @@ export default function MobileRfKpi({
       startedAt,
       endedAt: null,
       sessionId,
-      message: `Iteration 1/${iterations}: warmup ${warmupSeconds}s, then native ${direction === "ul" ? "upload" : direction === "dl" ? "download" : "DL/UL"} for ${phaseText}...`,
+      message: continuous
+        ? `Continuous mode · iteration 1: warmup ${warmupSeconds}s, then native ${direction === "ul" ? "upload" : direction === "dl" ? "download" : "DL/UL"} for ${phaseText}...`
+        : `Iteration 1/${iterations}: warmup ${warmupSeconds}s, then native ${direction === "ul" ? "upload" : direction === "dl" ? "download" : "DL/UL"} for ${phaseText}...`,
+    });
+    updateMobilityTestStatus({
+      status: "running",
+      notificationText: continuous
+        ? "Native HTTP continuous · running until stopped"
+        : `Native HTTP ${iterations} iter`,
     });
 
+    const iterLabel = (n) => (continuous ? `Continuous · iter ${n}` : `Iteration ${n}/${iterations}`);
+
     try {
-      for (let iteration = 1; iteration <= iterations; iteration += 1) {
+      for (let iteration = 1; continuous ? !controller.signal.aborted : iteration <= iterations; iteration += 1) {
+        if (controller.signal.aborted) break;
+        currentAttempt = iteration;
         await waitWhileSessionPaused(sessionPausedRef, controller.signal);
         const iterationStartedAt = Date.now();
         let dl = null;
         let ul = null;
 
-        if (runDl) {
-          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
-          patchDataTest({
-            status: "running",
-            phase: "download",
-            currentIteration: iteration,
-            message: `Iteration ${iteration}/${iterations}: DL warmup ${warmupSeconds}s + measure ${dlDurationSeconds}s...`,
-          });
+        try {
+          if (runDl) {
+            await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+            patchDataTest({
+              status: "running",
+              phase: "download",
+              currentIteration: iteration,
+              message: `${iterLabel(iteration)}: DL warmup ${warmupSeconds}s + measure ${dlDurationSeconds}s...`,
+            });
 
-          dl = await measureThroughputPhaseWithSessionPause({
-            sessionPausedRef,
-            sequenceSignal: controller.signal,
-            phaseAbortRef: throughputPhaseAbortRef,
-            onPaused: reportNativeHttpPaused,
-            measureFn: (phaseSignal) => measureDownloadThroughput({
-              signal: phaseSignal,
-              config: { ...config, durationSeconds: dlDurationSeconds, intervalSeconds, warmupSeconds },
-              onProgress: (received) => {
-                if (sessionPausedRef.current) {
-                  reportNativeHttpPaused();
-                  return;
-                }
-                if (throughputAbortRef.current === controller) {
-                  patchDataTest({
-                    downloadBytes: received,
-                    currentIteration: iteration,
-                    message: `Iteration ${iteration}/${iterations}: downloading ${Math.round(received / 1024 / 1024)} MB...`,
-                  });
-                }
-              },
-            }),
-          });
-          if (throughputAbortRef.current !== controller) return;
+            dl = await measureThroughputPhaseWithSessionPause({
+              sessionPausedRef,
+              sequenceSignal: controller.signal,
+              phaseAbortRef: throughputPhaseAbortRef,
+              onPaused: reportNativeHttpPaused,
+              measureFn: (phaseSignal) => measureDownloadThroughput({
+                signal: phaseSignal,
+                config: { ...config, durationSeconds: dlDurationSeconds, intervalSeconds, warmupSeconds },
+                onProgress: (received) => {
+                  if (sessionPausedRef.current) {
+                    reportNativeHttpPaused();
+                    return;
+                  }
+                  if (throughputAbortRef.current === controller) {
+                    patchDataTest({
+                      downloadBytes: received,
+                      currentIteration: iteration,
+                      message: `${iterLabel(iteration)}: downloading ${Math.round(received / 1024 / 1024)} MB...`,
+                    });
+                  }
+                },
+              }),
+            });
+            if (throughputAbortRef.current !== controller) return;
+            await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+          }
+
+          if (runUl) {
+            await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+            patchDataTest({
+              status: "running",
+              phase: "upload",
+              currentIteration: iteration,
+              dlMbps: runDl ? (dl?.mbps ?? dataTestRef.current.dlMbps) : dataTestRef.current.dlMbps,
+              message: `${iterLabel(iteration)}: UL warmup ${warmupSeconds}s + measure ${ulDurationSeconds}s...`,
+            });
+
+            ul = await measureThroughputPhaseWithSessionPause({
+              sessionPausedRef,
+              sequenceSignal: controller.signal,
+              phaseAbortRef: throughputPhaseAbortRef,
+              onPaused: reportNativeHttpPaused,
+              measureFn: (phaseSignal) => measureUploadThroughput({
+                signal: phaseSignal,
+                config: { ...config, durationSeconds: ulDurationSeconds, intervalSeconds, warmupSeconds },
+              }),
+            });
+            if (throughputAbortRef.current !== controller) return;
+            await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+          } else if (runDl) {
+            patchDataTest({
+              status: "running",
+              phase: "iteration_complete",
+              currentIteration: iteration,
+              message: `${iterLabel(iteration)}: DL complete.`,
+            });
+          }
+
           await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
+          const iterationEndedAt = Date.now();
+          const iterationResult = {
+            iteration,
+            status: "complete",
+            dlMbps: dl?.mbps ?? null,
+            ulMbps: ul?.mbps ?? null,
+            dlBytes: dl?.bytes || 0,
+            ulBytes: ul?.bytes || 0,
+            dlMeasuredBytes: dl?.measuredBytes || dl?.bytes || 0,
+            ulMeasuredBytes: ul?.measuredBytes || ul?.bytes || 0,
+            dlWarmupBytes: dl?.warmupBytes || 0,
+            ulWarmupBytes: ul?.warmupBytes || 0,
+            dlSeconds: dl?.seconds || 0,
+            ulSeconds: ul?.seconds || 0,
+            dlWallSeconds: dl?.wallSeconds || dl?.seconds || 0,
+            ulWallSeconds: ul?.wallSeconds || ul?.seconds || 0,
+            dlSource: dl?.source || "",
+            ulSource: ul?.source || "",
+            source: [dl?.source, ul?.source].filter(Boolean).join(" + "),
+            startedAt: iterationStartedAt,
+            endedAt: iterationEndedAt,
+            started_at_iso: new Date(iterationStartedAt).toISOString(),
+            ended_at_iso: new Date(iterationEndedAt).toISOString(),
+            wall_seconds: Math.max(0, (iterationEndedAt - iterationStartedAt) / 1000),
+            durationSeconds,
+            dlDurationSeconds,
+            ulDurationSeconds,
+            intervalSeconds,
+            warmupSeconds,
+            waitSeconds,
+            direction,
+          };
+          iterationResults.push(iterationResult);
+        } catch (iterError) {
+          if (throughputAbortRef.current !== controller) return;
+          if (iterError?.name === "AbortError") throw iterError;
+
+          const message = makeAbortErrorMessage(iterError);
+          const endedAt = Date.now();
+          const failClass = classifyNativeHttpFailure(message);
+          const alreadyRecorded = iterationResults.some((row) => Number(row.iteration) === iteration);
+          if (!alreadyRecorded) {
+            iterationResults.push({
+              iteration,
+              status: "failed",
+              dlStatus: "failed",
+              ulStatus: "not_run",
+              dlMbps: null,
+              ulMbps: null,
+              dlBytes: 0,
+              ulBytes: 0,
+              dlMeasuredBytes: 0,
+              ulMeasuredBytes: 0,
+              startedAt: iterationStartedAt,
+              endedAt,
+              started_at_iso: new Date(iterationStartedAt).toISOString(),
+              ended_at_iso: new Date(endedAt).toISOString(),
+              wall_seconds: Math.max(0, (endedAt - iterationStartedAt) / 1000),
+              direction,
+              durationSeconds,
+              warmupSeconds,
+              intervalSeconds,
+              waitSeconds,
+              source: "native_http_internal",
+              error: message,
+              errorMessage: message,
+              errorCode: failClass.errorCode,
+              failureStage: failClass.failureStage,
+              conciseReason: failClass.conciseReason,
+            });
+          }
         }
 
-        if (runUl) {
-          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
-          patchDataTest({
-            status: "running",
-            phase: "upload",
-            currentIteration: iteration,
-            dlMbps: runDl ? (dl?.mbps ?? dataTestRef.current.dlMbps) : dataTestRef.current.dlMbps,
-            message: `Iteration ${iteration}/${iterations}: UL warmup ${warmupSeconds}s + measure ${ulDurationSeconds}s...`,
-          });
+        if (throughputAbortRef.current !== controller) return;
 
-          ul = await measureThroughputPhaseWithSessionPause({
-            sessionPausedRef,
-            sequenceSignal: controller.signal,
-            phaseAbortRef: throughputPhaseAbortRef,
-            onPaused: reportNativeHttpPaused,
-            measureFn: (phaseSignal) => measureUploadThroughput({
-              signal: phaseSignal,
-              config: { ...config, durationSeconds: ulDurationSeconds, intervalSeconds, warmupSeconds },
-            }),
-          });
-          if (throughputAbortRef.current !== controller) return;
-          await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
-        } else if (runDl) {
-          patchDataTest({
-            status: "running",
-            phase: "iteration_complete",
-            currentIteration: iteration,
-            message: `Iteration ${iteration}/${iterations}: DL complete.`,
-          });
-        }
-
-        await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
-        const iterationEndedAt = Date.now();
-        const iterationResult = {
-          iteration,
-          dlMbps: dl?.mbps ?? null,
-          ulMbps: ul?.mbps ?? null,
-          dlBytes: dl?.bytes || 0,
-          ulBytes: ul?.bytes || 0,
-          dlMeasuredBytes: dl?.measuredBytes || dl?.bytes || 0,
-          ulMeasuredBytes: ul?.measuredBytes || ul?.bytes || 0,
-          dlWarmupBytes: dl?.warmupBytes || 0,
-          ulWarmupBytes: ul?.warmupBytes || 0,
-          dlSeconds: dl?.seconds || 0,
-          ulSeconds: ul?.seconds || 0,
-          dlWallSeconds: dl?.wallSeconds || dl?.seconds || 0,
-          ulWallSeconds: ul?.wallSeconds || ul?.seconds || 0,
-          dlSource: dl?.source || "",
-          ulSource: ul?.source || "",
-          source: [dl?.source, ul?.source].filter(Boolean).join(" + "),
-          startedAt: iterationStartedAt,
-          endedAt: iterationEndedAt,
-          durationSeconds,
-          dlDurationSeconds,
-          ulDurationSeconds,
-          intervalSeconds,
-          warmupSeconds,
-          waitSeconds,
-          direction,
-        };
-        iterationResults.push(iterationResult);
+        const counts = summarizeControlledIterationCounts(iterationResults, continuous ? null : iterations, "running");
         const avgDl = averageThroughput(iterationResults, "dlMbps");
         const avgUl = averageThroughput(iterationResults, "ulMbps");
+        const justCompleted = iterationResults.find((row) => Number(row.iteration) === iteration && isCompletedIterationRow(row));
+        const lastFail = [...iterationResults].reverse().find(isFailedIterationRow);
+        const allDone = continuous ? false : iteration >= iterations;
 
         patchDataTest({
-          status: iteration === iterations ? "complete" : "running",
-          phase: iteration === iterations ? "complete" : "wait",
+          status: "running",
+          phase: allDone ? "finalizing" : "wait",
           dlMbps: avgDl,
           ulMbps: avgUl,
-          downloadBytes: (dataTestRef.current.downloadBytes || 0) + (dl?.bytes || 0),
-          uploadBytes: (dataTestRef.current.uploadBytes || 0) + (ul?.bytes || 0),
-          completedIterations: iteration,
+          downloadBytes: (dataTestRef.current.downloadBytes || 0) + (justCompleted?.dlBytes || 0),
+          uploadBytes: (dataTestRef.current.uploadBytes || 0) + (justCompleted?.ulBytes || 0),
+          completedIterations: counts.completedIterations,
+          failedIterations: counts.failedIterations,
+          attemptedIterations: counts.attemptedIterations,
+          remainingIterations: continuous ? null : counts.remainingIterations,
           currentIteration: iteration,
           iterationResults: [...iterationResults],
-          endedAt: iteration === iterations ? iterationEndedAt : null,
-          message: iteration === iterations
-            ? `Complete ${iteration}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps.`
-            : `Iteration ${iteration}/${iterations} complete. Waiting before next run...`,
+          error: lastFail?.error || "",
+          message: continuous
+            ? (lastFail && Number(lastFail.iteration) === iteration
+              ? `Continuous · iter ${iteration} failed (${lastFail.errorCode || "ERROR"}). Continuing until stopped...`
+              : `Continuous · iter ${iteration} complete. Attempted ${counts.attemptedIterations}, completed ${counts.completedIterations}, failed ${counts.failedIterations}.`)
+            : (lastFail && Number(lastFail.iteration) === iteration
+              ? `Iteration ${iteration}/${iterations} failed (${lastFail.errorCode || "ERROR"}). ${allDone ? "Sequence finished." : "Waiting before next run..."}`
+              : allDone
+                ? `Attempt slots finished ${counts.attemptedIterations}/${iterations}. Completed ${counts.completedIterations}, failed ${counts.failedIterations}.`
+                : `Iteration ${iteration}/${iterations} complete. Waiting before next run...`),
+        });
+        updateMobilityTestStatus({
+          status: "running",
+          notificationText: continuous
+            ? `Continuous · ${counts.completedIterations} ok / ${counts.failedIterations} fail`
+            : `Native HTTP ${counts.attemptedIterations}/${iterations}`,
         });
 
-        if (iteration < iterations && waitSeconds > 0) {
+        const shouldWait = continuous ? waitSeconds > 0 : (iteration < iterations && waitSeconds > 0);
+        if (shouldWait) {
           await waitForSessionResumeGate(sessionPausedRef, controller.signal, reportNativeHttpPaused);
           await waitForThroughputPause(waitSeconds, controller.signal, (remaining) => {
             if (throughputAbortRef.current === controller) {
@@ -4486,31 +5516,184 @@ export default function MobileRfKpi({
                 currentIteration: iteration + 1,
                 message: sessionPausedRef.current
                   ? NATIVE_HTTP_SESSION_PAUSED_MESSAGE
-                  : `Waiting ${remaining}s before iteration ${iteration + 1}/${iterations}...`,
+                  : continuous
+                    ? `Waiting ${remaining}s before continuous iter ${iteration + 1}...`
+                    : `Waiting ${remaining}s before iteration ${iteration + 1}/${iterations}...`,
               });
             }
           }, sessionPausedRef);
         }
       }
+
+      if (throughputAbortRef.current !== controller) return;
+      if (continuous) {
+        // Continuous mode exits the loop only via abort; normal completion path unused.
+        return;
+      }
+      const finalCounts = summarizeControlledIterationCounts(iterationResults, iterations, "complete");
+      const finalStatus = deriveControlledRunStatus({
+        requested: finalCounts.requestedIterations,
+        attempted: finalCounts.attemptedIterations,
+        completed: finalCounts.completedIterations,
+        failed: finalCounts.failedIterations,
+        remaining: finalCounts.remainingIterations,
+        rawStatus: "complete",
+      });
+      const avgDl = averageThroughput(iterationResults, "dlMbps");
+      const avgUl = averageThroughput(iterationResults, "ulMbps");
+      const endedAt = Date.now();
+      const failSummary = iterationResults
+        .filter(isFailedIterationRow)
+        .map((row) => `Iter ${row.iteration}: ${row.errorCode || "FAILED"}`)
+        .join("; ");
+      patchDataTest({
+        status: finalStatus,
+        phase: finalStatus,
+        dlMbps: avgDl,
+        ulMbps: avgUl,
+        completedIterations: finalCounts.completedIterations,
+        failedIterations: finalCounts.failedIterations,
+        attemptedIterations: finalCounts.attemptedIterations,
+        remainingIterations: 0,
+        currentIteration: iterations,
+        iterationResults: [...iterationResults],
+        endedAt,
+        error: finalCounts.failedIterations > 0 ? (failSummary || dataTestRef.current.error || "") : "",
+        endReason: null,
+        message: `Native HTTP ${formatControlledRunStatusLabel(finalStatus)}. Requested ${iterations}, attempted ${finalCounts.attemptedIterations}, completed ${finalCounts.completedIterations}, failed ${finalCounts.failedIterations}.`,
+      });
+      if (controlledTestCompletionRef.current) {
+        controlledTestCompletionRef.current({
+          kind: "complete",
+          testType: "native_http",
+          title: "Native HTTP Test Completed",
+          requested: iterations,
+          attempted: finalCounts.attemptedIterations,
+          completed: finalCounts.completedIterations,
+          failed: finalCounts.failedIterations,
+          remaining: 0,
+          overall: formatControlledRunStatusLabel(finalStatus),
+          errorSummary: failSummary,
+        });
+      }
     } catch (error) {
       if (throughputAbortRef.current !== controller) return;
       const message = makeAbortErrorMessage(error);
+      const endedAt = Date.now();
+      const isAbort = error?.name === "AbortError";
+      if (continuous && isAbort) {
+        const stop = resolveContinuousStopPresentation(iterationResults, "Native HTTP");
+        const counts = stop.counts;
+        const avgDl = averageThroughput(iterationResults, "dlMbps");
+        const avgUl = averageThroughput(iterationResults, "ulMbps");
+        const totalDlBytes = iterationResults.reduce(
+          (sum, item) => sum + (Number(item.dlMeasuredBytes ?? item.dlBytes) || 0),
+          0,
+        );
+        const totalUlBytes = iterationResults.reduce(
+          (sum, item) => sum + (Number(item.ulMeasuredBytes ?? item.ulBytes) || 0),
+          0,
+        );
+        patchDataTest({
+          status: stop.status,
+          phase: stop.status,
+          runMode: "continuous",
+          dlMbps: avgDl,
+          ulMbps: avgUl,
+          downloadBytes: totalDlBytes,
+          uploadBytes: totalUlBytes,
+          completedIterations: counts.completedIterations,
+          failedIterations: counts.failedIterations,
+          attemptedIterations: counts.attemptedIterations,
+          remainingIterations: null,
+          iterationsRequested: null,
+          currentIteration: currentAttempt,
+          iterationResults: [...iterationResults],
+          endedAt,
+          endReason: stop.endReason,
+          error: stop.error,
+          message: stop.message,
+        });
+        if (!continuousSaveInFlightRef.current && controlledTestCompletionRef.current) {
+          controlledTestCompletionRef.current({
+            kind: "continuous_complete",
+            testType: "native_http",
+            title: stop.title,
+            requested: null,
+            attempted: counts.attemptedIterations,
+            completed: counts.completedIterations,
+            failed: counts.failedIterations,
+            remaining: null,
+            overall: stop.overall,
+            errorSummary: stop.errorSummary,
+          });
+        }
+        return;
+      }
+      const counts = summarizeControlledIterationCounts(iterationResults, iterations, isAbort ? "incomplete" : "failed");
       const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(dataTestRef.current.dlMbps);
       const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(dataTestRef.current.ulMbps);
-      patchDataTest({
-        status: error?.name === "AbortError" ? "stopped" : "error",
-        phase: error?.name === "AbortError" ? "stopped" : "error",
-        dlMbps: avgDl,
-        ulMbps: avgUl,
-        completedIterations: iterationResults.length,
-        iterationResults: [...iterationResults],
-        endedAt: Date.now(),
-        error: error?.name === "AbortError" ? "" : message,
-        message,
-      });
+      if (isAbort) {
+        patchDataTest({
+          status: "incomplete",
+          phase: "incomplete",
+          dlMbps: avgDl,
+          ulMbps: avgUl,
+          completedIterations: counts.completedIterations,
+          failedIterations: counts.failedIterations,
+          attemptedIterations: counts.attemptedIterations,
+          remainingIterations: counts.remainingIterations,
+          currentIteration: currentAttempt || dataTestRef.current?.currentIteration || 1,
+          iterationResults: [...iterationResults],
+          endedAt,
+          error: "",
+          endReason: "user_stopped_incomplete",
+          message: `Native HTTP incomplete. Requested ${iterations}, attempted ${counts.attemptedIterations}, completed ${counts.completedIterations}, failed ${counts.failedIterations}, remaining ${counts.remainingIterations}.`,
+        });
+      } else {
+        // Unexpected escape outside per-iteration catch — record current attempt if needed, then continue is impossible; mark failed_before_start only if nothing attempted
+        if (!iterationResults.length && currentAttempt <= 1) {
+          patchDataTest({
+            status: "failed_before_start",
+            phase: "failed_before_start",
+            endedAt,
+            error: message,
+            endReason: "failed_before_start",
+            message: `Native HTTP — Failed before start: ${message}`,
+          });
+        } else {
+          const finalStatus = deriveControlledRunStatus({
+            requested: counts.requestedIterations,
+            attempted: counts.attemptedIterations,
+            completed: counts.completedIterations,
+            failed: counts.failedIterations,
+            remaining: counts.remainingIterations,
+            rawStatus: "error",
+          });
+          patchDataTest({
+            status: finalStatus,
+            phase: finalStatus,
+            dlMbps: avgDl,
+            ulMbps: avgUl,
+            completedIterations: counts.completedIterations,
+            failedIterations: counts.failedIterations,
+            attemptedIterations: counts.attemptedIterations,
+            remainingIterations: counts.remainingIterations,
+            currentIteration: currentAttempt || 1,
+            iterationResults: [...iterationResults],
+            endedAt,
+            error: message,
+            message: `Native HTTP — ${formatControlledRunStatusLabel(finalStatus)}: ${message}`,
+          });
+        }
+      }
     } finally {
       clearTimeout();
       if (throughputAbortRef.current === controller) throughputAbortRef.current = null;
+      if (typeof settleThroughputRun === "function") settleThroughputRun();
+      if (throughputRunPromiseRef.current === throughputSettlePromise) {
+        throughputRunPromiseRef.current = null;
+      }
     }
   }
 
@@ -4526,7 +5709,10 @@ export default function MobileRfKpi({
     }
 
     const config = { ...DEFAULT_IPERF_SETUP, ...(options || {}) };
-    const iterations = clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
+    const continuous = String(config.runMode || iterationRunMode || "fixed").toLowerCase() === "continuous";
+    const iterations = continuous
+      ? null
+      : clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
     const waitSeconds = clampInteger(config.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
     const durationSeconds = clampInteger(config.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
     const intervalSeconds = clampInteger(config.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
@@ -4543,8 +5729,14 @@ export default function MobileRfKpi({
     const startedAt = Date.now();
     const controller = new AbortController();
     throughputAbortRef.current = controller;
-    const sequenceTimeoutMs = ((durationSeconds * 1000 + 30000) * iterations) + (waitSeconds * 1000 * Math.max(0, iterations - 1)) + 10000;
+    const sequenceTimeoutMs = continuous
+      ? (24 * 60 * 60 * 1000)
+      : (((durationSeconds * 1000 + 30000) * iterations) + (waitSeconds * 1000 * Math.max(0, iterations - 1)) + 10000);
     const clearTimeout = buildTimedSignal(controller, sequenceTimeoutMs);
+    let settleThroughputRun = null;
+    const throughputSettlePromise = new Promise((resolve) => { settleThroughputRun = resolve; });
+    throughputRunPromiseRef.current = throughputSettlePromise;
+    let iperfIterationMirror = [];
 
     patchDataTest({
       status: "running",
@@ -4555,7 +5747,8 @@ export default function MobileRfKpi({
       uploadBytes: 0,
       testType: "iperf",
       direction,
-      iterationsRequested: iterations,
+      runMode: continuous ? "continuous" : "fixed",
+      iterationsRequested: continuous ? null : iterations,
       waitSeconds,
       durationSeconds,
       intervalSeconds,
@@ -4570,6 +5763,7 @@ export default function MobileRfKpi({
       setupSnapshot: {
         ...config,
         testType: "iperf",
+        runMode: continuous ? "continuous" : "fixed",
         server,
         port,
         protocol,
@@ -4577,33 +5771,54 @@ export default function MobileRfKpi({
         udpBitrateMbps,
         reverseMode,
         bidirMode,
-        iterations,
+        iterations: continuous ? null : iterations,
         waitSeconds,
         durationSeconds,
         intervalSeconds,
         warmupSeconds,
         direction,
       },
-      message: `iPerf3 starting on ${server || "server"}:${port} · ${protocol} · ${reverseMode ? "reverse DL" : bidirMode ? "bidirectional" : "client UL"} · ${durationSeconds}s.`,
+      message: continuous
+        ? `iPerf3 continuous on ${server || "server"}:${port} · until stopped.`
+        : `iPerf3 starting on ${server || "server"}:${port} · ${protocol} · ${reverseMode ? "reverse DL" : bidirMode ? "bidirectional" : "client UL"} · ${durationSeconds}s.`,
+    });
+    updateMobilityTestStatus({
+      status: "running",
+      notificationText: continuous ? "iPerf3 continuous · until stopped" : `iPerf3 ${iterations} iter`,
     });
 
     try {
       const iperfResult = await runIperf3ThroughputTest({
-        config,
+        config: { ...config, runMode: continuous ? "continuous" : "fixed", iterations: continuous ? 1 : iterations },
         signal: controller.signal,
         onProgress: (event) => {
           if (selectedModeRef.current !== "data") return;
+          if (Array.isArray(event?.iterationResults) && event.iterationResults.length) {
+            iperfIterationMirror = event.iterationResults;
+          }
+          const rows = (Array.isArray(event?.iterationResults) && event.iterationResults.length)
+            ? event.iterationResults
+            : (iperfIterationMirror.length
+              ? iperfIterationMirror
+              : (dataTestRef.current.iterationResults || []));
           patchDataTest({
             status: "running",
             phase: event?.phase || "iperf",
             testType: "iperf",
+            runMode: continuous ? "continuous" : "fixed",
             currentIteration: event?.currentIteration || dataTestRef.current.currentIteration || 1,
             completedIterations: event?.completedIterations ?? dataTestRef.current.completedIterations ?? 0,
-            iterationsRequested: event?.iterationsRequested || iterations,
+            iterationsRequested: continuous ? null : (event?.iterationsRequested || iterations),
             dlMbps: event?.dlMbps ?? dataTestRef.current.dlMbps,
             ulMbps: event?.ulMbps ?? dataTestRef.current.ulMbps,
-            iterationResults: event?.iterationResults || dataTestRef.current.iterationResults || [],
+            iterationResults: rows,
             message: event?.message || dataTestRef.current.message || "iPerf3 test running.",
+          });
+          updateMobilityTestStatus({
+            status: "running",
+            notificationText: continuous
+              ? `iPerf3 continuous · iter ${event?.currentIteration || 1}`
+              : `iPerf3 ${event?.currentIteration || 1}/${iterations}`,
           });
         },
       });
@@ -4616,62 +5831,199 @@ export default function MobileRfKpi({
         warmupSeconds,
         waitSeconds,
       }));
+      if (iterationResults.length) iperfIterationMirror = iterationResults;
 
       const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(iperfResult.avgDlMbps);
       const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(iperfResult.avgUlMbps);
       const totalDlBytes = iterationResults.reduce((sum, item) => sum + (item.dlMeasuredBytes || 0), 0);
       const totalUlBytes = iterationResults.reduce((sum, item) => sum + (item.ulMeasuredBytes || 0), 0);
-      const hasAnyMbps = getNumber(avgDl) !== null || getNumber(avgUl) !== null;
+      if (continuous) {
+        const stop = resolveContinuousStopPresentation(iterationResults, "iPerf3");
+        const counts = stop.counts;
+        patchDataTest({
+          status: stop.status,
+          phase: stop.status,
+          testType: "iperf",
+          runMode: "continuous",
+          dlMbps: avgDl,
+          ulMbps: avgUl,
+          downloadBytes: totalDlBytes,
+          uploadBytes: totalUlBytes,
+          completedIterations: counts.completedIterations,
+          failedIterations: counts.failedIterations,
+          attemptedIterations: counts.attemptedIterations,
+          remainingIterations: null,
+          iterationsRequested: null,
+          currentIteration: iterationResults.length || 0,
+          iterationResults,
+          endedAt: Date.now(),
+          endReason: stop.endReason,
+          error: stop.error,
+          message: stop.message,
+        });
+        if (!continuousSaveInFlightRef.current && controlledTestCompletionRef.current) {
+          controlledTestCompletionRef.current({
+            kind: "continuous_complete",
+            testType: "iperf",
+            title: stop.title,
+            requested: null,
+            attempted: counts.attemptedIterations,
+            completed: counts.completedIterations,
+            failed: counts.failedIterations,
+            remaining: null,
+            overall: stop.overall,
+            errorSummary: stop.errorSummary,
+          });
+        }
+        return;
+      }
+      const counts = summarizeControlledIterationCounts(iterationResults, iterations, iperfResult.ok ? "complete" : "error");
       const bidirRequested = bidirMode || String(direction).toLowerCase() === "dl_ul";
       const bidirIncomplete = bidirRequested && (getNumber(avgDl) === null || getNumber(avgUl) === null);
-      const finalStatus = iperfResult.ok && !bidirIncomplete
-        ? "complete"
-        : hasAnyMbps
-          ? "partial"
-          : "error";
-      const finalMessage = iperfResult.ok
-        ? `iPerf3 complete ${iterationResults.length}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
+      const finalStatus = deriveControlledRunStatus({
+        requested: counts.requestedIterations,
+        attempted: counts.attemptedIterations,
+        completed: counts.completedIterations,
+        failed: counts.failedIterations,
+        remaining: counts.remainingIterations,
+        rawStatus: iperfResult.ok && !bidirIncomplete ? "complete" : (counts.completedIterations > 0 ? "partial" : "error"),
+      });
+      const finalMessage = finalStatus === "complete" || finalStatus === "complete_with_failures"
+        ? `iPerf3 ${formatControlledRunStatusLabel(finalStatus)} ${counts.attemptedIterations}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
         : (iperfResult.message || iperfResult.lastMapped?.message || "iPerf3 test failed.");
 
       patchDataTest({
         status: finalStatus,
         phase: finalStatus,
         testType: "iperf",
+        runMode: "fixed",
         dlMbps: avgDl,
         ulMbps: avgUl,
         downloadBytes: totalDlBytes,
         uploadBytes: totalUlBytes,
-        completedIterations: iterationResults.length,
+        completedIterations: counts.completedIterations,
+        failedIterations: counts.failedIterations,
+        attemptedIterations: counts.attemptedIterations,
+        remainingIterations: counts.remainingIterations,
         currentIteration: iterationResults.length || 0,
         iterationResults,
         endedAt: Date.now(),
         error: finalStatus === "complete" ? "" : finalMessage,
         message: finalMessage,
       });
+      if (controlledTestCompletionRef.current) {
+        controlledTestCompletionRef.current({
+          kind: "complete",
+          testType: "iperf",
+          title: "iPerf3 Test Completed",
+          requested: iterations,
+          attempted: counts.attemptedIterations,
+          completed: counts.completedIterations,
+          failed: counts.failedIterations,
+          remaining: counts.remainingIterations,
+          overall: formatControlledRunStatusLabel(finalStatus),
+          errorSummary: finalStatus === "complete" ? "" : finalMessage,
+        });
+      }
     } catch (error) {
       if (throughputAbortRef.current === controller) {
         await cancelIperf3();
       }
       if (throughputAbortRef.current !== controller) return;
       const message = makeAbortErrorMessage(error);
-      const iterationResults = dataTestRef.current.iterationResults || [];
+      const iterationResults = (iperfIterationMirror.length
+        ? iperfIterationMirror
+        : (dataTestRef.current.iterationResults || [])).map((item) => ({
+        ...item,
+        direction,
+        durationSeconds,
+        intervalSeconds,
+        warmupSeconds,
+        waitSeconds,
+      }));
+      if (continuous && error?.name === "AbortError") {
+        const stop = resolveContinuousStopPresentation(iterationResults, "iPerf3");
+        const counts = stop.counts;
+        const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(dataTestRef.current.dlMbps);
+        const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(dataTestRef.current.ulMbps);
+        const totalDlBytes = iterationResults.reduce(
+          (sum, item) => sum + (Number(item.dlMeasuredBytes ?? item.dlBytes) || 0),
+          0,
+        );
+        const totalUlBytes = iterationResults.reduce(
+          (sum, item) => sum + (Number(item.ulMeasuredBytes ?? item.ulBytes) || 0),
+          0,
+        );
+        patchDataTest({
+          status: stop.status,
+          phase: stop.status,
+          testType: "iperf",
+          runMode: "continuous",
+          dlMbps: avgDl,
+          ulMbps: avgUl,
+          downloadBytes: totalDlBytes,
+          uploadBytes: totalUlBytes,
+          completedIterations: counts.completedIterations,
+          failedIterations: counts.failedIterations,
+          attemptedIterations: counts.attemptedIterations,
+          remainingIterations: null,
+          iterationsRequested: null,
+          iterationResults: [...iterationResults],
+          endedAt: Date.now(),
+          endReason: stop.endReason,
+          error: stop.error,
+          message: stop.message,
+        });
+        if (!continuousSaveInFlightRef.current && controlledTestCompletionRef.current) {
+          controlledTestCompletionRef.current({
+            kind: "continuous_complete",
+            testType: "iperf",
+            title: stop.title,
+            requested: null,
+            attempted: counts.attemptedIterations,
+            completed: counts.completedIterations,
+            failed: counts.failedIterations,
+            remaining: null,
+            overall: stop.overall,
+            errorSummary: stop.errorSummary,
+          });
+        }
+        return;
+      }
+      const counts = summarizeControlledIterationCounts(iterationResults, iterations, error?.name === "AbortError" ? "incomplete" : "failed");
       const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(dataTestRef.current.dlMbps);
       const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(dataTestRef.current.ulMbps);
       patchDataTest({
-        status: error?.name === "AbortError" ? "stopped" : "error",
-        phase: error?.name === "AbortError" ? "stopped" : "error",
+        status: error?.name === "AbortError" ? "incomplete" : deriveControlledRunStatus({
+          requested: counts.requestedIterations,
+          attempted: counts.attemptedIterations,
+          completed: counts.completedIterations,
+          failed: counts.failedIterations,
+          remaining: counts.remainingIterations,
+          rawStatus: "error",
+          endReason: error?.name === "AbortError" ? "user_stopped_incomplete" : null,
+        }),
+        phase: error?.name === "AbortError" ? "incomplete" : "failed",
         testType: "iperf",
         dlMbps: avgDl,
         ulMbps: avgUl,
-        completedIterations: iterationResults.length,
+        completedIterations: counts.completedIterations,
+        failedIterations: counts.failedIterations,
+        attemptedIterations: counts.attemptedIterations,
+        remainingIterations: counts.remainingIterations,
         iterationResults: [...iterationResults],
         endedAt: Date.now(),
         error: error?.name === "AbortError" ? "" : message,
+        endReason: error?.name === "AbortError" ? "user_stopped_incomplete" : null,
         message,
       });
     } finally {
       clearTimeout();
       if (throughputAbortRef.current === controller) throughputAbortRef.current = null;
+      if (typeof settleThroughputRun === "function") settleThroughputRun();
+      if (throughputRunPromiseRef.current === throughputSettlePromise) {
+        throughputRunPromiseRef.current = null;
+      }
     }
   }
 
@@ -4685,7 +6037,10 @@ export default function MobileRfKpi({
     }
 
     const config = { ...DEFAULT_FTP_SETUP, ...(options || {}) };
-    const iterations = clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
+    const continuous = String(config.runMode || iterationRunMode || "fixed").toLowerCase() === "continuous";
+    const iterations = continuous
+      ? null
+      : clampInteger(config.iterations, 1, MAX_THP_ITERATIONS, DEFAULT_THP_ITERATIONS);
     const waitSeconds = clampInteger(config.waitSeconds, 0, MAX_THP_WAIT_SECONDS, DEFAULT_THP_WAIT_SECONDS);
     const durationSeconds = clampInteger(config.durationSeconds, 1, MAX_THP_DURATION_SECONDS, DEFAULT_THP_DURATION_SECONDS);
     const intervalSeconds = clampInteger(config.intervalSeconds, 1, MAX_THP_INTERVAL_SECONDS, DEFAULT_THP_INTERVAL_SECONDS);
@@ -4693,6 +6048,12 @@ export default function MobileRfKpi({
     const direction = config.direction || DEFAULT_DATA_DIRECTION;
     const { dlDurationSeconds, ulDurationSeconds, phaseText } = splitIterationDuration(durationSeconds, direction);
     const startedAt = Date.now();
+    const controller = new AbortController();
+    throughputAbortRef.current = controller;
+    const iterationResults = [];
+    let settleThroughputRun = null;
+    const throughputSettlePromise = new Promise((resolve) => { settleThroughputRun = resolve; });
+    throughputRunPromiseRef.current = throughputSettlePromise;
 
     patchDataTest({
       status: "running",
@@ -4703,7 +6064,8 @@ export default function MobileRfKpi({
       uploadBytes: 0,
       testType: "ftp",
       direction,
-      iterationsRequested: iterations,
+      runMode: continuous ? "continuous" : "fixed",
+      iterationsRequested: continuous ? null : iterations,
       waitSeconds,
       durationSeconds,
       intervalSeconds,
@@ -4717,16 +6079,253 @@ export default function MobileRfKpi({
       sessionId,
       setupSnapshot: {
         ...config,
-        iterations,
+        runMode: continuous ? "continuous" : "fixed",
+        iterations: continuous ? null : iterations,
         waitSeconds,
         durationSeconds,
         intervalSeconds,
         warmupSeconds,
       },
-      message: `FTP test starting on ${config.host || "FTP host"} · ${phaseText} · warmup ${warmupSeconds}s.`,
+      message: continuous
+        ? `FTP continuous starting on ${config.host || "FTP host"} · ${phaseText}.`
+        : `FTP test starting on ${config.host || "FTP host"} · ${phaseText} · warmup ${warmupSeconds}s.`,
+    });
+    updateMobilityTestStatus({
+      status: "running",
+      notificationText: continuous ? "FTP continuous · until stopped" : `FTP ${iterations} iter`,
+    });
+
+    const mapFtpIterations = (rows, baseIterationOffset = 0) => (rows || []).map((item, idx) => {
+      // Never treat direction status labels ("complete") as error text — that polluted
+      // isFailedIterationRow and flipped successful UL into overall failed (F9A).
+      const sideError = [
+        item.dl_error,
+        item.ul_error,
+        item.error,
+        item.errorMessage,
+      ].map((v) => String(v || "").trim()).find((v) => isRealFtpFailureText(v)) || "";
+      const statusRaw = String(item.status || item.overall_status || "").toLowerCase();
+      const failedByStatus = statusRaw === "failed"
+        || statusRaw === "partial_failure"
+        || statusRaw === "partial"
+        || String(item.dl_status || item.dlStatus || "").toLowerCase() === "failed"
+        || String(item.ul_status || item.ulStatus || "").toLowerCase() === "failed"
+        || item.dlOk === false
+        || item.ulOk === false
+        || isRealFtpFailureText(sideError);
+      let status = item.status || item.overall_status || "complete";
+      if (statusRaw === "partial_failure" || statusRaw === "partial") status = "partial_failure";
+      else if (failedByStatus && statusRaw !== "complete" && statusRaw !== "success") status = statusRaw === "partial_failure" ? "partial_failure" : "failed";
+      else if (failedByStatus && (item.dlOk === false || item.ulOk === false) && (item.dlOk === true || item.ulOk === true || getNumber(item.ulMbps) != null || getNumber(item.dlMbps) != null)) {
+        status = "partial_failure";
+      } else if (failedByStatus) {
+        status = "failed";
+      } else {
+        status = "complete";
+      }
+      const classif = sideError
+        ? classifyFtpFailure(sideError, {
+          direction: item.direction || direction,
+          failureStage: item.failureStage,
+          dlFailed: item.dlOk === false || String(item.dl_status || item.dlStatus || "").toLowerCase() === "failed",
+          ulFailed: item.ulOk === false || String(item.ul_status || item.ulStatus || "").toLowerCase() === "failed",
+        })
+        : null;
+      const dlFailed = item.dlOk === false || String(item.dl_status || item.dlStatus || "").toLowerCase() === "failed";
+      const ulFailed = item.ulOk === false || String(item.ul_status || item.ulStatus || "").toLowerCase() === "failed";
+      return {
+        iteration: item.iteration != null ? (Number(item.iteration) + baseIterationOffset) : (baseIterationOffset + idx + 1),
+        status,
+        overall_status: status,
+        direction,
+        // APP throughput only — null when that direction failed (do not keep invalid Mbps).
+        dlMbps: dlFailed ? null : (item.dlMbps ?? null),
+        ulMbps: ulFailed ? null : (item.ulMbps ?? null),
+        dlBytes: item.dlMeasuredBytes || 0,
+        ulBytes: item.ulMeasuredBytes || 0,
+        dlMeasuredBytes: item.dlMeasuredBytes || 0,
+        ulMeasuredBytes: item.ulMeasuredBytes || 0,
+        dlWarmupBytes: item.dlWarmupBytes || 0,
+        ulWarmupBytes: item.ulWarmupBytes || 0,
+        dlSeconds: item.dlDurationMs ? item.dlDurationMs / 1000 : 0,
+        ulSeconds: item.ulDurationMs ? item.ulDurationMs / 1000 : 0,
+        dlWallSeconds: item.dlDurationMs ? item.dlDurationMs / 1000 : 0,
+        ulWallSeconds: item.ulDurationMs ? item.ulDurationMs / 1000 : 0,
+        dlSource: "native-ftp-v1g2a",
+        ulSource: "native-ftp-v1g2a",
+        source: "native-ftp-v1g2a",
+        startedAt: item.startedAtMs || startedAt,
+        endedAt: item.endedAtMs || Date.now(),
+        durationSeconds,
+        dlDurationSeconds,
+        ulDurationSeconds,
+        intervalSeconds,
+        warmupSeconds,
+        waitSeconds,
+        dlOk: item.dlOk,
+        ulOk: item.ulOk,
+        dlStatus: item.dl_status || item.dlStatus || "",
+        ulStatus: item.ul_status || item.ulStatus || "",
+        dl_status: item.dl_status || item.dlStatus || "",
+        ul_status: item.ul_status || item.ulStatus || "",
+        dl_error: item.dl_error || (dlFailed ? sideError : ""),
+        ul_error: item.ul_error || (ulFailed ? sideError : ""),
+        error: sideError,
+        errorMessage: sideError,
+        errorCode: item.errorCode || classif?.errorCode || "",
+        failureStage: item.failureStage || classif?.failureStage || "",
+        raw_server_reply: item.raw_server_reply || sideError || "",
+      };
     });
 
     try {
+      if (continuous) {
+        // One native slot at a time so Stop can end between iterations without changing transfer math.
+        for (let iteration = 1; !controller.signal.aborted; iteration += 1) {
+          if (controller.signal.aborted) break;
+          patchDataTest({
+            status: "running",
+            phase: "ftp",
+            currentIteration: iteration,
+            message: `FTP continuous · iter ${iteration}...`,
+          });
+          let ftpResult;
+          try {
+            ftpResult = await runBabyDragonFtpTest({
+              sessionId,
+              task: activeTask,
+              grid: activeGrid ? { name: activeGrid } : null,
+              ftpConfig: {
+                ...config,
+                iterations: 1,
+                waitSeconds: 0,
+                durationSeconds,
+                intervalSeconds,
+                warmupSeconds,
+                durationSec: durationSeconds,
+                warmupSec: warmupSeconds,
+                intervalSec: intervalSeconds,
+                waitSec: 0,
+                dlPath: config.downloadRemotePath || config.dlPath || "/readme.txt",
+                ulFolder: config.uploadRemotePath || config.ulFolder || "/",
+                passive: config.passiveMode !== false,
+                secure: Boolean(config.secure),
+              },
+              onProgress: (event) => {
+                if (selectedModeRef.current !== "data") return;
+                patchDataTest({
+                  status: "running",
+                  phase: event?.status || "ftp",
+                  testType: "ftp",
+                  currentIteration: iteration,
+                  message: event?.message || `FTP continuous · iter ${iteration}`,
+                });
+              },
+            });
+          } catch (iterError) {
+            if (controller.signal.aborted) break;
+            iterationResults.push({
+              iteration,
+              status: "failed",
+              direction,
+              dlMbps: null,
+              ulMbps: null,
+              startedAt: Date.now(),
+              endedAt: Date.now(),
+              error: iterError?.message || "FTP iteration failed",
+              errorCode: "FTP_ITERATION_FAILED",
+              source: "native-ftp-v1g2a",
+            });
+          }
+          if (ftpResult) {
+            const mapped = mapFtpIterations(ftpResult.iterations || [], iteration - 1);
+            if (mapped.length) iterationResults.push(...mapped.map((row, i) => ({ ...row, iteration: iteration + i })));
+            else {
+              iterationResults.push({
+                iteration,
+                status: ftpResult.ok ? "complete" : "failed",
+                direction,
+                dlMbps: ftpResult.avgDlMbps ?? null,
+                ulMbps: ftpResult.avgUlMbps ?? null,
+                dlMeasuredBytes: ftpResult.dlMeasuredBytes || 0,
+                ulMeasuredBytes: ftpResult.ulMeasuredBytes || 0,
+                startedAt: ftpResult.startedAtMs || Date.now(),
+                endedAt: ftpResult.endedAtMs || Date.now(),
+                error: ftpResult.ok ? "" : (ftpResult.message || ""),
+                source: ftpResult.source || "native-ftp-v1g2a",
+              });
+            }
+          }
+          const counts = summarizeControlledIterationCounts(iterationResults, null, "running");
+          const avgDl = averageSuccessfulDirectionThroughput(iterationResults, "dl");
+          const avgUl = averageSuccessfulDirectionThroughput(iterationResults, "ul");
+          patchDataTest({
+            status: "running",
+            phase: "ftp",
+            runMode: "continuous",
+            dlMbps: avgDl,
+            ulMbps: avgUl,
+            completedIterations: counts.completedIterations,
+            failedIterations: counts.failedIterations,
+            attemptedIterations: counts.attemptedIterations,
+            remainingIterations: null,
+            currentIteration: iteration,
+            iterationResults: [...iterationResults],
+            message: `FTP continuous · attempted ${counts.attemptedIterations}, completed ${counts.completedIterations}, failed ${counts.failedIterations}.`,
+          });
+          updateMobilityTestStatus({
+            status: "running",
+            notificationText: `FTP continuous · ${counts.completedIterations} ok / ${counts.failedIterations} fail`,
+          });
+          if (controller.signal.aborted) break;
+          if (waitSeconds > 0) {
+            await waitForThroughputPause(waitSeconds, controller.signal, (remaining) => {
+              patchDataTest({
+                status: "running",
+                phase: "wait",
+                message: `Waiting ${remaining}s before FTP continuous iter ${iteration + 1}...`,
+              });
+            }, sessionPausedRef);
+          }
+        }
+        const stop = resolveContinuousStopPresentation(iterationResults, "FTP");
+        const counts = stop.counts;
+        const avgDl = averageSuccessfulDirectionThroughput(iterationResults, "dl");
+        const avgUl = averageSuccessfulDirectionThroughput(iterationResults, "ul");
+        patchDataTest({
+          status: stop.status,
+          phase: stop.status,
+          runMode: "continuous",
+          dlMbps: avgDl,
+          ulMbps: avgUl,
+          completedIterations: counts.completedIterations,
+          failedIterations: counts.failedIterations,
+          attemptedIterations: counts.attemptedIterations,
+          remainingIterations: null,
+          iterationsRequested: null,
+          iterationResults: [...iterationResults],
+          endedAt: Date.now(),
+          endReason: stop.endReason,
+          error: stop.error,
+          message: stop.message,
+        });
+        if (!continuousSaveInFlightRef.current && controlledTestCompletionRef.current) {
+          controlledTestCompletionRef.current({
+            kind: "continuous_complete",
+            testType: "ftp",
+            title: stop.title,
+            requested: null,
+            attempted: counts.attemptedIterations,
+            completed: counts.completedIterations,
+            failed: counts.failedIterations,
+            remaining: null,
+            overall: stop.overall,
+            errorSummary: stop.errorSummary,
+          });
+        }
+        return;
+      }
+
       const ftpResult = await runBabyDragonFtpTest({
         sessionId,
         task: activeTask,
@@ -4760,42 +6359,17 @@ export default function MobileRfKpi({
             iterationsRequested: event?.iterationsRequested || iterations,
             message: event?.message || dataTestRef.current.message || "FTP test running.",
           });
+          updateMobilityTestStatus({
+            status: "running",
+            notificationText: `FTP ${event?.iteration || 1}/${iterations}`,
+          });
         },
       });
 
-      const iterationResults = (ftpResult.iterations || []).map((item) => ({
-        iteration: item.iteration,
-        status: item.dlStatus || item.ulStatus ? (item.dlStatus?.toLowerCase?.().includes("failed") || item.ulStatus?.toLowerCase?.().includes("failed") ? "partial" : "complete") : "complete",
-        direction,
-        dlMbps: item.dlMbps ?? null,
-        ulMbps: item.ulMbps ?? null,
-        dlBytes: item.dlMeasuredBytes || 0,
-        ulBytes: item.ulMeasuredBytes || 0,
-        dlMeasuredBytes: item.dlMeasuredBytes || 0,
-        ulMeasuredBytes: item.ulMeasuredBytes || 0,
-        dlWarmupBytes: item.dlWarmupBytes || 0,
-        ulWarmupBytes: item.ulWarmupBytes || 0,
-        dlSeconds: item.dlDurationMs ? item.dlDurationMs / 1000 : 0,
-        ulSeconds: item.ulDurationMs ? item.ulDurationMs / 1000 : 0,
-        dlWallSeconds: item.dlDurationMs ? item.dlDurationMs / 1000 : 0,
-        ulWallSeconds: item.ulDurationMs ? item.ulDurationMs / 1000 : 0,
-        dlSource: ftpResult.source || "native-ftp-v1g2a",
-        ulSource: ftpResult.source || "native-ftp-v1g2a",
-        source: ftpResult.source || "native-ftp-v1g2a",
-        startedAt: item.startedAtMs || startedAt,
-        endedAt: item.endedAtMs || Date.now(),
-        durationSeconds,
-        dlDurationSeconds,
-        ulDurationSeconds,
-        intervalSeconds,
-        warmupSeconds,
-        waitSeconds,
-        dlStatus: item.dlStatus || "",
-        ulStatus: item.ulStatus || "",
-      }));
+      iterationResults.push(...mapFtpIterations(ftpResult.iterations || []));
 
-      const avgDl = averageThroughput(iterationResults, "dlMbps") ?? getNumber(ftpResult.avgDlMbps);
-      const avgUl = averageThroughput(iterationResults, "ulMbps") ?? getNumber(ftpResult.avgUlMbps);
+      const avgDl = averageSuccessfulDirectionThroughput(iterationResults, "dl");
+      const avgUl = averageSuccessfulDirectionThroughput(iterationResults, "ul");
       const totalDlBytes = iterationResults.reduce((sum, item) => sum + (item.dlMeasuredBytes || 0), 0);
       const totalUlBytes = iterationResults.reduce((sum, item) => sum + (item.ulMeasuredBytes || 0), 0);
       const totalDlWarmupBytes = iterationResults.reduce((sum, item) => sum + (item.dlWarmupBytes || 0), 0);
@@ -4804,44 +6378,118 @@ export default function MobileRfKpi({
       const needsUlBytes = direction !== "dl";
       const hasRequestedBytes = (!needsDlBytes || totalDlBytes > 0) && (!needsUlBytes || totalUlBytes > 0);
       const hasAnyMeasuredBytes = totalDlBytes > 0 || totalUlBytes > 0;
-      const finalFtpStatus = ftpResult.ok && hasRequestedBytes ? "complete" : hasAnyMeasuredBytes ? "partial" : "error";
+      const counts = summarizeControlledIterationCounts(iterationResults, iterations, ftpResult.ok ? "complete" : "error");
+      const finalFtpStatus = deriveControlledRunStatus({
+        requested: counts.requestedIterations,
+        attempted: counts.attemptedIterations,
+        completed: counts.completedIterations,
+        failed: counts.failedIterations,
+        remaining: counts.remainingIterations,
+        rawStatus: ftpResult.ok && hasRequestedBytes ? "complete" : hasAnyMeasuredBytes ? "partial" : "error",
+      });
       const finalFtpPhase = finalFtpStatus;
       const zeroByteMessage = "FTP completed but no measured bytes were captured. Use a larger FTP file or a controlled FTP server. For Rebex smoke test, try Warmup 0.";
       const partialMessage = ftpResult?.message || "FTP partial result. One direction completed, another direction failed or captured zero measured bytes.";
+      // Prefer atomic per-iteration failure text — never invent FTP_FAILED from status labels.
+      const atomicFail = iterationResults.find(isFailedIterationRow);
+      const failureMessage = atomicFail?.errorMessage || atomicFail?.error || ftpResult?.message || zeroByteMessage;
 
       patchDataTest({
         status: finalFtpStatus,
         phase: finalFtpPhase,
         testType: "ftp",
+        runMode: "fixed",
         dlMbps: avgDl,
         ulMbps: avgUl,
         downloadBytes: totalDlBytes,
         uploadBytes: totalUlBytes,
         downloadWarmupBytes: totalDlWarmupBytes,
         uploadWarmupBytes: totalUlWarmupBytes,
-        completedIterations: iterationResults.length,
+        completedIterations: counts.completedIterations,
+        failedIterations: counts.failedIterations,
+        attemptedIterations: counts.attemptedIterations,
+        remainingIterations: counts.remainingIterations,
         currentIteration: iterationResults.length || 0,
         iterationResults,
         endedAt: Date.now(),
-        error: finalFtpStatus === "complete" ? "" : finalFtpStatus === "partial" ? partialMessage : (ftpResult?.message || zeroByteMessage),
+        error: finalFtpStatus === "complete" ? "" : finalFtpStatus === "complete_with_failures" || finalFtpStatus === "incomplete" ? partialMessage : failureMessage,
         message: finalFtpStatus === "complete"
-          ? `FTP complete ${iterationResults.length}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
-          : finalFtpStatus === "partial"
-            ? `${partialMessage} · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
-            : (ftpResult?.message || zeroByteMessage),
+          ? `FTP complete ${counts.attemptedIterations}/${iterations}. Avg DL ${formatThroughputValue(avgDl)} Mbps · Avg UL ${formatThroughputValue(avgUl)} Mbps · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
+          : finalFtpStatus === "complete_with_failures"
+            ? `FTP completed with failures: ${counts.attemptedIterations} attempted, ${counts.completedIterations} completed, ${counts.failedIterations} failed. ${partialMessage}`
+            : finalFtpStatus === "incomplete"
+              ? `${partialMessage} · DL ${formatBytesCompact(totalDlBytes)} / UL ${formatBytesCompact(totalUlBytes)}.`
+            : failureMessage,
       });
+      if (controlledTestCompletionRef.current) {
+        controlledTestCompletionRef.current({
+          kind: "complete",
+          testType: "ftp",
+          title: finalFtpStatus === "complete_with_failures"
+            ? "FTP Completed with Failures"
+            : "FTP Test Completed",
+          requested: iterations,
+          attempted: counts.attemptedIterations,
+          completed: counts.completedIterations,
+          failed: counts.failedIterations,
+          remaining: counts.remainingIterations,
+          overall: finalFtpStatus === "complete_with_failures"
+            ? `FTP completed with failures: ${counts.attemptedIterations} attempted, ${counts.completedIterations} completed, ${counts.failedIterations} failed.`
+            : formatControlledRunStatusLabel(finalFtpStatus),
+          errorSummary: finalFtpStatus === "complete" ? "" : (ftpResult?.message || partialMessage),
+        });
+      }
     } catch (error) {
+      if (continuous && error?.name === "AbortError") {
+        const stop = resolveContinuousStopPresentation(iterationResults, "FTP");
+        const counts = stop.counts;
+        patchDataTest({
+          status: stop.status,
+          phase: stop.status,
+          runMode: "continuous",
+          completedIterations: counts.completedIterations,
+          failedIterations: counts.failedIterations,
+          attemptedIterations: counts.attemptedIterations,
+          remainingIterations: null,
+          iterationResults: [...iterationResults],
+          endedAt: Date.now(),
+          endReason: stop.endReason,
+          error: stop.error,
+          message: stop.message,
+        });
+        if (!continuousSaveInFlightRef.current && controlledTestCompletionRef.current) {
+          controlledTestCompletionRef.current({
+            kind: "continuous_complete",
+            testType: "ftp",
+            title: stop.title,
+            requested: null,
+            attempted: counts.attemptedIterations,
+            completed: counts.completedIterations,
+            failed: counts.failedIterations,
+            remaining: null,
+            overall: stop.overall,
+            errorSummary: stop.errorSummary,
+          });
+        }
+        return;
+      }
       const message = error?.message || "FTP test failed.";
       patchDataTest({
-        status: "error",
-        phase: "error",
+        status: "failed",
+        phase: "failed",
         testType: "ftp",
         completedIterations: dataTestRef.current.completedIterations || 0,
-        iterationResults: dataTestRef.current.iterationResults || [],
+        iterationResults: dataTestRef.current.iterationResults || iterationResults,
         endedAt: Date.now(),
         error: message,
         message,
       });
+    } finally {
+      if (throughputAbortRef.current === controller) throughputAbortRef.current = null;
+      if (typeof settleThroughputRun === "function") settleThroughputRun();
+      if (throughputRunPromiseRef.current === throughputSettlePromise) {
+        throughputRunPromiseRef.current = null;
+      }
     }
   }
 
@@ -5531,8 +7179,34 @@ export default function MobileRfKpi({
   }
 
   async function armWorkflow(mode) {
+    if (collectorRunningRef.current && isControlledTestIncomplete(dataTestRef.current)) {
+      const counts = summarizeControlledIterationCounts(
+        dataTestRef.current.iterationResults,
+        dataTestRef.current.iterationsRequested,
+        dataTestRef.current.status,
+      );
+      setControlledTestDialog({
+        kind: "incomplete_restart",
+        testType: dataTestRef.current.testType,
+        title: `${controlledEngineDisplayName(dataTestRef.current.testType)} test is incomplete.`,
+        requested: counts.requestedIterations,
+        attempted: counts.attemptedIterations,
+        completed: counts.completedIterations,
+        failed: counts.failedIterations,
+        remaining: counts.remainingIterations,
+        pendingMode: mode,
+      });
+      return;
+    }
+    await armWorkflowConfirmed(mode);
+  }
+
+  async function armWorkflowConfirmed(mode) {
     const now = Date.now();
     const sessionReportName = String(reportLogNameRef.current || "").trim();
+    const engineId = mode === "data"
+      ? engineIdFromUiTestType(currentDataTestConfig.testType)
+      : ENGINE_IDS.RF_ONLY;
     const session = {
       id: `bd-rf-${now}`,
       mode,
@@ -5541,6 +7215,8 @@ export default function MobileRfKpi({
       grid: activeGrid,
       reportLogName: sessionReportName,
       pauseSegments: [],
+      appEngineId: engineId,
+      engineId,
     };
 
     selectedModeRef.current = mode;
@@ -5553,22 +7229,122 @@ export default function MobileRfKpi({
     setSavedSession(null);
     setExportStatus("");
     setExportFiles([]);
-    setDataTest(makeDataTestIdle());
-    dataTestRef.current = makeDataTestIdle();
+    setExportPackageName("");
+    setExportBasePath("");
+    setExcelPlotExportStatus("");
+    setExcelPlotExportBusy(false);
+    const idleWithEngine = {
+      ...makeDataTestIdle(),
+      engineId,
+      testType: uiTestTypeFromEngineId(engineId),
+      lifecycleEvents: [{ type: "START_REQUESTED", at: now, engineId }],
+    };
+    setDataTest(idleWithEngine);
+    dataTestRef.current = idleWithEngine;
     setClockTick(now);
     setTestState("recording");
     setCollectorRunning(true);
     collectorRunningRef.current = true;
     setSamples([]);
+    exportSamplesRef.current = [];
+    setControlledTestDialog(null);
+    if (!nativeStreamStartedAt) setNativeStreamStartedAt(now);
+    // Reuse the live preview stream — do not restart ticker / clear GPS.
+    const mobilityStart = await promoteToRecordingMode({
+      reportSessionId: session.id,
+      notificationText: mode === "data"
+        ? `Recording ${engineDisplayName(engineId)} / RF / GPS`
+        : "Recording voice / RF / GPS",
+    });
+    setMobilityDiagnostics(mobilityStart?.diagnostics || null);
+    setNativeGpsUiStatus(describeGpsUiStatus(mobilityStart?.diagnostics, mobilityStart?.gpsStatus));
+    if (mobilityStart?.ok === false) {
+      setMobilityStartError(mobilityStart?.message || "Native mobility service failed to start");
+      setCollectorMessage(mobilityStart?.message || "Native mobility service failed to start");
+    } else {
+      setMobilityStartError(null);
+      setRfStreamUi({ label: "Live", reason: null });
+    }
+    patchDataTest({
+      lifecycleEvents: [
+        ...(dataTestRef.current.lifecycleEvents || []),
+        { type: "START_ACCEPTED", at: Date.now(), engineId },
+      ],
+    });
     await refreshNativeSnapshot({ append: true });
     if (mode === "data") {
-      if (currentDataTestConfig.testType === "native_http") {
-        runInternalThroughputTest(session.id, currentDataTestConfig);
-      } else if (currentDataTestConfig.testType === "ftp") {
-        runFtpThroughputTest(session.id, currentDataTestConfig);
-      } else if (currentDataTestConfig.testType === "iperf") {
-        runIperfThroughputTest(session.id, currentDataTestConfig);
+      if (engineId === ENGINE_IDS.RF_ONLY) {
+        updateMobilityTestStatus({
+          status: "rf_only",
+          notificationText: "Recording RF / GPS only",
+        });
+        patchDataTest({
+          status: "rf_only",
+          phase: "rf_only",
+          testType: "rf_only",
+          engineId: ENGINE_IDS.RF_ONLY,
+          sessionId: session.id,
+          startedAt: now,
+          endedAt: null,
+          message: "RF-only recording. No data engine is running.",
+          iterationResults: [],
+          lifecycleEvents: [
+            ...(dataTestRef.current.lifecycleEvents || []),
+            { type: "ENGINE_STARTED", at: Date.now(), engineId: ENGINE_IDS.RF_ONLY },
+          ],
+        });
+        setCollectorMessage("RF-only recording started. Stop / Save when finished.");
+      } else if (engineId === ENGINE_IDS.NATIVE_HTTP) {
+        patchDataTest({
+          engineId,
+          testType: "native_http",
+          lifecycleEvents: [
+            ...(dataTestRef.current.lifecycleEvents || []),
+            { type: "ENGINE_STARTED", at: Date.now(), engineId },
+          ],
+        });
+        runInternalThroughputTest(session.id, {
+          ...currentDataTestConfig,
+          runMode: iterationRunMode,
+          engineId,
+        });
+      } else if (engineId === ENGINE_IDS.FTP) {
+        patchDataTest({
+          engineId,
+          testType: "ftp",
+          lifecycleEvents: [
+            ...(dataTestRef.current.lifecycleEvents || []),
+            { type: "ENGINE_STARTED", at: Date.now(), engineId },
+          ],
+        });
+        runFtpThroughputTest(session.id, {
+          ...currentDataTestConfig,
+          runMode: currentDataTestConfig.runMode || iterationRunMode,
+          engineId,
+        });
+      } else if (engineId === ENGINE_IDS.IPERF3) {
+        patchDataTest({
+          engineId,
+          testType: "iperf",
+          lifecycleEvents: [
+            ...(dataTestRef.current.lifecycleEvents || []),
+            { type: "ENGINE_STARTED", at: Date.now(), engineId },
+          ],
+        });
+        runIperfThroughputTest(session.id, {
+          ...currentDataTestConfig,
+          runMode: currentDataTestConfig.runMode || iterationRunMode,
+          engineId,
+        });
       } else {
+        updateMobilityTestStatus({
+          status: "external_ready",
+          notificationText: engineId === ENGINE_IDS.OOKLA_EXTERNAL
+            ? "OOKLA external · RF/GPS recording"
+            : engineId === ENGINE_IDS.FCC_EXTERNAL
+              ? "FCC external · RF/GPS recording"
+              : "External evidence · RF/GPS recording",
+        });
         const label = DATA_TEST_TYPES.find((item) => item.key === currentDataTestConfig.testType)?.label || currentDataTestConfig.testType;
         const externalTestType = currentDataTestConfig.testType;
         let externalMessage = `${label} selected. BabyDragon is recording RF/GPS timestamps. Import/screenshot capture comes in the next focused step.`;
@@ -5585,6 +7361,7 @@ export default function MobileRfKpi({
           status: "external_ready",
           phase: currentDataTestConfig.testType,
           testType: currentDataTestConfig.testType,
+          engineId,
           direction: currentDataTestConfig.direction,
           iterationsRequested: currentDataTestConfig.iterations,
           waitSeconds: currentDataTestConfig.waitSeconds,
@@ -5597,17 +7374,96 @@ export default function MobileRfKpi({
           startedAt: now,
           endedAt: null,
           message: externalMessage,
+          lifecycleEvents: [
+            ...(dataTestRef.current.lifecycleEvents || []),
+            { type: "ENGINE_STARTED", at: Date.now(), engineId },
+          ],
         });
       }
     }
   }
 
   function stopWorkflow() {
+    const dt = dataTestRef.current || {};
+    const engineId = normalizeEngineId(dt.engineId || engineIdFromUiTestType(dt.testType));
+    if (
+      collectorRunningRef.current
+      && isControlledEngineId(engineId)
+      && String(dt.status || "").toLowerCase() !== "idle"
+      && (!Array.isArray(dt.iterationResults) || dt.iterationResults.length === 0)
+      && String(dt.status || "").toLowerCase() !== "continuous_complete"
+      && String(dt.status || "").toLowerCase() !== "complete"
+      && String(dt.status || "").toLowerCase() !== "complete_with_failures"
+    ) {
+      // Zero-attempt save guard: running/armed controlled engine with no iteration rows.
+      const status = String(dt.status || "").toLowerCase();
+      if (status === "running" || status === "external_ready" || status === "starting" || status === "idle") {
+        setControlledTestDialog({
+          kind: "zero_attempt",
+          testType: dt.testType,
+          engineId,
+          title: "No data-test iteration was attempted.",
+          requested: dt.iterationsRequested ?? null,
+          attempted: 0,
+          completed: 0,
+          failed: 0,
+          remaining: dt.iterationsRequested ?? null,
+        });
+        return;
+      }
+    }
+    if (collectorRunningRef.current && String(dt.runMode || "").toLowerCase() === "continuous" && String(dt.status || "").toLowerCase() === "running") {
+      const counts = summarizeControlledIterationCounts(
+        dt.iterationResults,
+        null,
+        dt.status,
+      );
+      const startedAt = getNumber(dt.startedAt) || Date.now();
+      const elapsedMs = Math.max(0, Date.now() - startedAt);
+      const totalSec = Math.floor(elapsedMs / 1000);
+      const hh = String(Math.floor(totalSec / 3600)).padStart(2, "0");
+      const mm = String(Math.floor((totalSec % 3600) / 60)).padStart(2, "0");
+      const ss = String(totalSec % 60).padStart(2, "0");
+      setControlledTestDialog({
+        kind: "continuous_stop",
+        testType: dt.testType,
+        title: "Continuous test is still running.",
+        requested: null,
+        attempted: counts.attemptedIterations,
+        completed: counts.completedIterations,
+        failed: counts.failedIterations,
+        remaining: null,
+        durationLabel: `${hh}:${mm}:${ss}`,
+      });
+      return;
+    }
+    if (collectorRunningRef.current && isControlledTestIncomplete(dt)) {
+      const counts = summarizeControlledIterationCounts(
+        dt.iterationResults,
+        dt.iterationsRequested,
+        dt.status,
+      );
+      setControlledTestDialog({
+        kind: "incomplete_stop",
+        testType: dt.testType,
+        title: `${controlledEngineDisplayName(dt.testType)} test is incomplete.`,
+        requested: counts.requestedIterations,
+        attempted: counts.attemptedIterations,
+        completed: counts.completedIterations,
+        failed: counts.failedIterations,
+        remaining: counts.remainingIterations,
+      });
+      return;
+    }
+    stopWorkflowConfirmed({ markIncomplete: false });
+  }
+
+  async function stopWorkflowConfirmed({ markIncomplete = false, saveAsRfOnly = false } = {}) {
     const endedAt = Date.now();
     const baseSession = currentSessionRef.current || {
       id: `bd-rf-${endedAt}`,
       mode: selectedModeRef.current,
-      startedAt: samplesRef.current[0]?.timestamp || endedAt,
+      startedAt: (exportSamplesRef.current[0] || samplesRef.current[0])?.timestamp || endedAt,
       taskLabel: activeTaskLabel,
       grid: activeGrid,
       reportLogName: String(reportLogNameRef.current || "").trim(),
@@ -5618,20 +7474,95 @@ export default function MobileRfKpi({
       reportLogName: String(baseSession.reportLogName || reportLogNameRef.current || "").trim(),
       pauseSegments: closeOpenPauseSegment(baseSession, endedAt),
       endedAt,
+      ...(saveAsRfOnly ? {
+        appEngineId: ENGINE_IDS.RF_ONLY,
+        engineId: ENGINE_IDS.RF_ONLY,
+      } : {}),
     };
-    const recorded = samplesRef.current.filter((sample) => sample.sessionId === session.id || sample.recorded || sample.recordState === "paused");
-    const sessionList = recorded.length ? recorded : samplesRef.current;
+    const fullList = (exportSamplesRef.current && exportSamplesRef.current.length)
+      ? exportSamplesRef.current
+      : samplesRef.current;
+    const recorded = fullList.filter((sample) => sample.sessionId === session.id || sample.recorded || sample.recordState === "paused");
+    const sessionList = recorded.length ? recorded : fullList;
+    const continuousRunning = !saveAsRfOnly && String(dataTestRef.current?.runMode || "").toLowerCase() === "continuous"
+      && (String(dataTestRef.current?.status || "").toLowerCase() === "running" || markIncomplete);
+
+    if (continuousRunning) continuousSaveInFlightRef.current = true;
     if (throughputAbortRef.current && dataTestRef.current?.status === "running") {
       throughputAbortRef.current.abort();
       if (dataTestRef.current?.testType === "iperf") {
-        cancelIperf3();
+        cancelIperf3().catch(() => {});
       }
     }
-    const finalDataTest = dataTestRef.current?.status === "running"
-      ? { ...dataTestRef.current, status: "stopped", phase: "stopped", message: "Throughput test stopped by Stop / Save.", endedAt }
-      : dataTestRef.current;
+    // Continuous: settle the in-flight runner so iterationResults are frozen before canonical outcome.
+    if (continuousRunning && throughputRunPromiseRef.current) {
+      try {
+        await throughputRunPromiseRef.current;
+      } catch {
+        // AbortError / runner failure is finalized in the engine catch path.
+      }
+    }
+
+    let finalDataTest = dataTestRef.current;
+    if (saveAsRfOnly) {
+      finalDataTest = {
+        ...makeDataTestIdle(),
+        engineId: ENGINE_IDS.RF_ONLY,
+        testType: "rf_only",
+        status: "rf_only",
+        phase: "rf_only",
+        message: "Saved as RF-only session. No data-test iteration was attempted.",
+        iterationResults: [],
+        startedAt: dataTestRef.current?.startedAt || session.startedAt,
+        endedAt,
+        sessionId: session.id,
+      };
+    } else if (continuousRunning) {
+      const engineLabel = controlledEngineDisplayName(dataTestRef.current?.testType);
+      const frozenRows = Array.isArray(dataTestRef.current?.iterationResults)
+        ? dataTestRef.current.iterationResults
+        : [];
+      const stop = resolveContinuousStopPresentation(frozenRows, engineLabel);
+      const counts = stop.counts;
+      finalDataTest = {
+        ...dataTestRef.current,
+        status: stop.status,
+        phase: stop.status,
+        runMode: "continuous",
+        completedIterations: counts.completedIterations,
+        failedIterations: counts.failedIterations,
+        attemptedIterations: counts.attemptedIterations,
+        remainingIterations: null,
+        iterationsRequested: null,
+        iterationResults: frozenRows,
+        endReason: stop.endReason,
+        error: stop.error,
+        message: stop.message,
+        endedAt,
+      };
+    } else if (dataTestRef.current?.status === "running" || markIncomplete) {
+      const counts = summarizeControlledIterationCounts(
+        dataTestRef.current.iterationResults,
+        dataTestRef.current.iterationsRequested,
+        "incomplete",
+      );
+      finalDataTest = {
+        ...dataTestRef.current,
+        status: "incomplete",
+        phase: "incomplete",
+        completedIterations: counts.completedIterations,
+        failedIterations: counts.failedIterations,
+        attemptedIterations: counts.attemptedIterations,
+        remainingIterations: counts.remainingIterations,
+        endReason: "user_stopped_incomplete",
+        message: `Throughput test stopped as incomplete. Requested ${counts.requestedIterations}, attempted ${counts.attemptedIterations}, completed ${counts.completedIterations}, failed ${counts.failedIterations}, remaining ${counts.remainingIterations}.`,
+        endedAt,
+      };
+    }
     dataTestRef.current = finalDataTest;
     setDataTest(finalDataTest);
+    setControlledTestDialog(null);
+    continuousSaveInFlightRef.current = false;
 
     setSavedSession(buildSessionSummary({
       session,
@@ -5650,13 +7581,14 @@ export default function MobileRfKpi({
     setClockTick(endedAt);
     setTestState("saved");
     setCollectorRunning(false);
+    // Return to preview while RF KPI remains visible; do not kill the native stream.
+    demoteToPreviewMode({ notificationText: "Live RF / GPS preview" }).catch(() => {});
   }
 
-  async function refreshGpsAndRf() {
-    if (typeof onRefreshGpsNow === "function") {
-      await onRefreshGpsNow();
-    }
-    await refreshNativeSnapshot({ append: true });
+  async function restartRfStream() {
+    setFirstNativeSampleReceived(false);
+    setLastUiRfTimestamp(null);
+    await bootstrapLiveRfPreview({ forceRestart: true });
   }
 
   async function exportSavedSession() {
@@ -5688,11 +7620,114 @@ export default function MobileRfKpi({
           : reportPackage.fccSession
             ? " FCC package: exactly 3 FCC evidence files."
             : "";
+      const primaryName = reportPackage.displayName || result?.displayName || files[0]?.fileName || files[0]?.name || "report package";
       setExportStatus(result?.fallback
-        ? `Report package downloaded: ${files.length} files.${exportExtra}`
-        : `Report package saved successfully: ${files.length} files.${exportExtra}`);
+        ? `Downloaded: ${primaryName}${exportExtra}`
+        : `Saved: ${primaryName}${exportExtra}`);
     } catch (error) {
       setExportStatus(error?.message || "Report export failed.");
+    }
+  }
+
+  async function exportExcelPlotReport() {
+    if (excelPlotExportBusy) return;
+    if (dataTestRef.current?.status === "running") {
+      setExcelPlotExportStatus("Finish the THP test or tap Stop / Save before Excel Plot Report export.");
+      return;
+    }
+    const sessionToExport = savedSession;
+    if (!isExcelPlotExportableSession(sessionToExport)) {
+      setExcelPlotExportStatus("Tap Stop / Save first, then export the Excel Plot Report.");
+      return;
+    }
+
+    setExcelPlotExportBusy(true);
+    setExcelPlotExportStatus("Preparing session data...");
+    try {
+      const generatedAt = Date.now();
+      const baseName = buildProfessionalReportName(sessionToExport, activeTask);
+      const pad = (value) => String(value).padStart(2, "0");
+      const date = new Date(generatedAt);
+      const exportStamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+      const sessionId = cleanFilePart(`${baseName}_${exportStamp}`, `bd-rf-${generatedAt}`);
+      const reportProgress = (stage) => {
+        setExcelPlotExportStatus(String(stage || "Building Excel Plot Report..."));
+      };
+      const model = buildExcelPlotReportModel(sessionToExport, user, {
+        activeTask,
+        getTaskLabel,
+        getTaskGrid,
+      }, {
+        onProgress: reportProgress,
+        activeSettings: null,
+      });
+      reportProgress("Writing workbook");
+      const excelFile = await buildExcelPlotReportFile(model, `${sessionId}_Plots_Report.xlsx`, {
+        onProgress: reportProgress,
+      });
+      if (!excelFile?.looksZip || !excelFile?.contentBase64) {
+        throw new Error("Excel workbook build failed (invalid .xlsx payload).");
+      }
+      reportProgress("Saving report");
+
+      let result = null;
+      // Prefer dedicated binary save (top-level contentBase64) — more reliable on Capacitor Android.
+      if (typeof BabyDragonRfKpi.saveBinaryReportFile === "function") {
+        result = await BabyDragonRfKpi.saveBinaryReportFile({
+          sessionId,
+          displayName: sessionId,
+          fileName: excelFile.fileName,
+          mimeType: excelFile.mimeType,
+          reportLabel: excelFile.reportLabel,
+          contentBase64: excelFile.contentBase64,
+        });
+      }
+      if (!result?.ok) {
+        const reportPackage = {
+          sessionId,
+          displayName: sessionId,
+          generatedAt,
+          files: [excelFile],
+        };
+        try {
+          result = await saveReportPackage(reportPackage);
+        } catch (nestedError) {
+          // Last-resort browser/blob download so export is never silently skipped.
+          downloadTextFile(excelFile);
+          const detail = String(result?.message || nestedError?.message || nestedError || "native save failed");
+          console.error("[BabyDragon] Excel Plot Report save failed:", detail, result || nestedError);
+          setExcelPlotExportStatus(`Excel Plot Report downloaded via fallback (native save failed: ${detail})`);
+          return;
+        }
+      }
+
+      if (!result?.ok) {
+        const detail = String(result?.message || result?.status || "native save failed");
+        console.error("[BabyDragon] Excel Plot Report save failed:", detail, result);
+        downloadTextFile(excelFile);
+        setExcelPlotExportStatus(`Excel Plot Report downloaded via fallback (native save failed: ${detail})`);
+        return;
+      }
+
+      const files = Array.isArray(result?.savedFiles) ? result.savedFiles : [];
+      if (!files.length) {
+        console.error("[BabyDragon] Excel Plot Report save returned no savedFiles:", result);
+        downloadTextFile(excelFile);
+        setExcelPlotExportStatus("Excel Plot Report downloaded via fallback (native returned no saved files).");
+        return;
+      }
+
+      setExportBasePath(result?.basePath || `Downloads/BabyDragon/Reports/${sessionId}`);
+      const savedName = excelFile.fileName || `${sessionId}_Plots_Report.xlsx`;
+      setExcelPlotExportStatus(result?.fallback
+        ? `Excel Plot Report Saved\n${savedName}`
+        : `Excel Plot Report Saved\n${savedName}`);
+      // Keep full path only in package details / base path — not in primary sticky status.
+    } catch (error) {
+      console.error("[BabyDragon] Excel Plot Report export failed:", error);
+      setExcelPlotExportStatus(error?.message || "Excel Plot Report export failed.");
+    } finally {
+      setExcelPlotExportBusy(false);
     }
   }
 
@@ -5720,22 +7755,166 @@ export default function MobileRfKpi({
     }
   }
 
+  // Sanitize phantom recording controls after force-stop / APK replace.
+  useEffect(() => {
+    if ((testState === "recording" || testState === "paused") && (!collectorRunning || !currentSession?.id)) {
+      testStateRef.current = "idle";
+      collectorRunningRef.current = false;
+      currentSessionRef.current = null;
+      setTestState("idle");
+      setCollectorRunning(false);
+      setCurrentSession(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    collectorBusyRef.current = collectorBusy;
+  }, [collectorBusy]);
+
+  useEffect(() => {
+    firstNativeSampleReceivedRef.current = firstNativeSampleReceived;
+  }, [firstNativeSampleReceived]);
+
   useEffect(() => {
     let cancelled = false;
+    let retryBusy = false;
+    let stopTimer = null;
+    let lastHardStartAt = 0;
 
-    function tick() {
-      if (!cancelled) {
+    async function activatePreview({ forceRestart = false } = {}) {
+      if (!rfWorkspaceActive || cancelled) return;
+      if (!forceRestart && previewEnsureRef.current && firstNativeSampleReceivedRef.current && isMobilitySessionActive()) {
         refreshNativeSnapshot({ append: true });
+        return;
+      }
+      previewEnsureRef.current = true;
+      if (!checkingStartedAtRef.current) {
+        const startedAt = Date.now();
+        checkingStartedAtRef.current = startedAt;
+        setCheckingStartedAt(startedAt);
+      }
+      setCollectorBusy(true);
+      collectorBusyRef.current = true;
+      try {
+        await bootstrapLiveRfPreview({ forceRestart });
+      } finally {
+        if (!cancelled) {
+          setCollectorBusy(false);
+          collectorBusyRef.current = false;
+        }
       }
     }
 
-    requestRfPermissionsIfNeeded().finally(tick);
-    const timer = window.setInterval(tick, 1000);
+    async function tick() {
+      if (cancelled) return;
+      setClockForNativeWait(Date.now());
+      if (rfWorkspaceActive || collectorRunningRef.current) {
+        await refreshNativeSnapshot({ append: true });
+      }
+      const startedAt = checkingStartedAtRef.current;
+      const ageMs = startedAt != null ? Date.now() - startedAt : null;
+      if (collectorBusyRef.current && ageMs != null && ageMs > 15000 && !firstNativeSampleReceivedRef.current) {
+        setCollectorBusy(false);
+        collectorBusyRef.current = false;
+      }
+      if (
+        rfWorkspaceActive
+        && ageMs != null
+        && ageMs > 10000
+        && !firstNativeSampleReceivedRef.current
+      ) {
+        setCheckingTimeoutReason((current) => current || "first_sample_timeout");
+        // Prefer diagnostics-backed reason when service is down.
+        try {
+          const diagnostics = await fetchMobilityDiagnostics();
+          setMobilityDiagnostics(diagnostics);
+          if (diagnostics?.serviceRunning === false) {
+            setRfStreamUi({ label: "Service stopped", reason: "service_start_failed" });
+          } else if (!firstNativeSampleReceivedRef.current) {
+            setRfStreamUi({ label: "Unavailable", reason: "first_sample_timeout" });
+          }
+        } catch {
+          if (!firstNativeSampleReceivedRef.current) {
+            setRfStreamUi({ label: "Unavailable", reason: "first_sample_timeout" });
+          }
+        }
+      }
+      // Soft re-ensure (attach/drain only). Hard restart at most once every 8s if service is dead.
+      if (
+        rfWorkspaceActive
+        && !firstNativeSampleReceivedRef.current
+        && !retryBusy
+        && !collectorBusyRef.current
+        && ageMs != null
+        && ageMs > 3000
+      ) {
+        retryBusy = true;
+        try {
+          let forceRestart = false;
+          try {
+            const diagnostics = await fetchMobilityDiagnostics();
+            setMobilityDiagnostics(diagnostics);
+            const serviceDead = diagnostics?.serviceRunning !== true;
+            const now = Date.now();
+            if (serviceDead && now - lastHardStartAt > 8000) {
+              forceRestart = true;
+              lastHardStartAt = now;
+            }
+          } catch {
+            // soft ensure only
+          }
+          await activatePreview({ forceRestart });
+        } finally {
+          retryBusy = false;
+        }
+      }
+    }
+
+    if (rfWorkspaceActive) {
+      if (stopTimer) {
+        window.clearTimeout(stopTimer);
+        stopTimer = null;
+      }
+      void requestRfPermissionsIfNeeded();
+      lastHardStartAt = Date.now();
+      activatePreview({ forceRestart: false });
+    } else if (!collectorRunningRef.current) {
+      // Delay stop so brief tab switches / remounts do not kill a healthy stream.
+      previewEnsureRef.current = false;
+      checkingStartedAtRef.current = null;
+      stopTimer = window.setTimeout(() => {
+        if (cancelled || collectorRunningRef.current) return;
+        const mode = getMobilityMode();
+        if (mode === MOBILITY_MODE.PREVIEW || mode === MOBILITY_MODE.ERROR) {
+          stopMobilitySession({ clearTrail: false, stopService: true }).catch(() => {});
+          setRfStreamUi({ label: "Service stopped", reason: null });
+        }
+      }, 2500);
+    }
+
+    const timer = window.setInterval(() => { void tick(); }, 1000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      if (stopTimer) window.clearTimeout(stopTimer);
     };
-  }, []);
+  }, [rfWorkspaceActive]);
+
+  useEffect(() => subscribeMobilitySession((snapshot) => {
+    if (snapshot?.lastDiagnostics) setMobilityDiagnostics(snapshot.lastDiagnostics);
+    if (snapshot?.startError) setMobilityStartError(snapshot.startError);
+    if (snapshot?.lastDrainError) setLastMobilityDrainError(snapshot.lastDrainError);
+    if (snapshot?.firstSampleReceived) setFirstNativeSampleReceived(true);
+    if (snapshot?.lastNativeRfTimestamp) setLastUiRfTimestamp(snapshot.lastNativeRfTimestamp);
+    setNativeGpsUiStatus(describeGpsUiStatus(snapshot?.lastDiagnostics, snapshot?.gpsStatus));
+    const latest = snapshot?.latestRfSample?.snapshot || getLatestMobilityRfSample()?.snapshot;
+    if (latest && (latest.ok || latest.currentRatName || latest.dataNetworkTypeName)) {
+      setNativeSnapshot((prev) => prev?.snapshotSequence === latest.snapshotSequence ? prev : latest);
+      setCollectorBusy(false);
+      setRfStreamUi({ label: "Live", reason: null });
+    }
+  }), []);
 
   useEffect(() => () => {
     if (throughputAbortRef.current) throughputAbortRef.current.abort();
@@ -5779,10 +7958,21 @@ export default function MobileRfKpi({
           <span><b>Task</b>{activeTaskLabel}</span>
           <span><b>FE</b>{user?.email || "Signed in FE"}</span>
           <span><b>Grid</b>{activeGrid}</span>
-          <span><b>GPS</b>{formatGps(lastGpsLocation)}</span>
           <span><b>Test</b>{selectedMode === "data" ? selectedTestLabel : "Voice Test"}</span>
-          <span><b>State</b>{recordingStateLabel}</span>
+          <span><b>State</b>{showRecordingControls ? recordingStateLabel : (savedSession ? "Saved" : "Ready")}</span>
         </div>
+        <div className="bd-rf-live-stream-status" aria-label="Live RF and GPS status">
+          <span><b>RF Stream</b><strong>{rfStreamUi.label}</strong></span>
+          <span><b>GPS</b><strong>{nativeGpsUiStatus || describeGpsUiStatus(mobilityDiagnostics, mobilityGpsStatus) || "Waiting for native fix"}</strong></span>
+          <span><b>Last RF</b><strong>{formatAgeSeconds(lastUiRfTimestamp || mobilityDiagnostics?.lastNativeRfTimestamp, clockForNativeWait)}</strong></span>
+          <span><b>Last GPS</b><strong>{formatAgeSeconds(lastGpsFixMs, clockForNativeWait)}</strong></span>
+        </div>
+        {rfStreamUi.reason && rfStreamUi.label !== "Live" ? (
+          <p className="bd-rf-inline-note bd-rf-thp-error-note">{rfStreamUi.reason}</p>
+        ) : null}
+        {mobilityStartError && rfStreamUi.label !== "Live" ? (
+          <p className="bd-rf-inline-note bd-rf-thp-error-note">{mobilityStartError}</p>
+        ) : null}
 
         <label className="bd-rf-report-name-field">
           <span>Log / Report Name</span>
@@ -5848,16 +8038,21 @@ export default function MobileRfKpi({
 
             {dataSetupOpen && (
               <div className="bd-rf-selected-workflow">
+                {dataTestType === "rf_only" && (
+                  <p className="bd-rf-inline-note">
+                    RF Only records live RF and GPS. Start Data begins recording without HTTP, FTP, iPerf3, OOKLA, or FCC.
+                  </p>
+                )}
                 {dataTestType === "native_http" && (
                   <NativeHttpTestCard setup={currentNativeHttpSetup} onChange={handleNativeHttpSetupChange} disabled={dataTest.status === "running"} />
                 )}
                 {dataTestType === "ftp" && (
-                  <FtpTestCard setup={ftpSetup} onChange={setFtpSetup} disabled={dataTest.status === "running"} />
+                  <FtpTestCard setup={ftpSetup} onChange={handleFtpSetupChange} disabled={dataTest.status === "running"} />
                 )}
                 {dataTestType === "iperf" && (
                   <Iperf3TestPage
                     setup={iperfSetup}
-                    onChange={setIperfSetup}
+                    onChange={handleIperfSetupChange}
                     onBinaryStatusChange={setIperfBinaryStatus}
                     disabled={dataTest.status === "running"}
                   />
@@ -5939,10 +8134,10 @@ export default function MobileRfKpi({
         ) : null}
         {exportFiles.length ? (
           <div className="bd-rf-export-package-card">
-            <div>
-              <b>{exportPackageName || "BabyDragon RF KPI Report"}</b>
+            <div className="bd-rf-export-package-primary">
+              <b>Report Package Saved</b>
+              <span className="bd-rf-export-package-name">{exportPackageName || "BabyDragon RF KPI Report"}</span>
               <span>{exportFiles.length} report files saved</span>
-              <small>{exportBasePath || "Downloads/BabyDragon/Reports"}</small>
             </div>
             <button type="button" onClick={shareExportedReports}>Share</button>
             <details>
@@ -5955,6 +8150,9 @@ export default function MobileRfKpi({
                   </span>
                 ))}
               </div>
+              {exportBasePath ? (
+                <small className="bd-rf-export-path-detail">Saved under: {exportBasePath}</small>
+              ) : null}
             </details>
           </div>
         ) : null}
@@ -6084,7 +8282,18 @@ export default function MobileRfKpi({
               <div className="bd-rf-thp-grid bd-rf-thp-grid-d2 bd-rf-thp-grid-compact">
                 <span><b>Avg DL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("dl", { dataTest, savedSession: visibleSession }))}</strong></span>
                 <span><b>Avg UL THP</b><strong>{formatThroughputWithUnit(formatThroughputLive("ul", { dataTest, savedSession: visibleSession }))}</strong></span>
-                <span><b>Iterations</b><strong>{dataTest.completedIterations || visibleSession?.appCompletedIterations || 0}/{dataTest.iterationsRequested || visibleSession?.appIterationsRequested || resolvedThpIterations}</strong></span>
+                <span>
+                  <b>{isContinuousDataMode(dataTest, visibleSession) ? "Completed" : "Iterations"}</b>
+                  <strong>
+                    {formatControlledIterationsDisplay({
+                      runMode: dataTest.runMode || visibleSession?.appRunMode,
+                      completed: dataTest.completedIterations || visibleSession?.appCompletedIterations || 0,
+                      requested: dataTest.iterationsRequested ?? visibleSession?.appIterationsRequested ?? resolvedThpIterations,
+                      status: dataTest.status || visibleSession?.appTestStatus,
+                      endReason: dataTest.endReason || visibleSession?.appEndReason,
+                    })}
+                  </strong>
+                </span>
                 <span><b>Wait</b><strong>{dataTest.waitSeconds ?? visibleSession?.appWaitSeconds ?? resolvedThpWaitSeconds}s</strong></span>
               </div>
             )}
@@ -6142,6 +8351,9 @@ export default function MobileRfKpi({
           <b>Live RF Summary</b>
           <small>{servingTechnology} · tap to expand live KPIs</small>
         </summary>
+        {nativeRfWaitLabel && !nativeSnapshot?.ok ? (
+          <p className="bd-rf-inline-note">{nativeRfWaitLabel}</p>
+        ) : null}
         <div className="bd-rf-live-summary-grid">
           <span><b>RAT</b><strong>{servingTechnology}</strong></span>
           <span><b>LTE RSRP</b><strong>{kpiLive("RSRP")}</strong></span>
@@ -6152,11 +8364,57 @@ export default function MobileRfKpi({
           <span><b>NR SS-SINR</b><strong>{kpiLive("SS-SINR")}</strong></span>
           <span><b>App DL THP</b><strong>{summaryAppDl}</strong></span>
           <span><b>App UL THP</b><strong>{summaryAppUl}</strong></span>
-          <span><b>TrafficStats DL</b><strong>{summaryTrafficDl}</strong></span>
-          <span><b>TrafficStats UL</b><strong>{summaryTrafficUl}</strong></span>
+          {showLiveMobileTraffic ? (
+            <>
+              <span><b>TrafficStats Mobile DL</b><strong>{summaryTrafficMobileDl === "N/A" ? "N/A" : `${summaryTrafficMobileDl} Mbps`}</strong></span>
+              <span><b>TrafficStats Mobile UL</b><strong>{summaryTrafficMobileUl === "N/A" ? "N/A" : `${summaryTrafficMobileUl} Mbps`}</strong></span>
+            </>
+          ) : null}
+          <span><b>TrafficStats Total DL</b><strong>{summaryTrafficTotalDl === "N/A" ? "N/A" : `${summaryTrafficTotalDl} Mbps`}</strong></span>
+          <span><b>TrafficStats Total UL</b><strong>{summaryTrafficTotalUl === "N/A" ? "N/A" : `${summaryTrafficTotalUl} Mbps`}</strong></span>
           <span><b>Call State</b><strong>{summaryCallState}</strong></span>
         </div>
+        {!showLiveMobileTraffic && (summaryTrafficTotalDl !== "N/A" || summaryTrafficTotalUl !== "N/A") ? (
+          <p className="bd-rf-traffic-stats-note">Mobile-interface counters inactive; total-device counters shown.</p>
+        ) : null}
+        {trafficStatsUiNote && showLiveMobileTraffic === false && !(summaryTrafficTotalDl !== "N/A" || summaryTrafficTotalUl !== "N/A") ? (
+          <p className="bd-rf-traffic-stats-note">{trafficStatsUiNote}</p>
+        ) : null}
+        {trafficStatsUiNote && showLiveMobileTraffic ? (
+          <p className="bd-rf-traffic-stats-note">{trafficStatsUiNote}</p>
+        ) : null}
       </details>
+
+      {(import.meta.env?.DEV || mobilityDiagnostics || isMobilitySessionActive() || openPanel === "about") ? (
+        <details className="bd-mobile-card bd-rf-dev-mobility-diag">
+          <summary className="bd-rf-live-summary-head">
+            <b>Dev Mobility Diagnostics</b>
+            <small>not included in customer reports</small>
+          </summary>
+          <div className="bd-rf-live-summary-grid">
+            <span><b>mobilityMode</b><strong>{getMobilityMode()}</strong></span>
+            <span><b>serviceRunning</b><strong>{String(mobilityDiagnostics?.serviceRunning ?? "n/a")}</strong></span>
+            <span><b>serviceSessionId</b><strong>{mobilityDiagnostics?.sessionId || "—"}</strong></span>
+            <span><b>jsSessionId</b><strong>{mobilityDiagnostics?.jsSessionId || getMobilitySessionSnapshot()?.sessionId || "—"}</strong></span>
+            <span><b>rfTickerActive</b><strong>{String(mobilityDiagnostics?.rfTickerActive ?? "n/a")}</strong></span>
+            <span><b>nativeRfCount</b><strong>{String(mobilityDiagnostics?.nativeRfSampleCount ?? 0)}</strong></span>
+            <span><b>nativeGpsCount</b><strong>{String(mobilityDiagnostics?.nativeGpsSampleCount ?? 0)}</strong></span>
+            <span><b>bufferCount</b><strong>{String(mobilityDiagnostics?.bufferCount ?? mobilityDiagnostics?.bufferedCount ?? 0)}</strong></span>
+            <span><b>lastNativeRf</b><strong>{mobilityDiagnostics?.lastNativeRfTimestamp || lastUiRfTimestamp || "—"}</strong></span>
+            <span><b>lastDrain</b><strong>{mobilityDiagnostics?.lastDrainCount ?? 0} @ {mobilityDiagnostics?.lastDrainTimestamp || "—"}</strong></span>
+            <span><b>lastDrainError</b><strong>{mobilityDiagnostics?.lastDrainError || lastMobilityDrainError || "—"}</strong></span>
+            <span><b>firstSample</b><strong>{String(firstNativeSampleReceived)}</strong></span>
+            <span><b>uiRfAgeMs</b><strong>{lastUiRfTimestamp != null ? String(clockForNativeWait - lastUiRfTimestamp) : "—"}</strong></span>
+            <span><b>checking</b><strong>{String(collectorBusy)}</strong></span>
+            <span><b>checkingTimeout</b><strong>{checkingTimeoutReason || "—"}</strong></span>
+            <span><b>drainLoops</b><strong>{String(mobilityDiagnostics?.activeDrainLoopCount ?? getMobilitySessionSnapshot()?.activeDrainLoopCount ?? 0)}</strong></span>
+            <span><b>tickerCount</b><strong>{String(mobilityDiagnostics?.activeNativeTickerCount ?? (mobilityDiagnostics?.rfTickerActive ? 1 : 0))}</strong></span>
+          </div>
+          <button type="button" className="bd-mobile-secondary" onClick={restartRfStream}>
+            Restart RF Stream
+          </button>
+        </details>
+      ) : null}
 
       <details
         className={`bd-mobile-card bd-rf-table-card-compact bd-rf-kpi-table-collapsible ${advancedRfOpen ? "" : "is-collapsed"}`}
@@ -6192,7 +8450,8 @@ export default function MobileRfKpi({
             Auto follows serving RAT: {servingTechnology}.
           </p>
           <p className="bd-rf-traffic-stats-note">
-            Android TrafficStats DL/UL are mobile byte deltas, not OOKLA or engine THP.
+            Android TrafficStats Mobile = mobile interface byte deltas. Total = whole-device counters.
+            APP DL/UL THP remains BabyDragon engine throughput. {trafficStatsUiNote}
           </p>
 
           <div className="bd-mobile-rf-kpi-table-wrap compact">
@@ -6301,13 +8560,27 @@ export default function MobileRfKpi({
           <button type="button" className="bd-mobile-primary bd-rf-export-now" disabled={!canExportSession || exportStatus?.startsWith("Building")} onClick={exportSavedSession}>
             {exportStatus?.startsWith("Building") ? "Building report..." : thpIsRunning ? "Finish Test Before Export" : "Export Report Package"}
           </button>
+          <button
+            type="button"
+            className="bd-mobile-secondary bd-rf-export-excel-plot"
+            disabled={!canExportSession || excelPlotExportBusy}
+            onClick={exportExcelPlotReport}
+          >
+            {excelPlotExportBusy ? "Building Excel..." : "Export Excel Plot Report"}
+          </button>
+          <p className="bd-rf-excel-plot-hint">
+            Optional parallel .xlsx with plot-ready RF/data sheets. Does not change OOKLA/FCC package exports.
+          </p>
           {exportStatus ? <p className="bd-rf-inline-note">{exportStatus}</p> : null}
+          {excelPlotExportStatus ? (
+            <p className="bd-rf-inline-note success bd-rf-excel-saved-status">{excelPlotExportStatus}</p>
+          ) : null}
           {exportFiles.length ? (
             <div className="bd-rf-export-files">
               {exportFiles.map((file) => (
                 <span key={`${file.fileName}-${file.path || "saved"}`}>
                   <b>{file.fileName}</b>
-                  <small>{file.path || "Saved"}</small>
+                  <small>Saved</small>
                 </span>
               ))}
             </div>
@@ -6326,25 +8599,22 @@ export default function MobileRfKpi({
       <div className="bd-rf-sticky-action-bar" aria-label="Session actions">
         <div className="bd-rf-action-grid bd-rf-action-grid-safe">
           <button type="button" className="bd-mobile-primary" onClick={() => armWorkflow(selectedMode)}>
-            {collectorRunning ? "Restart" : selectedMode === "voice" ? "Start Voice" : "Start Data"}
+            {showRecordingControls ? "Restart" : selectedMode === "voice" ? "Start Voice" : "Start Data"}
           </button>
-          {testState === "recording" ? (
+          {showRecordingControls && testState === "recording" ? (
             <button type="button" className="bd-mobile-secondary bd-rf-pause-btn" onClick={pauseRecording}>
               Pause Recording
             </button>
           ) : null}
-          {testState === "paused" ? (
+          {showRecordingControls && testState === "paused" ? (
             <button type="button" className="bd-mobile-secondary bd-rf-resume-btn" onClick={resumeRecording}>
               Resume Recording
             </button>
           ) : null}
-          <button type="button" className="bd-mobile-secondary" onClick={stopWorkflow} disabled={!collectorRunning && !samples.length}>
-            {collectorRunning ? "Stop / Save" : savedSession ? "Saved" : "Stop / Save"}
+          <button type="button" className="bd-mobile-secondary" onClick={stopWorkflow} disabled={!showRecordingControls && !savedSession}>
+            {showRecordingControls ? "Stop / Save" : savedSession ? "Saved" : "Stop / Save"}
           </button>
-          <button type="button" className="bd-mobile-secondary" onClick={refreshGpsAndRf}>
-            {gpsChecking || collectorBusy ? "Checking..." : "GPS + RF"}
-          </button>
-          {(canExportSession || exportStatus?.startsWith("Building")) ? (
+          {(canExportSession || exportStatus?.startsWith("Building") || excelPlotExportBusy) ? (
             <button
               type="button"
               className="bd-mobile-secondary"
@@ -6354,8 +8624,211 @@ export default function MobileRfKpi({
               {exportStatus?.startsWith("Building") ? "Exporting..." : "Export"}
             </button>
           ) : null}
+          {(canExportSession || excelPlotExportBusy) ? (
+            <button
+              type="button"
+              className="bd-mobile-secondary bd-rf-export-excel-plot-sticky"
+              disabled={!canExportSession || excelPlotExportBusy}
+              onClick={exportExcelPlotReport}
+            >
+              {excelPlotExportBusy ? "Excel..." : "Excel Plot"}
+            </button>
+          ) : null}
         </div>
+        {excelPlotExportStatus ? (
+          <p className="bd-rf-inline-note success bd-rf-excel-sticky-status bd-rf-excel-saved-status">{excelPlotExportStatus}</p>
+        ) : null}
       </div>
+
+      {controlledTestDialog ? (
+        <div className="bd-rf-confirm-overlay" role="dialog" aria-modal="true" aria-label={controlledTestDialog.title || "Test status"}>
+          <div className="bd-mobile-card bd-rf-confirm-card">
+            <h3>{controlledTestDialog.title}</h3>
+            <p>
+              {controlledTestDialog.kind === "continuous_complete" || controlledTestDialog.kind === "continuous_stop" || controlledTestDialog.requested == null ? (
+                <>
+                  Attempted: {controlledTestDialog.attempted ?? "—"}
+                  <br />
+                  Completed: {controlledTestDialog.completed ?? "—"}
+                  <br />
+                  Failed: {controlledTestDialog.failed ?? "—"}
+                </>
+              ) : (
+                <>
+                  Requested: {controlledTestDialog.requested ?? "—"}
+                  <br />
+                  Attempted: {controlledTestDialog.attempted ?? "—"}
+                  <br />
+                  Completed: {controlledTestDialog.completed ?? "—"}
+                  <br />
+                  Failed: {controlledTestDialog.failed ?? "—"}
+                  <br />
+                  Remaining: {controlledTestDialog.remaining ?? (controlledTestDialog.kind === "complete" ? 0 : "—")}
+                </>
+              )}
+            </p>
+            {controlledTestDialog.overall ? <p><b>Overall:</b> {controlledTestDialog.overall}</p> : null}
+            {controlledTestDialog.errorSummary ? <p className="bd-rf-inline-note">{controlledTestDialog.errorSummary}</p> : null}
+            {controlledTestDialog.kind === "continuous_stop" ? (
+              <p>
+                Continuous test is still running.<br />
+                Attempted: {controlledTestDialog.attempted ?? 0}<br />
+                Completed: {controlledTestDialog.completed ?? 0}<br />
+                Failed: {controlledTestDialog.failed ?? 0}<br />
+                Duration: {controlledTestDialog.durationLabel || "00:00:00"}
+              </p>
+            ) : null}
+            {controlledTestDialog.kind === "incomplete_stop" ? (
+              <p>Are you sure you want to stop and save this incomplete test?</p>
+            ) : null}
+            {controlledTestDialog.kind === "incomplete_restart" ? (
+              <p>Restart will stop the current incomplete sequence and start a new session.</p>
+            ) : null}
+            {controlledTestDialog.kind === "zero_attempt" ? (
+              <p>
+                No data-test iteration was attempted.
+                <br />
+                Engine: {engineDisplayName(controlledTestDialog.engineId || controlledTestDialog.testType)}
+              </p>
+            ) : null}
+            <div className="bd-rf-action-grid">
+              {controlledTestDialog.kind === "zero_attempt" ? (
+                <>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Return to Test
+                  </button>
+                  <button
+                    type="button"
+                    className="bd-mobile-primary"
+                    onClick={() => stopWorkflowConfirmed({ markIncomplete: false, saveAsRfOnly: true })}
+                  >
+                    Save as RF-Only Session
+                  </button>
+                  <button
+                    type="button"
+                    className="bd-mobile-secondary"
+                    onClick={() => {
+                      setControlledTestDialog(null);
+                      if (throughputAbortRef.current) throughputAbortRef.current.abort();
+                      stopMobilitySession({ clearTrail: true }).catch(() => {});
+                      collectorRunningRef.current = false;
+                      setCollectorRunning(false);
+                      testStateRef.current = "idle";
+                      setTestState("idle");
+                      currentSessionRef.current = null;
+                      setCurrentSession(null);
+                      setDataTest(makeDataTestIdle());
+                      dataTestRef.current = makeDataTestIdle();
+                    }}
+                  >
+                    Cancel Session
+                  </button>
+                </>
+              ) : null}
+              {controlledTestDialog.kind === "complete" ? (
+                <>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Continue RF Recording
+                  </button>
+                  <button type="button" className="bd-mobile-primary" onClick={() => { setControlledTestDialog(null); stopWorkflowConfirmed({ markIncomplete: false }); }}>
+                    Stop and Save
+                  </button>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => { setControlledTestDialog(null); setOpenPanel("export"); }}>
+                    View Results
+                  </button>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => { setControlledTestDialog(null); armWorkflowConfirmed(selectedMode); }}>
+                    Run Again
+                  </button>
+                </>
+              ) : null}
+              {controlledTestDialog.kind === "continuous_complete" ? (
+                <>
+                  <button
+                    type="button"
+                    className="bd-mobile-secondary"
+                    onClick={() => {
+                      setControlledTestDialog(null);
+                      setOpenPanel("export");
+                    }}
+                  >
+                    View Results
+                  </button>
+                  <button
+                    type="button"
+                    className="bd-mobile-primary"
+                    onClick={() => {
+                      setControlledTestDialog(null);
+                      setOpenPanel("export");
+                      window.setTimeout(() => {
+                        exportSavedSession().catch(() => {});
+                      }, 0);
+                    }}
+                  >
+                    Export Reports
+                  </button>
+                  <button
+                    type="button"
+                    className="bd-mobile-secondary"
+                    onClick={() => {
+                      setControlledTestDialog(null);
+                      armWorkflowConfirmed(selectedMode);
+                    }}
+                  >
+                    Run Again
+                  </button>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Close
+                  </button>
+                </>
+              ) : null}
+              {controlledTestDialog.kind === "continuous_stop" ? (
+                <>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Continue Testing
+                  </button>
+                  <button type="button" className="bd-mobile-primary" onClick={() => stopWorkflowConfirmed({ markIncomplete: true })}>
+                    Stop and Save Continuous Test
+                  </button>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Cancel
+                  </button>
+                </>
+              ) : null}
+              {controlledTestDialog.kind === "incomplete_stop" ? (
+                <>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Continue Testing
+                  </button>
+                  <button type="button" className="bd-mobile-primary" onClick={() => stopWorkflowConfirmed({ markIncomplete: true })}>
+                    Stop and Save as Incomplete
+                  </button>
+                </>
+              ) : null}
+              {controlledTestDialog.kind === "incomplete_restart" ? (
+                <>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Continue Current Test
+                  </button>
+                  <button
+                    type="button"
+                    className="bd-mobile-primary"
+                    onClick={() => {
+                      const mode = controlledTestDialog.pendingMode || selectedMode;
+                      stopWorkflowConfirmed({ markIncomplete: true });
+                      window.setTimeout(() => armWorkflowConfirmed(mode), 50);
+                    }}
+                  >
+                    Stop and Restart
+                  </button>
+                  <button type="button" className="bd-mobile-secondary" onClick={() => setControlledTestDialog(null)}>
+                    Cancel
+                  </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

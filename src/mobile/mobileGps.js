@@ -38,10 +38,20 @@ export function readCachedMobileGps(userId) {
 export function saveCachedMobileGps(userId, location, source = "browser_gps") {
   if (!isValidGpsPoint(location)) return null;
 
+  const fixMs = Number.isFinite(Number(location.location_fix_timestamp_ms))
+    ? Number(location.location_fix_timestamp_ms)
+    : (Number.isFinite(Number(location.timestamp)) ? Number(location.timestamp) : Date.now());
+
   const gps = {
     latitude: Number(location.latitude),
     longitude: Number(location.longitude),
     accuracy: location.accuracy ?? null,
+    speed: location.speed ?? location.speed_mps ?? null,
+    heading: location.heading ?? location.bearing_deg ?? null,
+    altitude: location.altitude ?? location.altitude_m ?? null,
+    provider: location.provider || source,
+    location_fix_timestamp_ms: fixMs,
+    location_fix_timestamp_iso: new Date(fixMs).toISOString(),
     source,
     cached_at: new Date().toISOString(),
     from_cache: Boolean(location.from_cache),
@@ -65,7 +75,8 @@ export function getCurrentLocationSafe(userId = null, options = {}) {
     allowCachedFallback = false,
     source = "browser_gps",
     timeout = 10000,
-    maximumAge = 60000,
+    // Mobility recording must not reuse a stale OS cache for long drives.
+    maximumAge = 0,
   } = options;
 
   return new Promise((resolve) => {
@@ -82,6 +93,12 @@ export function getCurrentLocationSafe(userId = null, options = {}) {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
           accuracy: position.coords.accuracy ?? null,
+          speed: Number.isFinite(position.coords.speed) ? position.coords.speed : null,
+          heading: Number.isFinite(position.coords.heading) ? position.coords.heading : null,
+          altitude: Number.isFinite(position.coords.altitude) ? position.coords.altitude : null,
+          timestamp: position.timestamp,
+          location_fix_timestamp_ms: position.timestamp,
+          provider: "browser_geolocation",
           from_cache: false,
         };
 

@@ -128,6 +128,10 @@ export default function MobileRouteView({
   onOpenNavigation,
   onSubmitRouteIssue,
   onUpdateTaskStatus,
+  liveDrivenTrail = [],
+  mobilityGpsStatus = null,
+  mobilitySessionActive = false,
+  lastGpsLocation = null,
 }) {
   const [routeContextLoading, setRouteContextLoading] = useState(false);
   const [routeContextError, setRouteContextError] = useState("");
@@ -485,7 +489,15 @@ export default function MobileRouteView({
           <InfoItem label="Issues" value={issueCount} tone={issueCount ? "amber" : "green"} />
         </div>
 
-        <RouteMapCard row={selectedRow} taskRows={selectedTaskRows} latestIssue={latestIssue} />
+        <RouteMapCard
+          row={selectedRow}
+          taskRows={selectedTaskRows}
+          latestIssue={latestIssue}
+          liveDrivenTrail={liveDrivenTrail}
+          mobilityGpsStatus={mobilityGpsStatus}
+          mobilitySessionActive={mobilitySessionActive}
+          lastGpsLocation={lastGpsLocation}
+        />
 
         <RouteLifecycleButtons
           row={selectedRow}
@@ -683,7 +695,15 @@ function RouteLifecycleButtons({ row, isSaving, onStart, onHold, onEnd, onNaviga
   );
 }
 
-function RouteMapCard({ row, taskRows = [], latestIssue }) {
+function RouteMapCard({
+  row,
+  taskRows = [],
+  latestIssue,
+  liveDrivenTrail = [],
+  mobilityGpsStatus = null,
+  mobilitySessionActive = false,
+  lastGpsLocation = null,
+}) {
   const [baseLayer, setBaseLayer] = useState("street");
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePoints, setMeasurePoints] = useState([]);
@@ -961,6 +981,40 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
             <RouteLineLayer key={`route-line-${row.id}-${index}`} geojson={geojson} interactive={!measureMode} />
           ))}
           {gpsPoints.length > 1 && <GpsTrailLayer points={gpsPoints} />}
+          {Array.isArray(liveDrivenTrail) && liveDrivenTrail.length > 1 && (
+            <Polyline
+              positions={liveDrivenTrail.map((point) => [point.lat, point.lng])}
+              pathOptions={{ color: "#f97316", weight: 5, opacity: 0.95 }}
+            />
+          )}
+          {Array.isArray(liveDrivenTrail) && liveDrivenTrail.length > 0 && (
+            <CircleMarker
+              center={[liveDrivenTrail[liveDrivenTrail.length - 1].lat, liveDrivenTrail[liveDrivenTrail.length - 1].lng]}
+              radius={6}
+              pathOptions={{ color: "#fff7ed", fillColor: "#ea580c", fillOpacity: 0.95, weight: 2 }}
+            >
+              <Popup>
+                <strong>Live Driven Trail</strong>
+                <br />
+                Status: {mobilityGpsStatus || "n/a"}
+                <br />
+                Points: {liveDrivenTrail.length}
+              </Popup>
+            </CircleMarker>
+          )}
+          {lastGpsLocation && Number.isFinite(Number(lastGpsLocation.latitude)) && Number.isFinite(Number(lastGpsLocation.longitude)) && (
+            <CircleMarker
+              center={[Number(lastGpsLocation.latitude), Number(lastGpsLocation.longitude)]}
+              radius={8}
+              pathOptions={{ color: "#ffffff", fillColor: "#2563eb", fillOpacity: 0.95, weight: 3 }}
+            >
+              <Popup>
+                <strong>Current Location</strong>
+                <br />
+                GPS: {mobilityGpsStatus || lastGpsLocation.gps_status || "n/a"}
+              </Popup>
+            </CircleMarker>
+          )}
 
           {measurePoints.length > 1 && (
             <Polyline
@@ -1027,8 +1081,10 @@ function RouteMapCard({ row, taskRows = [], latestIssue }) {
         )}
       </div>
 
-      <div style={styles.mapAttribution}>
+        <div style={styles.mapAttribution}>
         Map tiles © OpenStreetMap / Esri
+        {mobilitySessionActive ? " · Live Driven Trail active" : ""}
+        {mobilityGpsStatus ? ` · GPS ${mobilityGpsStatus}` : ""}
       </div>
 
       {(locationMessage || remoteRouteLoading) && (

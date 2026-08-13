@@ -10,6 +10,10 @@ import android.content.Context;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
 import android.net.TrafficStats;
 import android.net.Uri;
 import android.content.pm.PackageManager;
@@ -95,13 +99,42 @@ public class BabyDragonRfKpiPlugin extends Plugin {
     private static final String DEFAULT_DOWNLOAD_URL = "https://speed.cloudflare.com/__down";
     private static final String DEFAULT_UPLOAD_URL = "https://speed.cloudflare.com/__up";
     private static final AtomicLong SNAPSHOT_SEQUENCE = new AtomicLong(0L);
+    private static volatile BabyDragonRfKpiPlugin sInstance = null;
 
+    @Override
+    public void load() {
+        super.load();
+        sInstance = this;
+    }
 
-    @PluginMethod
-    public void getSnapshot(PluginCall call) {
+    /**
+     * Build an RF+TrafficStats snapshot for the mobility service collector.
+     * Safe to call from the service main-thread RF ticker.
+     */
+    public static JSObject buildMobilityRfSnapshot(Context context) {
+        BabyDragonRfKpiPlugin plugin = sInstance;
+        if (plugin != null) {
+            return plugin.createSnapshotObject(context != null ? context : plugin.getContext());
+        }
         JSObject result = new JSObject();
-        Context context = getContext();
+        result.put("ok", false);
+        result.put("status", "plugin_not_loaded");
+        return result;
+    }
 
+    public static void emitMobilitySampleHint() {
+        BabyDragonRfKpiPlugin plugin = sInstance;
+        if (plugin == null) return;
+        try {
+            JSObject hint = BabyDragonMobilityBuffer.status();
+            plugin.notifyListeners("mobilitySampleBuffered", hint);
+        } catch (Exception ignored) {
+            // Bridge may be suspended; buffer remains authoritative.
+        }
+    }
+
+    private JSObject createSnapshotObject(Context context) {
+        JSObject result = new JSObject();
         result.put("ok", false);
         result.put("timestamp", System.currentTimeMillis());
         result.put("snapshotSequence", SNAPSHOT_SEQUENCE.incrementAndGet());
@@ -118,22 +151,62 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         if (!hasFineLocation) {
             result.put("status", "missing_location_permission");
             result.put("message", "ACCESS_FINE_LOCATION is required before Android can expose cell RF information.");
-            call.resolve(result);
-            return;
+            return result;
         }
 
         TelephonyManager telephonyManager = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
         if (telephonyManager == null) {
             result.put("status", "telephony_unavailable");
             result.put("message", "Telephony service is unavailable on this device.");
-            call.resolve(result);
-            return;
+            return result;
         }
 
-        // Step 1E3: one-second UI polling should not wait on requestCellInfoUpdate.
-        // getAllCellInfo + SignalStrength returns quickly and keeps Live/Avg breathing.
-        result.put("freshReadMode", "fast_1s_poll");
-        resolveSnapshot(call, context, telephonyManager, result, safeGetAllCellInfo(telephonyManager), "getAllCellInfo_fast_1s_poll");
+        result.put("freshReadMode", "mobility_service_1s");
+        resolveSnapshotInto(result, context, telephonyManager, safeGetAllCellInfo(telephonyManager), "getAllCellInfo_mobility_service");
+        return result;
+    }
+
+    @PluginMethod
+    public void getSnapshot(PluginCall call) {
+        JSObject result = createSnapshotObject(getContext());
+        // Preserve prior fast-poll mode labeling for UI-driven reads.
+        if ("getAllCellInfo_mobility_service".equals(result.getString("readMode"))) {
+            result.put("freshReadMode", "fast_1s_poll");
+            result.put("readMode", "getAllCellInfo_fast_1s_poll");
+        }
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void drainMobilitySamples(PluginCall call) {
+        try {
+            call.resolve(BabyDragonMobilityBuffer.drain());
+        } catch (Exception exception) {
+            BabyDragonMobilityBuffer.noteDrainError(exception.getMessage());
+            JSObject result = new JSObject();
+            result.put("ok", false);
+            result.put("count", 0);
+            result.put("samples", new JSArray());
+            result.put("message", exception.getMessage());
+            call.resolve(result);
+        }
+    }
+
+    @PluginMethod
+    public void getMobilityBufferStatus(PluginCall call) {
+        JSObject status = BabyDragonMobilityBuffer.status();
+        status.put("serviceRunning", BabyDragonMobilityService.isRunning());
+        status.put("rfTickerActive", BabyDragonMobilityService.isRfTickerActive());
+        call.resolve(status);
+    }
+
+    @PluginMethod
+    public void getMobilityDiagnostics(PluginCall call) {
+        JSObject diagnostics = BabyDragonMobilityService.buildDiagnostics(getContext());
+        diagnostics.put("pluginLoaded", sInstance != null);
+        diagnostics.put("ok", true);
+        android.util.Log.i("BabyDragonRfKpiPlugin", "getMobilityDiagnostics " + diagnostics.toString());
+        call.resolve(diagnostics);
     }
 
     @PluginMethod
@@ -178,6 +251,143 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         result.put("ok", true);
         result.put("permissions", buildPermissionStatus(getContext()));
         result.put("message", "RF permission check completed.");
+        call.resolve(result);
+    }
+
+    /**
+     * Start the mobility foreground service from an explicit FE Start action.
+     * Types: location | dataSync. Notification is ongoing with Stop action.
+     */
+    @PluginMethod
+    public void startMobilityForegroundService(PluginCall call) {
+        Context context = getContext();
+        JSObject result = new JSObject();
+        result.put("accepted", false);
+        result.put("serviceStarted", false);
+        result.put("rfTickerActive", false);
+        result.put("locationSubscriptionActive", false);
+        result.put("bufferCount", 0);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                boolean hasPost = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED;
+                result.put("notificationsPermission", hasPost);
+            } else {
+                result.put("notificationsPermission", true);
+            }
+
+            String sessionId = call.getString("sessionId", "");
+            boolean alreadyRunning = BabyDragonMobilityService.isRunning();
+            String runningSessionId = BabyDragonMobilityService.getSessionId();
+            boolean sameSession = alreadyRunning
+                && sessionId != null
+                && !sessionId.isEmpty()
+                && sessionId.equals(runningSessionId);
+
+            // Idempotent start: do not wipe the live buffer when the same session is already running.
+            if (!sameSession) {
+                BabyDragonMobilityBuffer.reset(sessionId);
+            }
+
+            Intent intent = new Intent(context, BabyDragonMobilityService.class);
+            intent.putExtra(BabyDragonMobilityService.EXTRA_TITLE, call.getString("title", "BabyDragon mobility test"));
+            intent.putExtra(BabyDragonMobilityService.EXTRA_TEXT, call.getString("text", "Recording RF / GPS / data test"));
+            intent.putExtra(BabyDragonMobilityService.EXTRA_STATUS, call.getString("status", "running"));
+            intent.putExtra(BabyDragonMobilityService.EXTRA_SESSION_ID, sessionId);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent);
+            } else {
+                context.startService(intent);
+            }
+            result.put("accepted", true);
+            result.put("idempotentAttach", sameSession);
+
+            // Do not Thread.sleep on the Capacitor bridge thread — that blocks other plugin calls
+            // (including permission callbacks and drain). JS polls diagnostics for readiness.
+            try {
+                Thread.yield();
+            } catch (Exception ignored) {
+            }
+
+            JSObject diagnostics = BabyDragonMobilityService.buildDiagnostics(context);
+            boolean serviceStarted = BabyDragonMobilityService.isRunning();
+            boolean rfTickerActive = BabyDragonMobilityService.isRfTickerActive();
+            boolean locationActive = BabyDragonMobilityService.isLocationSubscriptionActive();
+            int bufferCount = 0;
+            try { bufferCount = diagnostics.getInt("bufferCount"); } catch (Exception ignored) {}
+
+            result.put("ok", serviceStarted && rfTickerActive);
+            result.put("running", serviceStarted);
+            result.put("serviceStarted", serviceStarted);
+            result.put("rfTickerActive", rfTickerActive);
+            result.put("locationSubscriptionActive", locationActive);
+            result.put("locationSubscriptionReason", diagnostics.getString("locationSubscriptionReason", ""));
+            result.put("bufferCount", bufferCount);
+            result.put("sessionId", sessionId);
+            result.put("serviceTypes", "location|dataSync");
+            result.put("diagnostics", diagnostics);
+
+            if (!serviceStarted) {
+                result.put("message", "Service not running: " + diagnostics.getString("lastServiceError", "startForeground failed"));
+            } else if (!rfTickerActive) {
+                result.put("message", "RF ticker not active after service start");
+            } else if (!locationActive) {
+                result.put("message", "Service + RF ticker active; location subscription unavailable: "
+                    + diagnostics.getString("locationSubscriptionReason", "unknown"));
+            } else {
+                result.put("message", "Mobility foreground service started with RF ticker and location subscription.");
+            }
+            android.util.Log.i("BabyDragonRfKpiPlugin", "startMobilityForegroundService "
+                + "ok=" + result.getBoolean("ok")
+                + " serviceStarted=" + serviceStarted
+                + " rfTickerActive=" + rfTickerActive
+                + " locationActive=" + locationActive
+                + " bufferCount=" + bufferCount
+                + " sessionId=" + sessionId);
+            call.resolve(result);
+        } catch (Exception exception) {
+            result.put("ok", false);
+            result.put("accepted", false);
+            result.put("running", BabyDragonMobilityService.isRunning());
+            result.put("serviceStarted", BabyDragonMobilityService.isRunning());
+            result.put("rfTickerActive", BabyDragonMobilityService.isRfTickerActive());
+            result.put("message", exception.getMessage());
+            android.util.Log.e("BabyDragonRfKpiPlugin", "startMobilityForegroundService failed", exception);
+            call.resolve(result);
+        }
+    }
+
+    @PluginMethod
+    public void stopMobilityForegroundService(PluginCall call) {
+        Context context = getContext();
+        JSObject result = new JSObject();
+        try {
+            Intent intent = new Intent(context, BabyDragonMobilityService.class);
+            intent.setAction(BabyDragonMobilityService.ACTION_STOP);
+            context.startService(intent);
+            context.stopService(new Intent(context, BabyDragonMobilityService.class));
+            BabyDragonMobilityBuffer.clear();
+            result.put("ok", true);
+            result.put("running", false);
+            result.put("message", "Mobility foreground service stopped.");
+            call.resolve(result);
+        } catch (Exception exception) {
+            result.put("ok", false);
+            result.put("running", BabyDragonMobilityService.isRunning());
+            result.put("message", exception.getMessage());
+            call.resolve(result);
+        }
+    }
+
+    @PluginMethod
+    public void getMobilityForegroundServiceStatus(PluginCall call) {
+        JSObject result = BabyDragonMobilityService.buildDiagnostics(getContext());
+        result.put("ok", true);
+        result.put("running", BabyDragonMobilityService.isRunning());
+        result.put("serviceTypes", "location|dataSync");
         call.resolve(result);
     }
 
@@ -256,6 +466,17 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         Context context,
         TelephonyManager telephonyManager,
         JSObject result,
+        List<CellInfo> cellInfoList,
+        String readMode
+    ) {
+        resolveSnapshotInto(result, context, telephonyManager, cellInfoList, readMode);
+        call.resolve(result);
+    }
+
+    private void resolveSnapshotInto(
+        JSObject result,
+        Context context,
+        TelephonyManager telephonyManager,
         List<CellInfo> cellInfoList,
         String readMode
     ) {
@@ -416,7 +637,74 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         }
 
         attachTrafficStatsSnapshot(result);
-        call.resolve(result);
+        result.put("connectivity", buildConnectivitySnapshot(context));
+    }
+
+    /**
+     * Permission-safe connectivity snapshot for report metadata only.
+     * Does not alter Native HTTP transfer calculations.
+     * Requires ACCESS_NETWORK_STATE (normal permission).
+     */
+    private JSObject buildConnectivitySnapshot(Context context) {
+        JSObject out = new JSObject();
+        out.put("wifiStatus", "Unknown");
+        out.put("mobileDataStatus", "Unknown");
+        out.put("activeTransport", "Unknown");
+        out.put("internetConnectivity", "Unknown");
+        try {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                out.put("note", "ConnectivityManager unavailable");
+                return out;
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Network active = cm.getActiveNetwork();
+                NetworkCapabilities caps = active != null ? cm.getNetworkCapabilities(active) : null;
+                if (caps == null) {
+                    out.put("wifiStatus", "Disconnected");
+                    out.put("mobileDataStatus", "Disconnected");
+                    out.put("activeTransport", "None");
+                    out.put("internetConnectivity", "Unavailable");
+                    return out;
+                }
+                boolean wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+                boolean cellular = caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR);
+                boolean other = caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
+                boolean hasInternet = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                boolean validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+                out.put("wifiStatus", wifi ? "Connected" : "Disconnected");
+                out.put("mobileDataStatus", cellular ? "Connected" : "Disconnected");
+                if (wifi) out.put("activeTransport", "Wi-Fi");
+                else if (cellular) out.put("activeTransport", "Cellular");
+                else if (other) out.put("activeTransport", "Other");
+                else out.put("activeTransport", "None");
+                if (!hasInternet) out.put("internetConnectivity", "Unavailable");
+                else if (validated) out.put("internetConnectivity", "Available");
+                else out.put("internetConnectivity", "Unvalidated");
+            } else {
+                NetworkInfo activeInfo = cm.getActiveNetworkInfo();
+                if (activeInfo == null || !activeInfo.isConnected()) {
+                    out.put("wifiStatus", "Disconnected");
+                    out.put("mobileDataStatus", "Disconnected");
+                    out.put("activeTransport", "None");
+                    out.put("internetConnectivity", "Unavailable");
+                    return out;
+                }
+                int type = activeInfo.getType();
+                boolean wifi = type == ConnectivityManager.TYPE_WIFI;
+                boolean cellular = type == ConnectivityManager.TYPE_MOBILE;
+                out.put("wifiStatus", wifi ? "Connected" : "Disconnected");
+                out.put("mobileDataStatus", cellular ? "Connected" : "Disconnected");
+                out.put("activeTransport", wifi ? "Wi-Fi" : (cellular ? "Cellular" : "Other"));
+                out.put("internetConnectivity", "Available");
+            }
+        } catch (SecurityException securityException) {
+            out.put("note", "ACCESS_NETWORK_STATE required: " + securityException.getMessage());
+        } catch (Exception exception) {
+            out.put("note", exception.getMessage());
+        }
+        return out;
     }
 
     private void attachTrafficStatsSnapshot(JSObject result) {
@@ -547,18 +835,46 @@ public class BabyDragonRfKpiPlugin extends Plugin {
 
             for (int index = 0; index < files.length(); index += 1) {
                 Object rawItem = files.get(index);
-                if (!(rawItem instanceof JSONObject)) continue;
+                JSONObject item = coerceToJsonObject(rawItem);
+                if (item == null) continue;
 
-                JSONObject item = (JSONObject) rawItem;
                 String fileName = safeFileName(item.optString("fileName", "babydragon_report_" + (index + 1) + ".csv"));
-                String content = item.optString("content", "");
                 String mimeType = item.optString("mimeType", "text/csv");
+                String encoding = item.optString("encoding", "utf8");
+                String contentBase64 = item.optString("contentBase64", "");
+                boolean binaryBase64 = "base64".equalsIgnoreCase(encoding)
+                    || (contentBase64 != null && !contentBase64.trim().isEmpty());
 
-                JSObject saved = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                    ? saveTextToPublicDownloads(relativeFolder, fileName, mimeType, content)
-                    : saveTextToLegacyDownloads(relativeFolder, fileName, mimeType, content);
+                JSObject saved;
+                if (binaryBase64) {
+                    String base64Payload = contentBase64 != null && !contentBase64.trim().isEmpty()
+                        ? contentBase64.trim()
+                        : item.optString("content", "");
+                    if (base64Payload == null || base64Payload.isEmpty()) {
+                        throw new Exception("Binary report missing contentBase64 for: " + fileName);
+                    }
+                    byte[] bytes = Base64.decode(base64Payload, Base64.DEFAULT);
+                    if (bytes == null || bytes.length == 0) {
+                        throw new Exception("Binary report decode produced empty bytes for: " + fileName);
+                    }
+                    saved = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? saveBytesToPublicDownloads(relativeFolder, fileName, mimeType, bytes)
+                        : saveBytesToLegacyDownloads(relativeFolder, fileName, mimeType, bytes);
+                } else {
+                    String content = item.optString("content", "");
+                    saved = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? saveTextToPublicDownloads(relativeFolder, fileName, mimeType, content)
+                        : saveTextToLegacyDownloads(relativeFolder, fileName, mimeType, content);
+                }
                 saved.put("reportLabel", item.optString("reportLabel", fileName));
                 savedFiles.put(saved);
+            }
+
+            if (savedFiles.length() == 0) {
+                result.put("status", "no_files_saved");
+                result.put("message", "No report files could be parsed/saved from the provided payload.");
+                call.resolve(result);
+                return;
             }
 
             result.put("ok", true);
@@ -569,11 +885,89 @@ public class BabyDragonRfKpiPlugin extends Plugin {
             result.put("basePath", "Downloads/" + relativeFolder);
             result.put("savedFiles", savedFiles);
         } catch (Exception exception) {
+            result.put("ok", false);
             result.put("status", "save_report_exception");
             result.put("message", exception.getMessage() != null ? exception.getMessage() : "Report save failed.");
         }
 
         call.resolve(result);
+    }
+
+    /**
+     * Dedicated binary save path for large .xlsx payloads (top-level contentBase64).
+     * Avoids nested JSArray object coercion issues on Capacitor Android.
+     */
+    @PluginMethod
+    public void saveBinaryReportFile(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("ok", false);
+        result.put("source", "native-binary-file-save-v1j2f1");
+        try {
+            String sessionId = safeFileName(call.getString("sessionId", "bd-rf-" + System.currentTimeMillis()));
+            String displayName = call.getString("displayName", sessionId);
+            String fileName = safeFileName(call.getString("fileName", "babydragon_report.xlsx"));
+            String mimeType = call.getString("mimeType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            String contentBase64 = call.getString("contentBase64");
+            if (contentBase64 == null || contentBase64.trim().isEmpty()) {
+                result.put("status", "missing_content");
+                result.put("message", "contentBase64 is required for binary report save.");
+                call.resolve(result);
+                return;
+            }
+
+            String relativeFolder = "BabyDragon/Reports/" + sessionId;
+            byte[] bytes = Base64.decode(contentBase64.trim(), Base64.DEFAULT);
+            if (bytes == null || bytes.length < 4) {
+                result.put("status", "decode_failed");
+                result.put("message", "Failed to decode contentBase64 for binary report.");
+                call.resolve(result);
+                return;
+            }
+            // Basic ZIP/XLSX magic check (PK).
+            if (bytes[0] != 'P' || bytes[1] != 'K') {
+                result.put("status", "invalid_xlsx");
+                result.put("message", "Decoded bytes are not a ZIP/XLSX workbook (missing PK header).");
+                call.resolve(result);
+                return;
+            }
+
+            JSObject saved = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                ? saveBytesToPublicDownloads(relativeFolder, fileName, mimeType, bytes)
+                : saveBytesToLegacyDownloads(relativeFolder, fileName, mimeType, bytes);
+            saved.put("reportLabel", call.getString("reportLabel", fileName));
+
+            JSArray savedFiles = new JSArray();
+            savedFiles.put(saved);
+            result.put("ok", true);
+            result.put("status", "saved");
+            result.put("message", "Binary report saved to public Downloads.");
+            result.put("sessionId", sessionId);
+            result.put("displayName", displayName);
+            result.put("basePath", "Downloads/" + relativeFolder);
+            result.put("savedFiles", savedFiles);
+        } catch (Exception exception) {
+            result.put("ok", false);
+            result.put("status", "save_binary_exception");
+            result.put("message", exception.getMessage() != null ? exception.getMessage() : "Binary report save failed.");
+        }
+        call.resolve(result);
+    }
+
+    @SuppressWarnings("unchecked")
+    private JSONObject coerceToJsonObject(Object rawItem) {
+        if (rawItem == null) return null;
+        if (rawItem instanceof JSONObject) return (JSONObject) rawItem;
+        if (rawItem instanceof JSObject) {
+            return ((JSObject) rawItem);
+        }
+        if (rawItem instanceof java.util.Map) {
+            return new JSONObject((java.util.Map<String, Object>) rawItem);
+        }
+        try {
+            return new JSONObject(String.valueOf(rawItem));
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     @PluginMethod
@@ -594,8 +988,8 @@ public class BabyDragonRfKpiPlugin extends Plugin {
             ArrayList<Uri> uris = new ArrayList<>();
             for (int index = 0; index < files.length(); index += 1) {
                 Object rawItem = files.get(index);
-                if (!(rawItem instanceof JSONObject)) continue;
-                JSONObject item = (JSONObject) rawItem;
+                JSONObject item = coerceToJsonObject(rawItem);
+                if (item == null) continue;
                 String uriText = item.optString("uri", "");
                 if (uriText != null && !uriText.trim().isEmpty()) {
                     uris.add(Uri.parse(uriText));
@@ -1117,10 +1511,15 @@ public class BabyDragonRfKpiPlugin extends Plugin {
 
 
     private JSObject saveTextToPublicDownloads(String relativeFolder, String fileName, String mimeType, String content) throws Exception {
+        byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+        return saveBytesToPublicDownloads(relativeFolder, fileName, mimeType, bytes);
+    }
+
+    private JSObject saveBytesToPublicDownloads(String relativeFolder, String fileName, String mimeType, byte[] bytes) throws Exception {
         ContentResolver resolver = getContext().getContentResolver();
         ContentValues values = new ContentValues();
         values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
-        values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType == null || mimeType.trim().isEmpty() ? "text/csv" : mimeType);
+        values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType == null || mimeType.trim().isEmpty() ? "application/octet-stream" : mimeType);
         values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + relativeFolder);
         values.put(MediaStore.MediaColumns.IS_PENDING, 1);
 
@@ -1136,8 +1535,8 @@ public class BabyDragonRfKpiPlugin extends Plugin {
             if (output == null) {
                 throw new Exception("Unable to open output stream for: " + fileName);
             }
-            byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
-            output.write(bytes);
+            byte[] payload = bytes == null ? new byte[0] : bytes;
+            output.write(payload);
             output.flush();
 
             values.clear();
@@ -1149,7 +1548,7 @@ public class BabyDragonRfKpiPlugin extends Plugin {
             saved.put("mimeType", mimeType);
             saved.put("path", "Downloads/" + relativeFolder + "/" + fileName);
             saved.put("uri", uri.toString());
-            saved.put("bytes", bytes.length);
+            saved.put("bytes", payload.length);
             return saved;
         } catch (Exception exception) {
             try { resolver.delete(uri, null, null); } catch (Exception ignored) {}
@@ -1162,6 +1561,11 @@ public class BabyDragonRfKpiPlugin extends Plugin {
     }
 
     private JSObject saveTextToLegacyDownloads(String relativeFolder, String fileName, String mimeType, String content) throws Exception {
+        byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+        return saveBytesToLegacyDownloads(relativeFolder, fileName, mimeType, bytes);
+    }
+
+    private JSObject saveBytesToLegacyDownloads(String relativeFolder, String fileName, String mimeType, byte[] bytes) throws Exception {
         File downloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         File reportDir = new File(downloadsRoot, relativeFolder);
         if (!reportDir.exists() && !reportDir.mkdirs()) {
@@ -1174,14 +1578,15 @@ public class BabyDragonRfKpiPlugin extends Plugin {
         }
 
         File outputFile = new File(reportDir, fileName);
-        OutputStreamWriter writer = null;
+        FileOutputStream output = null;
         try {
-            writer = new OutputStreamWriter(new FileOutputStream(outputFile, false), StandardCharsets.UTF_8);
-            writer.write(content == null ? "" : content);
-            writer.flush();
+            output = new FileOutputStream(outputFile, false);
+            byte[] payload = bytes == null ? new byte[0] : bytes;
+            output.write(payload);
+            output.flush();
         } finally {
-            if (writer != null) {
-                try { writer.close(); } catch (Exception ignored) {}
+            if (output != null) {
+                try { output.close(); } catch (Exception ignored) {}
             }
         }
 

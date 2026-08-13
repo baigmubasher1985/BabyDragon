@@ -3,6 +3,10 @@ import { getSupabaseConfigStatus, probeSupabaseLoginServer, supabase } from "../
 import "./mobile.css";
 import { CHECKLIST_ITEMS, MOBILE_GPS_INTERVAL_MS, getDefaultIssueInput } from "./mobileConstants";
 import {
+  subscribeMobilitySession,
+  isMobilitySessionActive,
+} from "./rf/session/mobilitySessionController";
+import {
   buildGoogleMapsUrl,
   enrichTask,
   findChecklistRowForItem,
@@ -104,6 +108,9 @@ export default function MobileApp() {
   const [gpsChecking, setGpsChecking] = useState(false);
   const [gpsTrackingTaskId, setGpsTrackingTaskId] = useState(null);
   const [lastGpsLocation, setLastGpsLocation] = useState(null);
+  const [liveDrivenTrail, setLiveDrivenTrail] = useState([]);
+  const [mobilityGpsStatus, setMobilityGpsStatus] = useState("unavailable");
+  const [mobilitySessionActive, setMobilitySessionActive] = useState(false);
   const [gpsStatusMessage, setGpsStatusMessage] = useState("GPS not checked yet.");
   const [tasks, setTasks] = useState([]);
   const [grids, setGrids] = useState([]);
@@ -294,6 +301,35 @@ export default function MobileApp() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, liveGpsTaskKey]);
+
+  // Observe persistent mobility GPS so RF samples and Routes trail stay live
+  // even when the FE is not looking at the RF KPI page.
+  useEffect(() => {
+    return subscribeMobilitySession((snapshot) => {
+      setMobilitySessionActive(Boolean(snapshot?.active));
+      setMobilityGpsStatus(snapshot?.gpsStatus || "unavailable");
+      setLiveDrivenTrail(Array.isArray(snapshot?.liveDrivenTrail) ? snapshot.liveDrivenTrail : []);
+      const gps = snapshot?.gps;
+      if (gps && Number.isFinite(Number(gps.lat ?? gps.latitude)) && Number.isFinite(Number(gps.lng ?? gps.longitude))) {
+        setLastGpsLocation({
+          latitude: Number(gps.lat ?? gps.latitude),
+          longitude: Number(gps.lng ?? gps.longitude),
+          accuracy: gps.accuracy_m ?? gps.accuracy ?? null,
+          speed: gps.speed_mps ?? gps.speed ?? null,
+          heading: gps.bearing_deg ?? gps.heading ?? null,
+          altitude: gps.altitude_m ?? gps.altitude ?? null,
+          provider: gps.provider || "mobility_watch",
+          location_fix_timestamp_ms: gps.location_fix_timestamp_ms ?? null,
+          location_fix_timestamp_iso: gps.location_fix_timestamp_iso ?? null,
+          gps_fix_age_ms: gps.gps_fix_age_ms ?? null,
+          gps_status: gps.gps_status || snapshot?.gpsStatus || null,
+          source: gps.source || "mobility_session",
+          cached_at: gps.location_fix_timestamp_iso || new Date().toISOString(),
+          from_cache: false,
+        });
+      }
+    });
+  }, []);
 
   function refreshOfflineQueueState() {
     setIsOnline(isBrowserOnline());
@@ -640,9 +676,9 @@ export default function MobileApp() {
 
     const cachedLocation = location.from_cache ? location : saveCachedMobileGps(user.id, location, source) || location;
 
-    if (!isBackgroundHeartbeat) {
-      setLastGpsLocation(cachedLocation);
-    }
+    // Always refresh shell GPS used by RF sampling. Heartbeat previously skipped
+    // this update, which froze mobility coordinates for the entire drive.
+    setLastGpsLocation(cachedLocation);
 
     const gpsPayload = {
       task_id: task.id,
@@ -1514,10 +1550,20 @@ export default function MobileApp() {
 		  onOpenNavigation={openNavigation}
 		  onSubmitRouteIssue={submitRouteIssueReport}
 		  onUpdateTaskStatus={updateTaskStatus}
+          liveDrivenTrail={liveDrivenTrail}
+          mobilityGpsStatus={mobilityGpsStatus}
+          mobilitySessionActive={mobilitySessionActive || isMobilitySessionActive()}
+          lastGpsLocation={lastGpsLocation}
 		/>
       )}
 
-      {activeTab === "rf" && (
+      {/* Keep RF KPI mounted across tab switches so recording / Native HTTP / RF poll
+          survive navigation. Pages observe session state; unmount must not stop collection. */}
+      <div
+        className="bd-mobile-rf-host"
+        style={{ display: activeTab === "rf" ? "block" : "none" }}
+        aria-hidden={activeTab !== "rf"}
+      >
         <MobileRfKpi
           user={user}
           activeFieldTasks={assignedTasks}
@@ -1526,8 +1572,10 @@ export default function MobileApp() {
           gpsStatusMessage={gpsStatusMessage}
           gpsChecking={gpsChecking}
           onRefreshGpsNow={refreshGpsNow}
+          mobilityGpsStatus={mobilityGpsStatus}
+          rfWorkspaceActive={activeTab === "rf"}
         />
-      )}
+      </div>
 
       {activeTab === "sync" && (
         <section className="bd-mobile-sync-view">

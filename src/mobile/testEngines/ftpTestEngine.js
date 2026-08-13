@@ -117,26 +117,88 @@ export const normalizeFtpResult = (result, payload) => {
     ? result.iterations
     : [];
 
-  const iterations = rawIterations.map((it) => ({
-    iteration: it.iteration,
-    direction: it.direction,
-    startedAtMs: it.started_at_ms,
-    endedAtMs: it.ended_at_ms,
+  const iterations = rawIterations.map((it) => {
+    const dlPresent = it.dl != null;
+    const ulPresent = it.ul != null;
+    const dlOk = it.dl?.ok === true || (it.dl?.ok !== false && Number(it.dl?.mbps) > 0);
+    const ulOk = it.ul?.ok === true || (it.ul?.ok !== false && Number(it.ul?.mbps) > 0);
+    const dlFailed = dlPresent && (it.dl.ok === false || (!(it.dl.mbps > 0) && (it.dl.measured_bytes || 0) <= 0 && String(it.dl.message || "")));
+    const ulFailed = ulPresent && (it.ul.ok === false || (!(it.ul.mbps > 0) && (it.ul.measured_bytes || 0) <= 0 && String(it.ul.message || "")));
+    const failedSide = ulFailed && !dlFailed
+      ? it.ul
+      : (dlFailed && !ulFailed ? it.dl : (dlFailed ? it.dl : (ulFailed ? it.ul : null)));
+    const errorMessage = String(
+      failedSide?.message
+      || "",
+    ).trim();
+    const nativeCode = String(
+      failedSide?.error_code
+      || failedSide?.errorCode
+      || "",
+    ).trim();
+    const lower = errorMessage.toLowerCase();
+    let errorCode = nativeCode;
+    let failureStage = "";
+    if (lower.includes("550") || lower.includes("access denied") || lower.includes("failed to open file")) {
+      errorCode = nativeCode && /550|ACCESS|DENIED|UPLOAD_REJECTED|DOWNLOAD/i.test(nativeCode)
+        ? (nativeCode.includes("550") ? nativeCode : "FTP_550_ACCESS_DENIED")
+        : "FTP_550_ACCESS_DENIED";
+      failureStage = ulFailed && !dlFailed ? "ftp_upload" : "ftp_download";
+    } else if (lower.includes("passive") && (lower.includes("timeout") || lower.includes("timed out"))) {
+      errorCode = nativeCode || "PASSIVE_DATA_CONNECTION";
+      failureStage = "ftp_download";
+    } else if (nativeCode) {
+      errorCode = nativeCode;
+      failureStage = ulFailed && !dlFailed ? "ftp_upload" : (dlFailed ? "ftp_download" : "during_transfer");
+    } else if (errorMessage) {
+      errorCode = "FTP_FAILED";
+      failureStage = ulFailed && !dlFailed ? "ftp_upload" : (dlFailed ? "ftp_download" : "during_transfer");
+    }
 
-    dlMbps: it.dl?.mbps ?? null,
-    ulMbps: it.ul?.mbps ?? null,
+    const anySuccess = (dlPresent && dlOk && !dlFailed) || (ulPresent && ulOk && !ulFailed);
+    const anyFailure = dlFailed || ulFailed;
+    let status = "complete";
+    if (anyFailure && anySuccess) status = "partial_failure";
+    else if (anyFailure) status = "failed";
+    else if (!anySuccess && (dlPresent || ulPresent)) status = "failed";
 
-    dlWarmupBytes: it.dl?.warmup_bytes ?? 0,
-    dlMeasuredBytes: it.dl?.measured_bytes ?? 0,
-    ulWarmupBytes: it.ul?.warmup_bytes ?? 0,
-    ulMeasuredBytes: it.ul?.measured_bytes ?? 0,
+    const dlErrorText = dlFailed ? String(it.dl?.message || "").trim() : "";
+    const ulErrorText = ulFailed ? String(it.ul?.message || "").trim() : "";
 
-    dlDurationMs: it.dl?.measured_duration_ms ?? null,
-    ulDurationMs: it.ul?.measured_duration_ms ?? null,
+    return {
+      iteration: it.iteration,
+      direction: it.direction,
+      startedAtMs: it.started_at_ms,
+      endedAtMs: it.ended_at_ms,
+      status,
+      overall_status: status,
 
-    dlStatus: it.dl?.message || "",
-    ulStatus: it.ul?.message || "",
-  }));
+      dlMbps: dlFailed ? null : (it.dl?.mbps ?? null),
+      ulMbps: ulFailed ? null : (it.ul?.mbps ?? null),
+
+      dlWarmupBytes: it.dl?.warmup_bytes ?? 0,
+      dlMeasuredBytes: it.dl?.measured_bytes ?? 0,
+      ulWarmupBytes: it.ul?.warmup_bytes ?? 0,
+      ulMeasuredBytes: it.ul?.measured_bytes ?? 0,
+
+      dlDurationMs: it.dl?.measured_duration_ms ?? null,
+      ulDurationMs: it.ul?.measured_duration_ms ?? null,
+
+      dlStatus: dlFailed ? "failed" : (dlPresent && dlOk ? "complete" : (dlPresent ? "failed" : "N/A")),
+      ulStatus: ulFailed ? "failed" : (ulPresent && ulOk ? "complete" : (ulPresent ? "failed" : "N/A")),
+      dl_status: dlFailed ? "failed" : (dlPresent && dlOk ? "complete" : (dlPresent ? "failed" : "N/A")),
+      ul_status: ulFailed ? "failed" : (ulPresent && ulOk ? "complete" : (ulPresent ? "failed" : "N/A")),
+      dlOk: it.dl?.ok,
+      ulOk: it.ul?.ok,
+      dl_error: dlErrorText,
+      ul_error: ulErrorText,
+      error: errorMessage || dlErrorText || ulErrorText,
+      errorMessage: errorMessage || dlErrorText || ulErrorText,
+      errorCode,
+      failureStage,
+      raw_server_reply: String(failedSide?.raw_reply || failedSide?.rawServerReply || errorMessage || dlErrorText || ulErrorText || "").trim(),
+    };
+  });
 
   return {
     ok: result?.ok === true,

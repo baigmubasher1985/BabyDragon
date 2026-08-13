@@ -1,6 +1,10 @@
-import { buildIperf3CommandFromSetup } from "../../testEngines/iperf3CommandParser";
+import { assertIperfCommandConsistency, buildIperf3CommandFromSetup } from "../../testEngines/iperf3CommandParser";
+import {
+  buildContinuousCanonicalOutcome,
+  countControlledIterations,
+} from "./controlledIterationContract";
 
-export const IPERF3_REPORT_VERSION = "1.1.3-iperf3";
+export const IPERF3_REPORT_VERSION = "1.1.4-iperf3-f9d";
 
 const DIRECTION_FILE_PARTS = {
   dl_ul: "DL_UL",
@@ -101,10 +105,12 @@ function jsonTimestamp(value) {
 export function mapIperfExportStatus(status) {
   const key = String(status || "").toLowerCase();
   if (key === "complete") return "saved";
+  if (key === "continuous_complete") return "continuous_complete";
+  if (key === "complete_with_failures") return "complete_with_failures";
   if (key === "stopped") return "cancelled";
   if (key === "partial") return "partial";
   if (key === "error") return "error";
-  if (key === "saved" || key === "cancelled") return key;
+  if (key === "saved" || key === "cancelled" || key === "failed") return key;
   return key || "idle";
 }
 
@@ -147,15 +153,19 @@ export function resolveIperfExportModes(command = "", setup = {}) {
 }
 
 function resolveCommandString(session = {}) {
-  if (session.appCommand) return String(session.appCommand).trim();
-  const setup = session.appSetupSnapshot || {};
-  const customer = String(setup.customerCommand || setup.rawCommand || "").trim();
-  if (customer) return customer;
   const rows = Array.isArray(session.appIterationResults) ? session.appIterationResults : [];
   for (let index = rows.length - 1; index >= 0; index -= 1) {
     const command = rows[index]?.command;
-    if (Array.isArray(command) && command.length) return command.join(" ");
+    if (Array.isArray(command) && command.length) {
+      return command.map((part) => String(part)).join(" ").trim();
+    }
     if (typeof command === "string" && command.trim()) return command.trim();
+  }
+  if (session.appCommand) return String(session.appCommand).trim();
+  const setup = session.appSetupSnapshot || {};
+  if (setup.commandMode === true) {
+    const customer = String(setup.customerCommand || setup.rawCommand || "").trim();
+    if (customer) return customer;
   }
   try {
     return buildIperf3CommandFromSetup(setup);
@@ -223,6 +233,79 @@ export function extractIperf3ReportModel(session = {}, user = {}, taskHelpers = 
   const setup = session.appSetupSnapshot || {};
   const command = resolveCommandString(session);
   const exportModes = resolveIperfExportModes(command, setup);
+  const directionKey = session.appDirection || setup.direction || null;
+  let processReverse = null;
+  let processBidir = null;
+  try {
+    const stdout = String(diagnostic?.stdout || session.appStdoutSummary || "");
+    const parsed = stdout.trim().startsWith("{") ? JSON.parse(stdout) : null;
+    const testStart = parsed?.start?.test_start || parsed?.start || null;
+    if (testStart && typeof testStart === "object") {
+      if (testStart.reverse != null) processReverse = Number(testStart.reverse) !== 0;
+      if (testStart.bidir != null) processBidir = Number(testStart.bidir) !== 0;
+    }
+  } catch {
+    // stdout may be truncated in saved summaries
+  }
+  const commandConsistency = assertIperfCommandConsistency({
+    command,
+    directionKey,
+    reverseMode: exportModes.reverseMode,
+    bidirMode: exportModes.bidirMode,
+    processReverse,
+    processBidir,
+  });
+  if (commandConsistency.hardFail) {
+    throw new Error(
+      `iPerf3 direction/command mismatch — report generation blocked. ${commandConsistency.message || commandConsistency.errors?.join("; ")}`,
+    );
+  }
+
+  const iterationRows = Array.isArray(session.appIterationResults) ? session.appIterationResults : [];
+  const summedDlBytes = iterationRows.reduce(
+    (sum, row) => sum + (Number(row.dlMeasuredBytes ?? row.dlBytes) || 0),
+    0,
+  );
+  const summedUlBytes = iterationRows.reduce(
+    (sum, row) => sum + (Number(row.ulMeasuredBytes ?? row.ulBytes) || 0),
+    0,
+  );
+  const summaryDlBytes = Number(session.appDownloadBytes);
+  const summaryUlBytes = Number(session.appUploadBytes);
+  const dlBytes = (Number.isFinite(summaryDlBytes) && summaryDlBytes > 0)
+    ? summaryDlBytes
+    : (summedDlBytes || (Number.isFinite(summaryDlBytes) ? summaryDlBytes : null));
+  const ulBytes = (Number.isFinite(summaryUlBytes) && summaryUlBytes > 0)
+    ? summaryUlBytes
+    : (summedUlBytes || (Number.isFinite(summaryUlBytes) ? summaryUlBytes : null));
+
+  const continuous = String(session.appRunMode || "").toLowerCase() === "continuous"
+    || String(session.appEndReason || "").toLowerCase() === "user_stopped_continuous"
+    || String(session.appTestStatus || "").toLowerCase() === "continuous_complete";
+  const continuousCounts = continuous
+    ? countControlledIterations({
+      requested: null,
+      iterationResults: iterationRows,
+      completedIterations: session.appCompletedIterations,
+      failedIterations: session.appFailedIterations,
+      status: session.appTestStatus,
+    })
+    : null;
+  const continuousOutcome = continuousCounts
+    ? buildContinuousCanonicalOutcome({
+      attempted: continuousCounts.attemptedIterations,
+      completed: continuousCounts.completedIterations,
+      failed: continuousCounts.failedIterations,
+      engineLabel: "iPerf3",
+      failureReason: session.appTestError || "",
+    })
+    : null;
+  const resultStatus = continuousOutcome
+    ? mapIperfExportStatus(continuousOutcome.status)
+    : mapIperfExportStatus(session.appExportStatus || session.appTestStatus);
+  const message = continuousOutcome
+    ? continuousOutcome.message
+    : (session.appTestMessage || session.appTestError || null);
 
   return {
     testType: "iPerf3 Native",
@@ -236,23 +319,24 @@ export function extractIperf3ReportModel(session = {}, user = {}, taskHelpers = 
     port: session.appPort ?? setup.port ?? null,
     protocol: session.appProtocol ?? setup.protocol ?? "TCP",
     direction: session.appDirectionLabel || directionLabel(session.appDirection),
-    directionKey: session.appDirection || setup.direction || null,
+    directionKey,
     streams: session.appStreams ?? setup.streams ?? null,
     durationSeconds: session.appDurationSeconds ?? setup.durationSeconds ?? null,
     intervalSeconds: session.appIntervalSeconds ?? setup.intervalSeconds ?? null,
-    iterationsRequested: session.appIterationsRequested ?? null,
-    iterationsCompleted: session.appCompletedIterations ?? null,
+    iterationsRequested: session.appRunMode === "continuous" ? null : (session.appIterationsRequested ?? null),
+    iterationsCompleted: continuousCounts?.completedIterations ?? session.appCompletedIterations ?? null,
     waitSeconds: session.appWaitSeconds ?? setup.waitSeconds ?? null,
     warmupSeconds: session.appWarmupSeconds ?? setup.warmupSeconds ?? null,
     command,
     reverseMode: exportModes.reverseMode,
     bidirMode: exportModes.bidirMode,
+    commandConsistency,
     avgDlMbps: session.appDlMbps,
     avgUlMbps: session.appUlMbps,
-    dlBytes: session.appDownloadBytes ?? null,
-    ulBytes: session.appUploadBytes ?? null,
-    resultStatus: mapIperfExportStatus(session.appExportStatus || session.appTestStatus),
-    message: session.appTestMessage || session.appTestError || null,
+    dlBytes,
+    ulBytes,
+    resultStatus,
+    message,
     stderrSummary: session.appStderrSummary || trimDiagnosticText(diagnostic?.stderr),
     stdoutSummary: session.appStdoutSummary || trimDiagnosticText(diagnostic?.stdout),
     exitCode: diagnostic?.exitCode ?? null,

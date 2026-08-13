@@ -111,6 +111,19 @@ export default function NativeHttpTestCard({ setup = DEFAULT_NATIVE_HTTP_SETUP, 
         </select>
       </label>
 
+      <label>
+        <span>Mode</span>
+        <select
+          disabled={disabled}
+          value={current.runMode === "continuous" ? "continuous" : "fixed"}
+          onChange={(event) => update({ runMode: event.target.value })}
+        >
+          <option value="fixed">Fixed Iterations</option>
+          <option value="continuous">Continuous Until Stopped</option>
+        </select>
+        <em>{current.runMode === "continuous" ? "Runs until Stop / Save" : "Stops after requested count"}</em>
+      </label>
+
       <div className="bd-rf-test-card-grid">
         <label>
           <span>Duration</span>
@@ -151,14 +164,14 @@ export default function NativeHttpTestCard({ setup = DEFAULT_NATIVE_HTTP_SETUP, 
         <label>
           <span>Iterations</span>
           <input
-            disabled={disabled}
+            disabled={disabled || current.runMode === "continuous"}
             inputMode="numeric"
-            value={numericValue(current.iterations)}
+            value={current.runMode === "continuous" ? "" : numericValue(current.iterations)}
             onFocus={selectOnFocus}
-            onChange={(event) => update({ iterations: cleanNumber(event.target.value, 2) })}
-            placeholder="1"
+            onChange={(event) => update({ iterations: cleanNumber(event.target.value, 6) })}
+            placeholder={current.runMode === "continuous" ? "until stopped" : "1"}
           />
-          <em>count</em>
+          <em>{current.runMode === "continuous" ? "n/a" : "1–999999"}</em>
         </label>
         <label>
           <span>Wait</span>

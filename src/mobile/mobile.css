@@ -3582,7 +3582,8 @@
 }
 
 .bd-rf-band.fair {
-  background: rgba(250, 204, 21, 0.22);
+  /* HEX #eab308 — shared rfKpiDisplayConfig BAND_COLORS.fair */
+  background: rgba(234, 179, 8, 0.22);
   color: #fef9c3;
 }
 
@@ -5624,6 +5625,35 @@
   word-break: break-word;
 }
 
+.bd-rf-export-package-primary {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bd-rf-export-package-name {
+  display: block;
+  color: #e0f2fe !important;
+  font-size: 10.5px !important;
+  font-weight: 900 !important;
+  line-height: 1.35 !important;
+  margin-top: 4px !important;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bd-rf-export-path-detail {
+  display: block;
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+}
+
 .bd-rf-export-package-card span,
 .bd-rf-export-package-card small {
   display: block;
@@ -5632,6 +5662,8 @@
   line-height: 1.35;
   margin-top: 3px;
   word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .bd-rf-export-package-card > button {
@@ -5699,6 +5731,46 @@
 .bd-rf-ookla-secondary-btn,
 .bd-rf-ookla-danger-btn { width: 100%; border-radius: 10px; padding: 8px 10px; border: 1px solid rgba(148, 163, 184, 0.35); background: rgba(15, 23, 42, 0.72); color: #f8fafc; font: inherit; }
 .bd-rf-ookla-danger-btn { border-color: rgba(248, 113, 113, 0.45); color: #fecaca; }
+.bd-rf-export-excel-plot {
+  margin-top: 10px;
+  width: 100%;
+}
+.bd-rf-excel-plot-hint {
+  margin: 6px 0 0;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+.bd-rf-excel-sticky-status {
+  margin: 6px 8px 0;
+  font-size: 0.68rem;
+}
+.bd-rf-excel-saved-status {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.bd-rf-sticky-action-bar {
+  max-width: calc(100vw - 20px);
+  box-sizing: border-box;
+  min-width: 0;
+}
+.bd-rf-sticky-action-bar .bd-rf-excel-saved-status,
+.bd-rf-sticky-action-bar .bd-rf-inline-note {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.bd-rf-traffic-stats-note {
+  margin: 6px 0 8px;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
 .bd-rf-fcc-evidence-note { margin: 0 0 10px; color: #cbd5e1; font-size: 0.72rem; line-height: 1.35; }
 .bd-rf-fcc-url-import {
   display: grid;
@@ -5962,6 +6034,119 @@
   font-weight: 950;
 }
 
+.bd-rf-ftp-simplified .bd-rf-ftp-primary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.bd-rf-ftp-simplified .bd-rf-ftp-direction select {
+  font-size: 1rem;
+  font-weight: 850;
+}
+
+.bd-rf-ftp-capability {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.bd-rf-ftp-capability strong {
+  font-size: 0.78rem;
+  font-weight: 950;
+  color: #f8fafc;
+}
+
+.bd-rf-ftp-capability span {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  font-weight: 750;
+  color: #cbd5e1;
+}
+
+.bd-rf-ftp-capability-ok {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(6, 78, 59, 0.28);
+}
+
+.bd-rf-ftp-capability-warn {
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(120, 53, 15, 0.28);
+}
+
+.bd-rf-ftp-capability-info {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(12, 74, 110, 0.28);
+}
+
+.bd-rf-ftp-file-row {
+  display: grid;
+  gap: 2px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  background: rgba(8, 47, 73, 0.35);
+}
+
+.bd-rf-ftp-file-row span {
+  color: #7dd3fc;
+  font-size: 0.66rem;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bd-rf-ftp-file-row strong {
+  color: #f8fafc;
+  font-size: 0.92rem;
+  font-weight: 950;
+}
+
+.bd-rf-ftp-file-row em {
+  color: #94a3b8;
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.bd-rf-ftp-advanced {
+  margin-top: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  padding: 8px 10px 10px;
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.bd-rf-ftp-advanced > summary {
+  cursor: pointer;
+  list-style: none;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 4px 2px;
+}
+
+.bd-rf-ftp-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.bd-rf-ftp-advanced[open] > summary {
+  margin-bottom: 8px;
+  color: #7dd3fc;
+}
+
+@media (max-width: 720px) {
+  .bd-rf-ftp-simplified .bd-rf-ftp-primary {
+    grid-template-columns: 1fr;
+  }
+}
+
 
 /* ------------------------------------------------------------
    BabyDragon v1.1.0 Step 1G3: iPerf setup + placeholder monitor
@@ -6163,6 +6348,10 @@
 
 .bd-rf-iperf3-command-mode em.bd-rf-iperf3-parse-error {
   color: #fecaca;
+}
+
+.bd-rf-iperf3-command-mode em.bd-rf-iperf3-parse-success {
+  color: #bbf7d0;
 }
 
 /* ------------------------------------------------------------
@@ -6766,6 +6955,43 @@
 .bd-rf-context-strip-compact {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+.bd-rf-live-stream-status {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.bd-rf-live-stream-status span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.bd-rf-live-stream-status b {
+  color: #94a3b8;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.bd-rf-live-stream-status strong {
+  color: #f8fafc;
+  font-size: 0.82rem;
+  font-weight: 850;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.bd-rf-dev-mobility-diag .bd-mobile-secondary {
+  margin-top: 8px;
 }
 
 .bd-rf-helper-line {
@@ -7482,6 +7708,40 @@
   min-height: 38px;
   font-size: 10.5px;
   padding: 6px 8px;
+}
+
+.bd-rf-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  background: rgba(8, 16, 28, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.bd-rf-confirm-card {
+  width: min(420px, 100%);
+  max-height: 85vh;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+.bd-rf-confirm-card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.bd-rf-confirm-card p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.bd-rf-confirm-card .bd-rf-action-grid {
+  display: grid;
+  gap: 8px;
 }
 
 .bd-rf-ux-simplified .bd-rf-data-setup-card:not(.open) .bd-rf-selected-workflow {

@@ -521,7 +521,7 @@ public class BabyDragonFtpPlugin extends Plugin {
             cfg.warmupSec = clamp(getInt(call, "warmupSec", 3), 0, 300);
             cfg.intervalSec = clamp(getInt(call, "intervalSec", 1), 1, 60);
             cfg.waitSec = clamp(getInt(call, "waitSec", 5), 0, 600);
-            cfg.iterations = clamp(getInt(call, "iterations", 1), 1, 100);
+            cfg.iterations = clamp(getInt(call, "iterations", 1), 1, 999999);
             cfg.dlPath = getString(call, "dlPath", "/readme.txt");
             cfg.ulFolder = getString(call, "ulFolder", "/");
             cfg.passive = getBool(call, "passive", true);

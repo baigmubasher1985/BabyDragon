@@ -1,5 +1,11 @@
 export const DATA_TEST_TYPES = [
   {
+    key: "rf_only",
+    label: "RF Only",
+    status: "active",
+    description: "Record RF/GPS only for drive, walk, or cluster work. No data engine is started.",
+  },
+  {
     key: "native_http",
     label: "Native Android HTTP",
     status: "active",
@@ -53,6 +59,7 @@ export const NATIVE_HTTP_PRESETS = [
       testType: "native_http",
       presetKey: "cloudflare_demo",
       direction: "dl_ul",
+      runMode: "fixed",
       durationSeconds: 10,
       warmupSeconds: 3,
       intervalSeconds: 1,
@@ -82,6 +89,7 @@ export const FTP_PRESETS = [
       testType: "ftp",
       presetKey: "rebex_dl_demo",
       direction: "dl",
+      runMode: "fixed",
       durationSeconds: 10,
       warmupSeconds: 3,
       intervalSeconds: 1,
@@ -107,6 +115,7 @@ export const FTP_PRESETS = [
       testType: "ftp",
       presetKey: "dlptest_ul_demo",
       direction: "ul",
+      runMode: "fixed",
       durationSeconds: 10,
       warmupSeconds: 3,
       intervalSeconds: 1,
@@ -121,7 +130,7 @@ export const FTP_PRESETS = [
       downloadRemotePath: "/",
       uploadRemotePath: "/",
       uploadFileSizeMb: 10,
-      notes: "DLPTest is UL smoke only. It stores files temporarily and the password may rotate. Verify before field use.",
+      notes: "DLPTest public preset — supported for UL smoke/upload only. DL throughput and DL+UL are not guaranteed / unsupported on this public profile. Use a controlled FTP server with a known downloadable file for final DL validation.",
     },
   },
   {
@@ -144,6 +153,7 @@ export const IPERF_PRESETS = [
       testType: "iperf",
       presetKey: "iperf_fr_ping_online",
       direction: "dl_ul",
+      runMode: "fixed",
       server: "ping.online.net",
       port: "5201",
       protocol: "TCP",

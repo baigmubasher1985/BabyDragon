@@ -57,18 +57,14 @@ function InputBox({ label, unit, value, onChange, disabled, maxDigits = 4, class
 }
 
 function binaryBadge(status) {
-  if (!status) return "Check";
-  if (status.ok) return "Ready";
-  if (status.status === "plugin_error") return "Plugin";
-  if (status.status === "binary_missing" || status.status === "binary_missing_or_copy_failed") return "Missing";
-  return "Setup";
+  if (status?.ok) return "Ready";
+  return "Missing";
 }
 
 function binarySummaryShort(status) {
-  if (!status) return "Check binary";
-  if (status.status === "plugin_error") return "Plugin not registered";
-  if (status.ok) return "Binary Ready";
-  return "Needs Prepare";
+  if (status?.ok) return "Binary ready for this device ABI.";
+  if (status?.status === "plugin_error") return "Plugin missing. Rebuild Android with BabyDragonIperfPlugin.";
+  return "Binary missing for this device ABI.";
 }
 
 export default function Iperf3TestPage({
@@ -83,6 +79,7 @@ export default function Iperf3TestPage({
   const [binaryBusy, setBinaryBusy] = useState(false);
   const [commandDraft, setCommandDraft] = useState(setup?.customerCommand || setup?.rawCommand || "");
   const [commandParseMessage, setCommandParseMessage] = useState("");
+  const [commandParseTone, setCommandParseTone] = useState("");
 
   const current = useMemo(
     () => sanitizeIperfSetup(setup || {}, DEFAULT_IPERF_SETUP),
@@ -110,19 +107,16 @@ export default function Iperf3TestPage({
     const parsed = parseIperf3Command(trimmed, current);
 
     if (!parsed.ok) {
-      const message = parsed.warnings.filter(Boolean).join(" ")
-        || "Could not parse command. Form values were kept unchanged.";
+      const message = parsed.errors.filter(Boolean).join(" ")
+        || parsed.warnings.filter(Boolean).join(" ")
+        || "Could not parse command. Form settings were kept.";
+      setCommandParseTone("error");
       setCommandParseMessage(message);
-      update({
-        commandMode: true,
-        presetKey: "custom",
-        customerCommand: trimmed,
-        rawCommand: trimmed,
-      }, false);
       return parsed;
     }
 
     const values = sanitizeIperfSetup(parsed.values || {}, current);
+    setCommandParseTone("success");
     setCommandParseMessage(parsed.warnings.filter(Boolean).join(" ") || "Command parsed successfully.");
     update({
       ...values,
@@ -138,12 +132,14 @@ export default function Iperf3TestPage({
     const command = buildIperf3CommandFromSetup(current);
     setCommandDraft(command);
     update({ commandMode: true, customerCommand: command, rawCommand: command }, false);
-    setCommandParseMessage("Command generated from current form settings.");
+    setCommandParseTone("success");
+    setCommandParseMessage("Command built from form settings.");
   }
 
   function clearCommandMode() {
     setCommandDraft("");
     setCommandParseMessage("");
+    setCommandParseTone("");
     update({ commandMode: false, customerCommand: "", rawCommand: "" }, false);
   }
 
@@ -209,6 +205,7 @@ export default function Iperf3TestPage({
     onChange?.({ ...DEFAULT_IPERF_SETUP, ...preset.values });
     setCommandDraft(preset.values?.customerCommand || preset.values?.rawCommand || "");
     setCommandParseMessage("");
+    setCommandParseTone("");
   }
 
   function resetDemo() {
@@ -216,6 +213,7 @@ export default function Iperf3TestPage({
     onChange?.({ ...DEFAULT_IPERF_SETUP, ...demo });
     setCommandDraft("");
     setCommandParseMessage("");
+    setCommandParseTone("");
   }
 
   return (
@@ -261,28 +259,59 @@ export default function Iperf3TestPage({
           </label>
           <label className="bd-rf-iperf3-tile">
             <span>Direction</span>
-            <select disabled={disabled} value={current.direction || DEFAULT_IPERF_SETUP.direction} onChange={(event) => update({ direction: event.target.value })}>
+            <select
+              disabled={disabled}
+              value={current.direction || DEFAULT_IPERF_SETUP.direction}
+              onChange={(event) => {
+                const direction = event.target.value;
+                const protocol = String(current.protocol || "TCP").toUpperCase();
+                // Direction is authoritative for -R / --bidir so UL cannot inherit a stale reverse checkbox.
+                if (direction === "dl") {
+                  update({ direction, reverseMode: true, bidirMode: false });
+                } else if (direction === "ul") {
+                  update({ direction, reverseMode: false, bidirMode: false });
+                } else {
+                  update({
+                    direction,
+                    reverseMode: false,
+                    bidirMode: protocol === "TCP",
+                  });
+                }
+              }}
+            >
               {DATA_DIRECTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
             </select>
           </label>
           <InputBox className="bd-rf-iperf3-tile" label="Streams" unit="parallel" value={current.streams} onChange={(streams) => update({ streams })} disabled={disabled} maxDigits={2} />
           <InputBox className="bd-rf-iperf3-tile" label="Duration" unit="sec" value={current.durationSeconds} onChange={(durationSeconds) => update({ durationSeconds })} disabled={disabled} maxDigits={3} />
           <InputBox className="bd-rf-iperf3-tile" label="Interval" unit="sec" value={current.intervalSeconds} onChange={(intervalSeconds) => update({ intervalSeconds })} disabled={disabled} maxDigits={2} />
-          <InputBox className="bd-rf-iperf3-tile" label="Iterations" unit="count" value={current.iterations} onChange={(iterations) => update({ iterations })} disabled={disabled} maxDigits={2} />
+          <InputBox className="bd-rf-iperf3-tile" label="Iterations" unit={current.runMode === "continuous" ? "n/a" : "1–999999"} value={current.runMode === "continuous" ? "" : current.iterations} onChange={(iterations) => update({ iterations })} disabled={disabled || current.runMode === "continuous"} maxDigits={6} />
           <InputBox className="bd-rf-iperf3-tile" label="Wait" unit="sec" value={current.waitSeconds} onChange={(waitSeconds) => update({ waitSeconds })} disabled={disabled} maxDigits={3} />
         </div>
+        <label className="bd-rf-iperf3-tile bd-rf-iperf3-tile-wide">
+          <span>Mode</span>
+          <select
+            disabled={disabled}
+            value={current.runMode === "continuous" ? "continuous" : "fixed"}
+            onChange={(event) => update({ runMode: event.target.value })}
+          >
+            <option value="fixed">Fixed Iterations</option>
+            <option value="continuous">Continuous Until Stopped</option>
+          </select>
+        </label>
       </div>
 
       <details className="bd-rf-iperf3-collapsible bd-rf-iperf3-command-panel">
         <summary>Paste customer / carrier command</summary>
         <div className="bd-rf-iperf3-command-mode">
-          <span className="bd-rf-iperf3-command-hint">Compact flags like <code>-t15</code>, <code>-P4</code>, and <code>-p5201</code> are accepted.</span>
+          <span className="bd-rf-iperf3-command-hint">Supports spaced, compact, and mixed flags such as <code>-p5201</code>, <code>-t15</code>, and <code>-p5201-t15</code>.</span>
           <textarea
             disabled={disabled}
             value={commandDraft}
             onChange={(event) => {
               setCommandDraft(event.target.value);
-              update({ commandMode: true, customerCommand: event.target.value, rawCommand: event.target.value }, false);
+              setCommandParseMessage("");
+              setCommandParseTone("");
             }}
             placeholder="iperf3 -c 10.10.10.20 -p 5201 -t 15 -P 4 -R -J"
             rows={2}
@@ -293,7 +322,7 @@ export default function Iperf3TestPage({
             <button type="button" disabled={disabled} onClick={clearCommandMode}>Clear</button>
           </div>
           {commandParseMessage ? (
-            <em className={commandParseMessage.toLowerCase().includes("unchanged") ? "bd-rf-iperf3-parse-error" : undefined}>
+            <em className={commandParseTone === "error" ? "bd-rf-iperf3-parse-error" : "bd-rf-iperf3-parse-success"}>
               {commandParseMessage}
             </em>
           ) : null}
@@ -327,7 +356,8 @@ export default function Iperf3TestPage({
             <span>Use reverse mode <b>-R</b> for downlink.</span>
           </label>
           <div className="bd-rf-iperf-server-note bd-rf-iperf3-simple-note">
-            <span><b>Server side:</b> <code>iperf3 -s -p {displayPort}</code></span>
+            <span><b>Customer server:</b> <code>iperf3 -s -p {displayPort}</code></span>
+            <span><b>Binary path:</b> <code>android/app/src/main/assets/iperf3/&lt;abi&gt;/iperf3</code></span>
           </div>
           {current.notes ? <p className="bd-rf-mini-note">{current.notes}</p> : null}
         </div>

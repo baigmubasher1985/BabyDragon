@@ -1,3 +1,5 @@
+import { classifyIperfFailure } from "../rf/reports/dataTestOutcome.js";
+
 function safeNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -37,17 +39,31 @@ function applyBidirResultPolicy(mapped = {}, setup = {}) {
 
   const hint = extractUsefulIperfLine(mapped.stderr) || extractUsefulIperfLine(mapped.stdout);
   const hintSuffix = hint ? ` ${hint}` : "";
+  const concrete = String(mapped.message || hint || "").trim();
+  const isServerBusy = /server is busy|busy running a test/i.test(concrete);
+  const isUnsupported = /unsupported|not supported|invalid.*bidir|unknown option.*bidir/i.test(concrete);
 
   if (!mapped.ok) {
-    mapped.message = mapped.message && /bidirectional requires/i.test(mapped.message)
-      ? mapped.message
-      : `Bidirectional requires --bidir and server support.${hintSuffix}`.trim();
+    if (isServerBusy) {
+      mapped.message = concrete.match(/the server is busy[^"]*/i)?.[0]
+        || "the server is busy running a test. try again later";
+      return mapped;
+    }
+    if (isUnsupported || /bidirectional requires/i.test(concrete)) {
+      mapped.message = concrete;
+      return mapped;
+    }
+    // Keep concrete process/server errors; only add bidir guidance when no useful error exists.
+    mapped.message = concrete
+      || `Bidirectional requires --bidir and server support.${hintSuffix}`.trim();
     return mapped;
   }
 
   if (mapped.dlMbps === null && mapped.ulMbps === null) {
     mapped.ok = false;
-    mapped.message = `Bidirectional requires --bidir and server support. No DL/UL totals were returned.${hintSuffix}`.trim();
+    mapped.message = isServerBusy
+      ? (concrete.match(/the server is busy[^"]*/i)?.[0] || "the server is busy running a test. try again later")
+      : `Bidirectional requires --bidir and server support. No DL/UL totals were returned.${hintSuffix}`.trim();
     return mapped;
   }
 
@@ -383,8 +399,21 @@ export function mapIperf3NativeResult(nativeResult = {}, setup = {}) {
 
   applyBidirResultPolicy(mapped, setup);
 
-  if (!mapped.ok && !mapped.message) {
-    mapped.message = mapped.stderr?.trim() || `iPerf3 exited with code ${mapped.exitCode ?? "unknown"}.`;
+  // Prefer real iPerf JSON/text errors over generic exit-code fallbacks.
+  // Public servers often put the failure only in stdout JSON: { "error": "..." }.
+  if (!mapped.ok) {
+    const jsonError = typeof rawJson.error === "string" ? rawJson.error.trim() : "";
+    const stdoutHint = extractUsefulIperfLine(mapped.stdout);
+    const stderrHint = extractUsefulIperfLine(mapped.stderr);
+    const realError = jsonError || stderrHint || stdoutHint;
+    const isGenericExit = !mapped.message
+      || /^iPerf3 exited with code\b/i.test(mapped.message)
+      || mapped.message === "iPerf3 iteration failed.";
+    if (realError && (isGenericExit || !mapped.message)) {
+      mapped.message = realError;
+    } else if (!mapped.message) {
+      mapped.message = `iPerf3 exited with code ${mapped.exitCode ?? "unknown"}.`;
+    }
   }
 
   return mapped;
@@ -397,13 +426,16 @@ export function buildIperfIterationResult(iteration, mapped = {}, setup = {}, na
   const durationSeconds = safeNumber(setup.durationSeconds) ?? (
     elapsedMs !== null ? Math.round(elapsedMs / 1000) : null
   );
+  const ok = mapped.ok === true && !mapped.bidirIncomplete;
+  const status = mapped.ok
+    ? (mapped.bidirIncomplete ? "partial" : "complete")
+    : "error";
+  const classif = ok ? null : classifyIperfFailure(mapped.message || mapped.errorCode || "");
 
   return {
     iteration,
     kind: "iteration",
-    status: mapped.ok
-      ? (mapped.bidirIncomplete ? "partial" : "complete")
-      : mapped.jsonParseFailed ? "error" : "error",
+    status,
     direction: setup.direction || "ul",
     dlMbps: mapped.dlMbps,
     ulMbps: mapped.ulMbps,
@@ -424,6 +456,12 @@ export function buildIperfIterationResult(iteration, mapped = {}, setup = {}, na
     stderr: mapped.stderr,
     command: mapped.command,
     message: mapped.message,
+    // Canonical customer-facing failure fields (concise; raw stdout/stderr retained above).
+    error: ok ? "" : (classif?.conciseReason || mapped.message || ""),
+    errorMessage: ok ? "" : (classif?.conciseReason || mapped.message || ""),
+    errorCode: ok ? "" : (classif?.errorCode || mapped.errorCode || ""),
+    failureStage: ok ? null : (classif?.failureStage || null),
+    conciseReason: ok ? null : (classif?.conciseReason || null),
     jsonParseFailed: mapped.jsonParseFailed === true,
     nativeStatus: nativeResult?.status || mapped.status,
   };
