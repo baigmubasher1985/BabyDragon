@@ -675,20 +675,38 @@ public class BabyDragonRfKpiPlugin extends Plugin {
                 boolean validated = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
                 out.put("wifiStatus", wifi ? "Connected" : "Disconnected");
                 out.put("mobileDataStatus", cellular ? "Connected" : "Disconnected");
+                // Canonical boolean fields for report JSON / Excel (F10B).
+                // mobileDataActive = TRANSPORT_CELLULAR on the default/active network (not SIM presence).
+                out.put("wifiConnected", wifi);
+                out.put("cellularConnected", cellular);
+                out.put("mobileDataActive", cellular);
+                out.put("internetCapable", hasInternet);
+                out.put("internetValidated", validated);
                 if (wifi) out.put("activeTransport", "Wi-Fi");
                 else if (cellular) out.put("activeTransport", "Cellular");
                 else if (other) out.put("activeTransport", "Other");
                 else out.put("activeTransport", "None");
+                out.put("defaultTransport", out.getString("activeTransport"));
                 if (!hasInternet) out.put("internetConnectivity", "Unavailable");
                 else if (validated) out.put("internetConnectivity", "Available");
                 else out.put("internetConnectivity", "Unvalidated");
+                out.put("timestamp", System.currentTimeMillis());
+                out.put("source", "android_connectivity_manager");
             } else {
                 NetworkInfo activeInfo = cm.getActiveNetworkInfo();
                 if (activeInfo == null || !activeInfo.isConnected()) {
                     out.put("wifiStatus", "Disconnected");
                     out.put("mobileDataStatus", "Disconnected");
+                    out.put("wifiConnected", false);
+                    out.put("cellularConnected", false);
+                    out.put("mobileDataActive", false);
                     out.put("activeTransport", "None");
+                    out.put("defaultTransport", "None");
+                    out.put("internetCapable", false);
+                    out.put("internetValidated", false);
                     out.put("internetConnectivity", "Unavailable");
+                    out.put("timestamp", System.currentTimeMillis());
+                    out.put("source", "android_connectivity_manager");
                     return out;
                 }
                 int type = activeInfo.getType();
@@ -696,8 +714,16 @@ public class BabyDragonRfKpiPlugin extends Plugin {
                 boolean cellular = type == ConnectivityManager.TYPE_MOBILE;
                 out.put("wifiStatus", wifi ? "Connected" : "Disconnected");
                 out.put("mobileDataStatus", cellular ? "Connected" : "Disconnected");
+                out.put("wifiConnected", wifi);
+                out.put("cellularConnected", cellular);
+                out.put("mobileDataActive", cellular);
                 out.put("activeTransport", wifi ? "Wi-Fi" : (cellular ? "Cellular" : "Other"));
+                out.put("defaultTransport", out.getString("activeTransport"));
+                out.put("internetCapable", true);
+                out.put("internetValidated", true);
                 out.put("internetConnectivity", "Available");
+                out.put("timestamp", System.currentTimeMillis());
+                out.put("source", "android_connectivity_manager");
             }
         } catch (SecurityException securityException) {
             out.put("note", "ACCESS_NETWORK_STATE required: " + securityException.getMessage());
@@ -951,6 +977,256 @@ public class BabyDragonRfKpiPlugin extends Plugin {
             result.put("message", exception.getMessage() != null ? exception.getMessage() : "Binary report save failed.");
         }
         call.resolve(result);
+    }
+
+    /**
+     * Lightweight connectivity snapshot for Start/Stop session metadata (F10B).
+     * Does not alter RF/TrafficStats measurement math.
+     */
+    @PluginMethod
+    public void getConnectivitySnapshot(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("ok", true);
+        result.put("source", "native-connectivity-snapshot-f10b");
+        result.put("connectivity", buildConnectivitySnapshot(getContext()));
+        call.resolve(result);
+    }
+
+    /**
+     * Discover BabyDragon report packages already saved under Downloads/BabyDragon/Reports.
+     * Groups MediaStore (or legacy filesystem) files by package folder id.
+     */
+    @PluginMethod
+    public void listReportPackages(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("ok", false);
+        result.put("source", "native-list-report-packages-f10b");
+        try {
+            JSArray packages = new JSArray();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                packages = listReportPackagesFromMediaStore();
+            } else {
+                packages = listReportPackagesFromLegacyFilesystem();
+            }
+            result.put("ok", true);
+            result.put("status", "listed");
+            result.put("packageCount", packages.length());
+            result.put("packages", packages);
+            result.put("message", "Listed BabyDragon report packages.");
+        } catch (Exception exception) {
+            result.put("status", "list_packages_exception");
+            result.put("message", exception.getMessage() != null ? exception.getMessage() : "List report packages failed.");
+            result.put("packages", new JSArray());
+            result.put("packageCount", 0);
+        }
+        call.resolve(result);
+    }
+
+    /**
+     * Read a previously saved report text file by content URI (or absolute file path on legacy).
+     */
+    @PluginMethod
+    public void readReportTextFile(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("ok", false);
+        result.put("source", "native-read-report-text-f10b");
+        try {
+            String uriText = call.getString("uri", "");
+            String pathText = call.getString("path", "");
+            if ((uriText == null || uriText.trim().isEmpty()) && (pathText == null || pathText.trim().isEmpty())) {
+                result.put("status", "missing_uri");
+                result.put("message", "uri or path is required.");
+                call.resolve(result);
+                return;
+            }
+            byte[] bytes;
+            String fileName = call.getString("fileName", "report.txt");
+            if (uriText != null && !uriText.trim().isEmpty()) {
+                Uri uri = Uri.parse(uriText.trim());
+                ContentResolver resolver = getContext().getContentResolver();
+                InputStream input = resolver.openInputStream(uri);
+                if (input == null) {
+                    throw new Exception("Unable to open report URI.");
+                }
+                try {
+                    bytes = readAllBytes(input);
+                } finally {
+                    try { input.close(); } catch (Exception ignored) {}
+                }
+            } else {
+                File file = new File(pathText.trim());
+                if (!file.exists() || !file.isFile()) {
+                    throw new Exception("Report file not found.");
+                }
+                fileName = file.getName();
+                java.io.FileInputStream fis = new java.io.FileInputStream(file);
+                try {
+                    bytes = readAllBytes(fis);
+                } finally {
+                    try { fis.close(); } catch (Exception ignored) {}
+                }
+            }
+            String content = new String(bytes == null ? new byte[0] : bytes, StandardCharsets.UTF_8);
+            // Strip UTF-8 BOM if present.
+            if (content.startsWith("\uFEFF")) content = content.substring(1);
+            result.put("ok", true);
+            result.put("status", "read");
+            result.put("fileName", fileName);
+            result.put("bytes", bytes == null ? 0 : bytes.length);
+            result.put("content", content);
+            result.put("message", "Report text file read.");
+        } catch (Exception exception) {
+            result.put("status", "read_report_exception");
+            result.put("message", exception.getMessage() != null ? exception.getMessage() : "Read report file failed.");
+        }
+        call.resolve(result);
+    }
+
+    private byte[] readAllBytes(InputStream input) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int read;
+        while ((read = input.read(chunk)) != -1) {
+            buffer.write(chunk, 0, read);
+        }
+        return buffer.toByteArray();
+    }
+
+    private JSArray listReportPackagesFromMediaStore() throws Exception {
+        ContentResolver resolver = getContext().getContentResolver();
+        String[] projection = new String[] {
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.MIME_TYPE,
+            MediaStore.MediaColumns.SIZE,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.RELATIVE_PATH
+        };
+        // RELATIVE_PATH examples: "Download/BabyDragon/Reports/<packageId>/"
+        String selection = MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
+        String[] args = new String[] { "%BabyDragon/Reports/%" };
+        java.util.LinkedHashMap<String, JSObject> byPackage = new java.util.LinkedHashMap<>();
+        java.util.LinkedHashMap<String, JSArray> filesByPackage = new java.util.LinkedHashMap<>();
+        try (android.database.Cursor cursor = resolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            projection,
+            selection,
+            args,
+            MediaStore.MediaColumns.DATE_MODIFIED + " DESC"
+        )) {
+            if (cursor == null) return new JSArray();
+            int idIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID);
+            int nameIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME);
+            int mimeIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE);
+            int sizeIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE);
+            int modIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED);
+            int pathIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH);
+            while (cursor.moveToNext()) {
+                String relativePath = cursor.getString(pathIdx);
+                if (relativePath == null) continue;
+                String packageId = extractReportPackageId(relativePath);
+                if (packageId == null || packageId.isEmpty()) continue;
+                JSObject pkg = byPackage.get(packageId);
+                JSArray fileList = filesByPackage.get(packageId);
+                if (pkg == null) {
+                    pkg = new JSObject();
+                    pkg.put("packageId", packageId);
+                    pkg.put("relativePath", "Downloads/BabyDragon/Reports/" + packageId);
+                    pkg.put("modifiedAtMs", 0L);
+                    fileList = new JSArray();
+                    byPackage.put(packageId, pkg);
+                    filesByPackage.put(packageId, fileList);
+                }
+                long modifiedSec = cursor.isNull(modIdx) ? 0L : cursor.getLong(modIdx);
+                long modifiedMs = modifiedSec > 0 ? modifiedSec * 1000L : 0L;
+                long currentMod = 0L;
+                try { currentMod = pkg.getLong("modifiedAtMs"); } catch (Exception ignored) {}
+                if (modifiedMs > currentMod) {
+                    pkg.put("modifiedAtMs", modifiedMs);
+                }
+                long id = cursor.getLong(idIdx);
+                Uri uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, String.valueOf(id));
+                JSObject file = new JSObject();
+                String fileName = cursor.getString(nameIdx);
+                file.put("fileName", fileName);
+                file.put("mimeType", cursor.getString(mimeIdx));
+                file.put("bytes", cursor.isNull(sizeIdx) ? 0L : cursor.getLong(sizeIdx));
+                file.put("uri", uri.toString());
+                file.put("modifiedAtMs", modifiedMs);
+                fileList.put(file);
+                // Quick role flags for JS discovery without reading content.
+                String lower = fileName == null ? "" : fileName.toLowerCase();
+                if (lower.endsWith("report.json")) pkg.put("hasReportJson", true);
+                if (lower.contains("rf_gps_trace") && lower.endsWith(".csv")) pkg.put("hasRfGpsTrace", true);
+                if (lower.contains("ookla_evidence") && lower.endsWith(".csv")) pkg.put("hasOoklaEvidence", true);
+                if (lower.contains("fcc_evidence") && lower.endsWith(".json")) pkg.put("hasFccEvidenceJson", true);
+                if (lower.contains("fcc_import_metadata") && lower.endsWith(".json")) pkg.put("hasFccImportMetadata", true);
+                if (lower.contains("thp_iterations") && lower.endsWith(".csv")) pkg.put("hasThpIterations", true);
+                if (lower.contains("iperf3") && lower.endsWith(".json")) pkg.put("hasIperfJson", true);
+            }
+        }
+        JSArray packages = new JSArray();
+        for (java.util.Map.Entry<String, JSObject> entry : byPackage.entrySet()) {
+            JSObject pkg = entry.getValue();
+            pkg.put("files", filesByPackage.get(entry.getKey()));
+            packages.put(pkg);
+        }
+        return packages;
+    }
+
+    private JSArray listReportPackagesFromLegacyFilesystem() {
+        JSArray packages = new JSArray();
+        File downloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        File reportsRoot = new File(downloadsRoot, "BabyDragon/Reports");
+        if (!reportsRoot.exists() || !reportsRoot.isDirectory()) return packages;
+        File[] dirs = reportsRoot.listFiles();
+        if (dirs == null) return packages;
+        java.util.Arrays.sort(dirs, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        for (File dir : dirs) {
+            if (dir == null || !dir.isDirectory()) continue;
+            JSObject pkg = new JSObject();
+            pkg.put("packageId", dir.getName());
+            pkg.put("relativePath", "Downloads/BabyDragon/Reports/" + dir.getName());
+            pkg.put("modifiedAtMs", dir.lastModified());
+            JSArray files = new JSArray();
+            File[] children = dir.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    if (child == null || !child.isFile()) continue;
+                    JSObject file = new JSObject();
+                    String fileName = child.getName();
+                    file.put("fileName", fileName);
+                    file.put("path", child.getAbsolutePath());
+                    file.put("bytes", child.length());
+                    file.put("modifiedAtMs", child.lastModified());
+                    files.put(file);
+                    String lower = fileName.toLowerCase();
+                    if (lower.endsWith("report.json")) pkg.put("hasReportJson", true);
+                    if (lower.contains("rf_gps_trace") && lower.endsWith(".csv")) pkg.put("hasRfGpsTrace", true);
+                    if (lower.contains("ookla_evidence") && lower.endsWith(".csv")) pkg.put("hasOoklaEvidence", true);
+                    if (lower.contains("fcc_evidence") && lower.endsWith(".json")) pkg.put("hasFccEvidenceJson", true);
+                    if (lower.contains("fcc_import_metadata") && lower.endsWith(".json")) pkg.put("hasFccImportMetadata", true);
+                    if (lower.contains("thp_iterations") && lower.endsWith(".csv")) pkg.put("hasThpIterations", true);
+                    if (lower.contains("iperf3") && lower.endsWith(".json")) pkg.put("hasIperfJson", true);
+                }
+            }
+            pkg.put("files", files);
+            packages.put(pkg);
+        }
+        return packages;
+    }
+
+    private String extractReportPackageId(String relativePath) {
+        if (relativePath == null) return null;
+        String normalized = relativePath.replace('\\', '/');
+        String marker = "BabyDragon/Reports/";
+        int idx = normalized.indexOf(marker);
+        if (idx < 0) return null;
+        String rest = normalized.substring(idx + marker.length());
+        while (rest.startsWith("/")) rest = rest.substring(1);
+        if (rest.isEmpty()) return null;
+        int slash = rest.indexOf('/');
+        return slash >= 0 ? rest.substring(0, slash) : rest.replaceAll("/+$", "");
     }
 
     @SuppressWarnings("unchecked")

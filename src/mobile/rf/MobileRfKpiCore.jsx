@@ -60,8 +60,18 @@ import {
   isExcelPlotExportableSession,
 } from "./reports/excelPlotReportExport";
 import { buildExcelPlotReportFile } from "./reports/excelPlotWorkbook";
+import { buildUnifiedFieldReportFile } from "./reports/unifiedFieldReportExport";
+import {
+  listSavedReportPackages,
+  hydrateDiscoveredPackage,
+  buildUnifiedDraftFromSession,
+  filterDraftsForActiveContext,
+  summarizeDraftForUi,
+} from "./reports/savedReportPackageDiscovery";
+import { normalizeConnectivitySnapshot, toJsonConnectivityBlock } from "./reports/connectivitySnapshot";
 import { classifyFtpFailure, classifyIperfFailure, classifyNativeHttpFailure } from "./reports/dataTestOutcome";
 import { hasMeaningfulTrafficStatsMovement } from "./reports/trafficStatsMeasurement";
+import { resolveScenarioKey, scenarioDisplayName } from "./reports/scenarioReportModel";
 import {
   buildContinuousCanonicalOutcome,
   controlledEngineDisplayName,
@@ -2500,6 +2510,7 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
         pause_summary_rule: recordingSummary.pauseSummaryRule || PAUSE_SUMMARY_RULE,
       },
     },
+    connectivity: toJsonConnectivityBlock(session, samples),
     rf_summary: buildJsonRfSummary(session),
     data_test: buildJsonDataTest(session),
     voice: {
@@ -4115,12 +4126,25 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
     },
     firstGps: first?.gps || null,
     lastGps: [...list].reverse().find((sample) => sample.gps)?.gps || null,
-    connectivitySnapshot: (() => {
+    connectivityStart: session?.connectivityStart
+      ? normalizeConnectivitySnapshot(session.connectivityStart)
+      : null,
+    connectivityEnd: (() => {
+      if (session?.connectivityEnd) return normalizeConnectivitySnapshot(session.connectivityEnd);
       for (let i = list.length - 1; i >= 0; i -= 1) {
         const c = list[i]?.snapshot?.connectivity;
-        if (c && typeof c === "object") return c;
+        if (c && typeof c === "object") return normalizeConnectivitySnapshot(c);
       }
       return null;
+    })(),
+    connectivitySnapshot: (() => {
+      if (session?.connectivityEnd) return normalizeConnectivitySnapshot(session.connectivityEnd);
+      if (session?.connectivitySnapshot) return normalizeConnectivitySnapshot(session.connectivitySnapshot);
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const c = list[i]?.snapshot?.connectivity;
+        if (c && typeof c === "object") return normalizeConnectivitySnapshot(c);
+      }
+      return session?.connectivityStart ? normalizeConnectivitySnapshot(session.connectivityStart) : null;
     })(),
     traceSamples: list.slice(-240),
     exportSamples: list,
@@ -4613,6 +4637,16 @@ export default function MobileRfKpi({
   const [exportBasePath, setExportBasePath] = useState("");
   const [excelPlotExportStatus, setExcelPlotExportStatus] = useState("");
   const [excelPlotExportBusy, setExcelPlotExportBusy] = useState(false);
+  const [unifiedScenarioDrafts, setUnifiedScenarioDrafts] = useState([]);
+  const [unifiedExportBusy, setUnifiedExportBusy] = useState(false);
+  const [unifiedExportStatus, setUnifiedExportStatus] = useState("");
+  const [unifiedReviewOpen, setUnifiedReviewOpen] = useState(false);
+  const [unifiedPanelOpen, setUnifiedPanelOpen] = useState(false);
+  const [unifiedManageOpen, setUnifiedManageOpen] = useState(false);
+  const [unifiedDiscoveryBusy, setUnifiedDiscoveryBusy] = useState(false);
+  const [unifiedDiscoveryWarnings, setUnifiedDiscoveryWarnings] = useState([]);
+  const [unifiedCompatibleCount, setUnifiedCompatibleCount] = useState(0);
+  const [unifiedPackageCount, setUnifiedPackageCount] = useState(0);
   const [iterationRunMode, setIterationRunMode] = useState("fixed"); // fixed | continuous
   const [controlledTestDialog, setControlledTestDialog] = useState(null);
   const [dataSetupOpen, setDataSetupOpen] = useState(true);
@@ -6917,6 +6951,53 @@ export default function MobileRfKpi({
       appFccImport: importMeta,
       message: importMeta.message,
     });
+
+    // F10B: once inside-window tests are matched, promote them to saved FCC evidence automatically.
+    // Avoids Parsed/Selected > 0 with Saved = 0 after a successful import.
+    if (parsed.ok) {
+      const selected = (importMeta.rows || []).filter(
+        (row) => row?.include && row?.insideBabyDragonTimeWindow === "yes" && !row?.addedToIterations,
+      );
+      if (selected.length) {
+        const saveResult = await saveFccEvidenceIterations(selected, importMeta);
+        const addedIds = new Set((saveResult?.addedTestIds || []).map((id) => String(id)));
+        const rows = (importMeta.rows || []).map((row) => (
+          addedIds.has(String(row.fccTestId))
+            ? {
+              ...row,
+              include: false,
+              manualInclude: false,
+              addedToIterations: true,
+              status: "added",
+            }
+            : row
+        ));
+        const savedCount = rows.filter((row) => row.addedToIterations).length;
+        const nextImport = {
+          ...importMeta,
+          rows,
+          status: savedCount ? "evidence_saved" : importMeta.status,
+          parseStatus: importMeta.parseStatus,
+          stats: {
+            ...(importMeta.stats || {}),
+            // Preserve auto-selected count for audit (do not drop to 0 after include flags clear).
+            selectedCount: selected.length,
+            autoSelectedCount: selected.length,
+            savedCount,
+          },
+          message: savedCount
+            ? `FCC Results Imported · ${selected.length} test(s) matched this BabyDragon session · ${savedCount} test(s) saved.`
+            : importMeta.message,
+        };
+        setFccSetup((prev) => ({ ...prev, appFccImport: nextImport, timestampBufferSeconds: bufferSeconds }));
+        patchDataTest({
+          testType: "fcc_app",
+          appFccImport: nextImport,
+          message: nextImport.message,
+        });
+        return nextImport;
+      }
+    }
     return importMeta;
   }
 
@@ -7207,6 +7288,16 @@ export default function MobileRfKpi({
     const engineId = mode === "data"
       ? engineIdFromUiTestType(currentDataTestConfig.testType)
       : ENGINE_IDS.RF_ONLY;
+    let connectivityStart = null;
+    try {
+      if (typeof BabyDragonRfKpi.getConnectivitySnapshot === "function") {
+        const snap = await BabyDragonRfKpi.getConnectivitySnapshot();
+        connectivityStart = normalizeConnectivitySnapshot(snap?.connectivity, now);
+      }
+    } catch {
+      connectivityStart = null;
+    }
+
     const session = {
       id: `bd-rf-${now}`,
       mode,
@@ -7217,6 +7308,8 @@ export default function MobileRfKpi({
       pauseSegments: [],
       appEngineId: engineId,
       engineId,
+      connectivityStart,
+      connectivitySnapshot: connectivityStart,
     };
 
     selectedModeRef.current = mode;
@@ -7233,6 +7326,10 @@ export default function MobileRfKpi({
     setExportBasePath("");
     setExcelPlotExportStatus("");
     setExcelPlotExportBusy(false);
+    // UX: collapse Unified Report panel when any new test starts; keep discovery counts.
+    setUnifiedPanelOpen(false);
+    setUnifiedManageOpen(false);
+    setUnifiedExportStatus("");
     const idleWithEngine = {
       ...makeDataTestIdle(),
       engineId,
@@ -7460,6 +7557,15 @@ export default function MobileRfKpi({
 
   async function stopWorkflowConfirmed({ markIncomplete = false, saveAsRfOnly = false } = {}) {
     const endedAt = Date.now();
+    let connectivityEnd = null;
+    try {
+      if (typeof BabyDragonRfKpi.getConnectivitySnapshot === "function") {
+        const snap = await BabyDragonRfKpi.getConnectivitySnapshot();
+        connectivityEnd = normalizeConnectivitySnapshot(snap?.connectivity, endedAt);
+      }
+    } catch {
+      connectivityEnd = null;
+    }
     const baseSession = currentSessionRef.current || {
       id: `bd-rf-${endedAt}`,
       mode: selectedModeRef.current,
@@ -7474,6 +7580,9 @@ export default function MobileRfKpi({
       reportLogName: String(baseSession.reportLogName || reportLogNameRef.current || "").trim(),
       pauseSegments: closeOpenPauseSegment(baseSession, endedAt),
       endedAt,
+      connectivityStart: baseSession.connectivityStart || null,
+      connectivityEnd,
+      connectivitySnapshot: connectivityEnd || baseSession.connectivitySnapshot || null,
       ...(saveAsRfOnly ? {
         appEngineId: ENGINE_IDS.RF_ONLY,
         engineId: ENGINE_IDS.RF_ONLY,
@@ -7629,6 +7738,197 @@ export default function MobileRfKpi({
     }
   }
 
+  function addSavedSessionToUnifiedReport() {
+    if (!savedSession) {
+      setUnifiedExportStatus("Tap Stop / Save first, then add the scenario to the Unified Field Report.");
+      return;
+    }
+    const entry = buildUnifiedDraftFromSession(savedSession, {
+      origin: "current_saved_session",
+      selected: true,
+    });
+    setUnifiedScenarioDrafts((current) => {
+      const withoutDup = current.filter((item) => item.draftId !== entry.draftId);
+      const next = [...withoutDup, entry];
+      setUnifiedExportStatus(`Added ${entry.label} to Unified Field Report (${next.filter((item) => item.selected).length} selected).`);
+      return next;
+    });
+  }
+
+  async function refreshUnifiedPackageCount() {
+    try {
+      if (typeof BabyDragonRfKpi.listReportPackages !== "function") {
+        setUnifiedCompatibleCount(0);
+        setUnifiedPackageCount(0);
+        return;
+      }
+      const listed = await listSavedReportPackages(BabyDragonRfKpi);
+      if (!listed.ok) {
+        setUnifiedCompatibleCount(0);
+        setUnifiedPackageCount(0);
+        return;
+      }
+      const packages = listed.packages || [];
+      setUnifiedPackageCount(packages.length);
+      const gridToken = String(activeGrid || "").trim();
+      const taskToken = String(activeTaskLabel || "").replace(/[^a-zA-Z0-9]+/g, "_");
+      const compatible = packages.filter((pkg) => {
+        const id = String(pkg.packageId || "");
+        if (gridToken && id.includes(gridToken)) return true;
+        if (taskToken && taskToken.length >= 8 && id.includes(taskToken.slice(0, 24))) return true;
+        // If no active task/grid context, treat all BabyDragon report packages as eligible for review.
+        return !gridToken && !taskToken;
+      });
+      setUnifiedCompatibleCount(compatible.length || packages.length);
+    } catch {
+      setUnifiedCompatibleCount(0);
+      setUnifiedPackageCount(0);
+    }
+  }
+
+  async function reviewSavedPackagesForUnifiedReport() {
+    if (unifiedDiscoveryBusy) return;
+    setUnifiedDiscoveryBusy(true);
+    setUnifiedExportStatus("Scanning saved BabyDragon report packages...");
+    setUnifiedDiscoveryWarnings([]);
+    try {
+      const listed = await listSavedReportPackages(BabyDragonRfKpi);
+      if (!listed.ok) {
+        setUnifiedExportStatus(listed.message || "Unable to list saved report packages.");
+        return;
+      }
+      setUnifiedPackageCount((listed.packages || []).length);
+      const hydrated = [];
+      for (const pkg of listed.packages || []) {
+        try {
+          const result = await hydrateDiscoveredPackage(BabyDragonRfKpi, pkg);
+          if (!result?.ok || !result.session) continue;
+          hydrated.push(buildUnifiedDraftFromSession(result.session, {
+            packageId: result.packageId,
+            sourcePackage: result.sourcePackage,
+            origin: "saved_package",
+            selected: false,
+            draftId: `${result.packageId || result.session.id}-${result.modifiedAtMs || result.session.endedAt || Date.now()}`,
+          }));
+        } catch (error) {
+          console.warn("[BabyDragon] Unified package hydrate skipped:", pkg?.packageId, error);
+        }
+      }
+      const { matched, others, warnings } = filterDraftsForActiveContext(hydrated, {
+        taskLabel: activeTaskLabel,
+        grid: activeGrid,
+      });
+      const preferred = matched.length ? matched : hydrated;
+      const drafts = preferred.map((item) => ({ ...item, selected: true }));
+      // Keep any in-memory current-session drafts that are not already present by package id.
+      setUnifiedScenarioDrafts((current) => {
+        const packageIds = new Set(drafts.map((d) => d.packageId || d.draftId));
+        const retained = current.filter((item) => item.origin === "current_saved_session" && !packageIds.has(item.packageId || item.draftId));
+        return [...retained, ...drafts];
+      });
+      setUnifiedDiscoveryWarnings([
+        ...warnings,
+        ...(others.length && matched.length
+          ? [`${others.length} package(s) from other task/grid available but not auto-selected.`]
+          : []),
+      ]);
+      setUnifiedCompatibleCount(drafts.length || hydrated.length);
+      setUnifiedReviewOpen(true);
+      setUnifiedExportStatus(
+        drafts.length
+          ? `Found ${drafts.length} saved scenario package(s) for ${activeTaskLabel || "current task"} / ${activeGrid || "current grid"}. Native packages: ${(listed.packages || []).length}.`
+          : "No compatible saved scenario packages found for the current task/grid.",
+      );
+    } catch (error) {
+      setUnifiedExportStatus(error?.message || "Saved package discovery failed.");
+    } finally {
+      setUnifiedDiscoveryBusy(false);
+    }
+  }
+
+  function toggleUnifiedDraft(draftId) {
+    setUnifiedScenarioDrafts((current) => current.map((item) => (
+      item.draftId === draftId ? { ...item, selected: !item.selected } : item
+    )));
+  }
+
+  function clearUnifiedDrafts() {
+    setUnifiedScenarioDrafts([]);
+    setUnifiedExportStatus("Unified Field Report selection cleared.");
+  }
+
+  async function exportUnifiedFieldReport() {
+    if (unifiedExportBusy) return;
+    const selected = unifiedScenarioDrafts.filter((item) => item.selected && item.session);
+    if (!selected.length) {
+      setUnifiedExportStatus("Select one or more added scenarios, then generate the Unified Field Report.");
+      return;
+    }
+    setUnifiedExportBusy(true);
+    setUnifiedExportStatus(`Building Unified Field Report from ${selected.length} scenario(s)...`);
+    try {
+      const built = await buildUnifiedFieldReportFile({
+        scenarios: selected.map((item) => ({
+          session: item.session,
+          sourcePackage: item.sourcePackage,
+        })),
+        fieldContext: {
+          task: selected[0].taskLabel || activeTaskLabel,
+          grid: selected[0].grid || activeGrid,
+          project: "BabyDragon",
+          reportName: selected[0].taskLabel || activeTaskLabel,
+        },
+        deviceContext: {
+          device: "Android",
+          feEmail: user?.email || null,
+        },
+        user,
+        skipMaps: false,
+      });
+      const generatedAt = Date.now();
+      const sessionId = cleanFilePart(built.baseName, `bd-unified-${generatedAt}`);
+      let result = null;
+      if (typeof BabyDragonRfKpi.saveBinaryReportFile === "function") {
+        result = await BabyDragonRfKpi.saveBinaryReportFile({
+          sessionId,
+          displayName: sessionId,
+          fileName: built.fileName,
+          mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          reportLabel: "Unified Field Test Report",
+          contentBase64: built.base64,
+        });
+      }
+      if (!result?.ok) {
+        result = await saveReportPackage({
+          sessionId,
+          displayName: sessionId,
+          generatedAt,
+          files: [{
+            fileName: built.fileName,
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            reportLabel: "Unified Field Test Report",
+            contentBase64: built.base64,
+          }],
+        });
+      }
+      if (!result?.ok) {
+        throw new Error(result?.message || "Unified Field Report save failed.");
+      }
+      // Compact success: filename only, then collapse panel back to sticky button.
+      setUnifiedExportStatus(built.fileName);
+      setUnifiedPanelOpen(false);
+      setUnifiedManageOpen(false);
+      setExportFiles((current) => [
+        { fileName: built.fileName, path: result?.folderPath || result?.path || null },
+        ...current,
+      ].slice(0, 12));
+    } catch (error) {
+      setUnifiedExportStatus(error?.message || "Unified Field Report export failed.");
+    } finally {
+      setUnifiedExportBusy(false);
+    }
+  }
+
   async function exportExcelPlotReport() {
     if (excelPlotExportBusy) return;
     if (dataTestRef.current?.status === "running") {
@@ -7767,6 +8067,17 @@ export default function MobileRfKpi({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // F10B: keep Unified Field Report package count fresh so the card is visible without opening Export panel.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (cancelled) return;
+      await refreshUnifiedPackageCount();
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTaskLabel, activeGrid, testState, exportStatus, excelPlotExportStatus]);
 
   useEffect(() => {
     collectorBusyRef.current = collectorBusy;
@@ -8545,6 +8856,159 @@ export default function MobileRfKpi({
           ))}
         </div>
       </details>
+
+      <section className="bd-mobile-card bd-rf-unified-page-section" aria-label="Unified Field Report">
+        {!unifiedPanelOpen ? (
+          <div className="bd-rf-unified-page-collapsed">
+            <button
+              type="button"
+              className="bd-rf-unified-page-toggle"
+              disabled={unifiedExportBusy}
+              onClick={() => {
+                setUnifiedPanelOpen(true);
+                setUnifiedManageOpen(false);
+              }}
+            >
+              <span className="bd-rf-unified-page-toggle-copy">
+                <b>Unified Field Report</b>
+                <small>Combine saved test scenarios</small>
+              </span>
+              <span className="bd-rf-unified-page-open-group">
+                {(unifiedCompatibleCount || unifiedPackageCount) ? (
+                  <em className="bd-rf-unified-page-count">
+                    {unifiedCompatibleCount || unifiedPackageCount}
+                  </em>
+                ) : null}
+                <strong className="bd-rf-unified-page-open">Open</strong>
+              </span>
+            </button>
+            {unifiedExportStatus && !unifiedExportBusy ? (
+              <p className="bd-rf-unified-compact-status" title={unifiedExportStatus}>
+                {unifiedExportStatus}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <div className="bd-rf-unified-report-box bd-rf-unified-page-panel">
+            <div className="bd-rf-unified-panel-head">
+              <p>
+                <b>Unified Field Report</b>
+                <span>
+                  Task / Grid: {activeTaskLabel || "—"} · {activeGrid || "—"}
+                </span>
+              </p>
+              <button
+                type="button"
+                className="bd-rf-unified-close-btn"
+                aria-label="Close Unified Report panel"
+                onClick={() => {
+                  setUnifiedPanelOpen(false);
+                  setUnifiedManageOpen(false);
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <p className="bd-rf-inline-note">
+              Saved scenarios found: {unifiedCompatibleCount || unifiedPackageCount || (unifiedReviewOpen ? unifiedScenarioDrafts.length : "…")}
+              {unifiedPackageCount > 0 ? ` · Packages on device: ${unifiedPackageCount}` : ""}
+            </p>
+            <div className="bd-rf-unified-actions">
+              <button
+                type="button"
+                className="bd-mobile-primary"
+                disabled={unifiedDiscoveryBusy || unifiedExportBusy}
+                onClick={reviewSavedPackagesForUnifiedReport}
+              >
+                {unifiedDiscoveryBusy ? "Scanning packages..." : "Review & Generate"}
+              </button>
+            </div>
+            {unifiedReviewOpen && unifiedScenarioDrafts.length ? (
+              <div className="bd-rf-unified-review">
+                {/* Generate stays above the scrollable list so sticky Start Data cannot bury it. */}
+                <button
+                  type="button"
+                  className="bd-mobile-primary bd-rf-unified-generate-btn"
+                  disabled={unifiedExportBusy || !unifiedScenarioDrafts.some((item) => item.selected)}
+                  onClick={exportUnifiedFieldReport}
+                >
+                  {unifiedExportBusy ? "Building Unified..." : "Generate Unified Report"}
+                </button>
+                <div className="bd-rf-unified-scenario-list" role="list" aria-label="Saved scenarios">
+                  {unifiedScenarioDrafts.map((item, scenarioIndex) => {
+                    const ui = summarizeDraftForUi(item);
+                    const sourceLabel = item.sourcePackage || item.packageId || item.draftId || "";
+                    const scenarioId = `S${String(scenarioIndex + 1).padStart(2, "0")}`;
+                    const metaLine = [item.mode, item.direction, ui.detail].filter(Boolean).join(" · ");
+                    return (
+                      <label key={item.draftId} className="bd-rf-unified-scenario-row" role="listitem">
+                        <input
+                          type="checkbox"
+                          checked={item.selected !== false}
+                          onChange={() => toggleUnifiedDraft(item.draftId)}
+                        />
+                        <span className="bd-rf-unified-scenario-copy">
+                          <b className="bd-rf-unified-scenario-title">
+                            {scenarioId} · {item.label}
+                          </b>
+                          {metaLine ? (
+                            <small className="bd-rf-unified-scenario-meta">{metaLine}</small>
+                          ) : null}
+                          {ui.timeLabel ? (
+                            <small className="bd-rf-unified-scenario-time">{ui.timeLabel}</small>
+                          ) : null}
+                          {sourceLabel ? (
+                            <details className="bd-rf-unified-source-details">
+                              <summary>Package identity</summary>
+                              <code className="bd-rf-unified-source" title={sourceLabel}>
+                                {sourceLabel}
+                              </code>
+                            </details>
+                          ) : null}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {unifiedDiscoveryWarnings.length ? (
+                  <p className="bd-rf-inline-note">{unifiedDiscoveryWarnings.join(" ")}</p>
+                ) : null}
+              </div>
+            ) : null}
+            <details
+              className="bd-rf-unified-manage"
+              open={unifiedManageOpen}
+              onToggle={(event) => setUnifiedManageOpen(event.currentTarget.open)}
+            >
+              <summary>Manage / Advanced</summary>
+              <div className="bd-rf-unified-actions bd-rf-unified-manage-actions">
+                <button
+                  type="button"
+                  className="bd-mobile-secondary"
+                  disabled={!savedSession || testState !== "saved"}
+                  onClick={addSavedSessionToUnifiedReport}
+                >
+                  Add Current Saved Scenario
+                </button>
+                <button
+                  type="button"
+                  className="bd-mobile-secondary"
+                  disabled={!unifiedScenarioDrafts.length}
+                  onClick={() => {
+                    clearUnifiedDrafts();
+                    setUnifiedReviewOpen(false);
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            </details>
+            {unifiedExportStatus ? (
+              <p className="bd-rf-inline-note bd-rf-unified-status-line">{unifiedExportStatus}</p>
+            ) : null}
+          </div>
+        )}
+      </section>
 
       {openPanel === "export" && (
         <section className="bd-mobile-card bd-rf-hidden-panel">

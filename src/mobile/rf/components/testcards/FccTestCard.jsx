@@ -274,7 +274,7 @@ export default function FccTestCard({
       <header>
         <div>
           <b>FCC App External Evidence</b>
-          <span>Import FCC ZIP, truncate to BabyDragon Start→Stop session window, then save selected inside-window tests.</span>
+          <span>Import FCC ZIP, truncate to BabyDragon Start→Stop session window, and auto-save matched inside-window tests as external evidence.</span>
         </div>
         <em>Import</em>
       </header>
@@ -450,7 +450,11 @@ export default function FccTestCard({
             disabled={busy || !(stats.selectedCount > 0)}
             onClick={handleAddSelected}
           >
-            {isAddingRows ? "Adding…" : "Add Selected FCC Rows as Evidence Iterations"}
+            {isAddingRows
+              ? "Saving…"
+              : (stats.savedCount > 0
+                ? `Re-save Selected (${stats.selectedCount || 0})`
+                : `Save ${stats.selectedCount || 0} FCC Results`)}
           </button>
         </div>
       ) : importState ? (

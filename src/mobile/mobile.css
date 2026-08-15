@@ -5735,6 +5735,323 @@
   margin-top: 10px;
   width: 100%;
 }
+.bd-rf-unified-report-box {
+  margin: 0.75rem 0 0.5rem;
+  padding: 0.75rem 0.8rem;
+  border: 1px solid rgba(11, 61, 92, 0.18);
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(232, 241, 248, 0.65), rgba(255, 255, 255, 0.9));
+}
+.bd-rf-unified-report-box > p {
+  margin: 0 0 0.45rem;
+}
+.bd-rf-unified-report-box > p span {
+  display: block;
+  margin-top: 0.15rem;
+  color: #475569;
+  font-size: 0.85rem;
+}
+.bd-rf-unified-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.35rem 0 0.5rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.bd-rf-unified-actions > button {
+  max-width: 100%;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+}
+.bd-rf-unified-scenario-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.bd-rf-unified-scenario-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  align-self: stretch;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+.bd-rf-unified-scenario-row > input[type="checkbox"] {
+  /* Override global App.css input{width:100%} which crushed the text column to 0. */
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  max-width: 18px;
+  min-height: 18px;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+.bd-rf-unified-scenario-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  display: grid;
+  gap: 0.12rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.bd-rf-unified-scenario-title {
+  display: block;
+  font-size: 0.88rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.bd-rf-unified-scenario-meta,
+.bd-rf-unified-scenario-time,
+.bd-rf-unified-scenario-row small {
+  display: block;
+  color: #64748b;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.bd-rf-unified-scenario-time {
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+.bd-rf-unified-review {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(11, 61, 92, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+/* Legacy sticky Unified styles retired — kept inert so old class names cannot trap scroll. */
+.bd-rf-unified-report-sticky {
+  display: none !important;
+}
+.bd-rf-unified-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.bd-rf-unified-panel-head > p {
+  margin: 0;
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 0.2rem;
+}
+.bd-rf-unified-panel-head > p > span {
+  display: block;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+  max-width: 100%;
+}
+.bd-rf-unified-close-btn {
+  flex: 0 0 auto;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.75);
+  color: #e2e8f0;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 5px 8px;
+  min-height: 28px;
+}
+.bd-rf-unified-page-section {
+  position: relative;
+  margin: 0.75rem 0 1.25rem;
+  padding: 0.7rem 0.75rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  /* Must scroll with RF page body — never fixed/sticky. */
+  z-index: 1;
+  /* Local clip only after children are width-constrained (no global page overflow-x). */
+  overflow-x: hidden;
+}
+.bd-rf-unified-page-collapsed {
+  display: grid;
+  gap: 0.35rem;
+}
+.bd-rf-unified-page-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  text-align: left;
+  border-radius: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  background: rgba(14, 40, 68, 0.55);
+  color: #e2e8f0;
+  font: inherit;
+  padding: 0.7rem 0.8rem;
+}
+.bd-rf-unified-page-toggle-copy {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.bd-rf-unified-page-toggle-copy b {
+  font-size: 0.95rem;
+}
+.bd-rf-unified-page-toggle-copy small {
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+.bd-rf-unified-page-open-group {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+}
+.bd-rf-unified-page-count {
+  min-width: 1.6rem;
+  text-align: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.45rem;
+  background: rgba(56, 189, 248, 0.18);
+  color: #e0f2fe;
+  font-style: normal;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+.bd-rf-unified-page-open {
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 750;
+  color: #e0f2fe;
+  background: rgba(14, 40, 68, 0.75);
+}
+.bd-rf-unified-page-panel {
+  margin: 0;
+  max-height: none;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.bd-rf-unified-page-panel .bd-rf-unified-review {
+  min-height: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.bd-rf-unified-page-panel .bd-rf-unified-scenario-list {
+  /* Keep enough room above sticky Start Data for Generate + Manage. */
+  max-height: min(34vh, 280px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.bd-rf-unified-page-panel .bd-rf-unified-generate-btn {
+  scroll-margin-bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+  margin-top: 0;
+}
+.bd-rf-unified-compact-status,
+.bd-rf-unified-status-line {
+  margin: 0;
+  color: #86efac;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bd-rf-unified-manage {
+  margin-top: 0.45rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  flex: 0 0 auto;
+}
+.bd-rf-unified-manage > summary {
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 650;
+  list-style: none;
+}
+.bd-rf-unified-manage > summary::-webkit-details-marker {
+  display: none;
+}
+.bd-rf-unified-manage-actions {
+  margin-top: 0.35rem;
+}
+.bd-rf-unified-source-details {
+  margin-top: 0.15rem;
+  max-width: 100%;
+  min-width: 0;
+}
+.bd-rf-unified-source-details > summary {
+  cursor: pointer;
+  color: #64748b;
+  font-size: 0.7rem;
+  font-weight: 650;
+  list-style: none;
+}
+.bd-rf-unified-source-details > summary::-webkit-details-marker {
+  display: none;
+}
+.bd-rf-unified-source {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: #94a3b8;
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.bd-rf-unified-generate-btn {
+  width: 100%;
+  max-width: 100%;
+  flex: 0 0 auto;
+  margin-top: 0.15rem;
+  margin-bottom: 0.15rem;
+  box-sizing: border-box;
+}
 .bd-rf-excel-plot-hint {
   margin: 6px 0 0;
   color: #94a3b8;

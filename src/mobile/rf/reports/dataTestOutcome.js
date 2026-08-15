@@ -15,6 +15,8 @@ function pickFailedIterationReason(row = {}) {
   return cleanText(row.conciseReason)
     || cleanText(row.error)
     || cleanText(row.errorMessage)
+    || cleanText(row.failureReason)
+    || cleanText(row.failure_reason)
     || cleanText(row.message)
     || "";
 }
@@ -23,6 +25,16 @@ function isGenericContinuousStopMessage(text = "") {
   const t = String(text || "").toLowerCase();
   return t.includes("continuous")
     && (t.includes("stopped and saved") || t.includes("stopped.") || t.includes("attempted"));
+}
+
+/** Session wrap-up success text must never become Failure Summary. */
+function isGenericSuccessPollutionMessage(text = "") {
+  const t = String(text || "").toLowerCase().trim();
+  if (!t) return false;
+  if (t.includes("fail")) return false;
+  return /(http|ftp|iperf3?|native)\s+test\s+completed\.?$/.test(t)
+    || t === "test completed."
+    || t === "test completed";
 }
 
 function getNumber(value) {
@@ -146,12 +158,25 @@ export function classifyFtpFailure(message = "", opts = {}) {
       customerLabel: "FTP — Passive data connection timeout",
     };
   }
-  if (m.includes("timeout") || m.includes("timed out")) {
+  if (m.includes("timeout") || m.includes("timed out") || m.includes("after 15000ms") || m.includes("after 15000")) {
     return {
       errorCode: "FTP_TIMEOUT",
       failureStage: resolveStage(),
       conciseReason: "Connection Timed Out",
       customerLabel: "FTP — Connection Timed Out",
+    };
+  }
+  if (
+    m.includes("ftp_connect_failed")
+    || m.includes("failed to connect")
+    || m.includes("connect failed")
+    || m.includes("connection refused")
+  ) {
+    return {
+      errorCode: "FTP_CONNECT_FAILED",
+      failureStage: resolveStage(),
+      conciseReason: "Connection Failed",
+      customerLabel: "FTP — Connection Failed",
     };
   }
   return {
@@ -329,10 +354,15 @@ export function buildDataTestOutcome(session = {}) {
   const failedRow = rows.find(isFailedIterationRow);
   // Prefer per-iteration native/classified reason over session stop summary text.
   const iterationFailureText = pickFailedIterationReason(failedRow);
-  const sessionFailureText = errorMessage && !isGenericContinuousStopMessage(errorMessage)
+  const sessionFailureText = errorMessage
+    && !isGenericContinuousStopMessage(errorMessage)
+    && !isGenericSuccessPollutionMessage(errorMessage)
     ? errorMessage
     : "";
-  const failureText = iterationFailureText || sessionFailureText || errorMessage || "";
+  const failureText = iterationFailureText
+    || sessionFailureText
+    || (errorMessage && !isGenericSuccessPollutionMessage(errorMessage) ? errorMessage : "")
+    || "";
   const classif = (normalizedStatus === "failed"
     || normalizedStatus === "complete_with_failures"
     || normalizedStatus === "failed_before_start"
@@ -340,7 +370,7 @@ export function buildDataTestOutcome(session = {}) {
     || counts.failedIterations > 0)
     ? (isFtp
       ? classifyFtpFailure(
-        pickFailedIterationReason(failedRow) || failureText,
+        pickFailedIterationReason(failedRow) || failureText || cleanText(failedRow?.errorCode) || "",
         {
           direction: failedRow?.direction,
           failureStage: failedRow?.failureStage,
@@ -349,8 +379,8 @@ export function buildDataTestOutcome(session = {}) {
         },
       )
       : isIperf
-        ? classifyIperfFailure(failureText)
-        : classifyNativeHttpFailure(failureText))
+        ? classifyIperfFailure(failureText || cleanText(failedRow?.errorCode) || "")
+        : classifyNativeHttpFailure(failureText || cleanText(failedRow?.errorCode) || ""))
     : null;
 
   const successfulDl = rows

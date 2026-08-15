@@ -36,6 +36,7 @@ import { MEANINGFUL_TRAFFIC_STATS_MBPS } from "./trafficStatsMeasurement.js";
 import { buildDataTestOutcome, formatCustomerScenario, classifyNativeHttpFailure } from "./dataTestOutcome.js";
 import { buildRfConfigurationRows } from "./rfConfigurationSummary.js";
 import { buildScenarioAdapter, createNormalizedScenarioReportModel } from "./scenarioReportModel.js";
+import { buildConnectivityDisplayRows, normalizeConnectivitySnapshot } from "./connectivitySnapshot.js";
 
 function isIperf3Session(session = {}) {
   if (session.appTestType === "iperf") return true;
@@ -43,7 +44,8 @@ function isIperf3Session(session = {}) {
   return rows.some((row) => String(row?.source || "").includes("iperf"));
 }
 
-export const EXCEL_PLOT_REPORT_VERSION = "1.9.4-excel-plot-f9d";
+// F10B: connectivity display from canonical Android snapshots (F9 lineage preserved).
+export const EXCEL_PLOT_REPORT_VERSION = "1.9.5-excel-plot-f10b";
 export const EXCEL_PLOT_SHEET_NAMES = [
   "01_Test_Grid_Info",
   "02_Index",
@@ -573,13 +575,14 @@ function buildExternalEvidenceRows(ooklaIterations, fccIterations) {
 }
 
 function resolveConnectivitySnapshot(session = {}, samples = []) {
-  const snap = session.connectivitySnapshot && typeof session.connectivitySnapshot === "object"
-    ? session.connectivitySnapshot
-    : null;
-  if (snap) return snap;
+  if (session.connectivityStart || session.connectivityEnd || session.connectivitySnapshot) {
+    return normalizeConnectivitySnapshot(
+      session.connectivityEnd || session.connectivitySnapshot || session.connectivityStart,
+    );
+  }
   for (let i = samples.length - 1; i >= 0; i -= 1) {
     const sampleSnap = samples[i]?.snapshot?.connectivity;
-    if (sampleSnap && typeof sampleSnap === "object") return sampleSnap;
+    if (sampleSnap && typeof sampleSnap === "object") return normalizeConnectivitySnapshot(sampleSnap);
   }
   return null;
 }
@@ -824,14 +827,18 @@ function buildCustomerInfoRows({
         { label: "Failure reason", value: outcome.conciseReason || "" },
       ];
     })(),
-    networkRows: [
-      { label: "Active technologies", value: activeTechs },
-      { label: "Last observed RAT", value: lastRat },
-      { label: "Wi-Fi connected", value: connectivity.wifiConnected != null ? (connectivity.wifiConnected ? "yes" : "no") : "" },
-      { label: "Mobile data active", value: connectivity.mobileDataActive != null ? (connectivity.mobileDataActive ? "yes" : "no") : "" },
-      { label: "Default transport", value: cleanText(connectivity.defaultNetworkTransport) || cleanText(connectivity.transport) || "" },
-      { label: "Internet validated", value: connectivity.internetValidated != null ? (connectivity.internetValidated ? "yes" : "no") : "" },
-    ],
+    networkRows: (() => {
+      const display = buildConnectivityDisplayRows(session, samples);
+      return [
+        { label: "Active technologies", value: activeTechs },
+        { label: "Last observed RAT", value: lastRat },
+        { label: "Wi-Fi connected", value: display.wifiConnected },
+        // mobile data active = TRANSPORT_CELLULAR on Android default/active network (not SIM presence)
+        { label: "Mobile data active", value: display.mobileDataActive },
+        { label: "Default transport", value: display.defaultTransport },
+        { label: "Internet validated", value: display.internetValidated },
+      ];
+    })(),
     reportRows: [
       {
         label: "Map provider",
