@@ -9,6 +9,7 @@ import CellFileManagement from "./pages/CellFileManagement";
 import QCReview from "./pages/QCReview";
 import Reports from "./pages/Reports";
 import UserManagement from "./pages/UserManagement";
+import { FieldResultsPage } from "./fieldResults";
 
 const emptyProject = {
   name: "",
@@ -47,6 +48,7 @@ const menuGroups = [
     title: "QC & Reports",
     items: [
       { id: "qc", label: "QC Review", icon: "🔍" },
+      { id: "fieldResults", label: "Field Results", icon: "📡" },
       { id: "reports", label: "Reports", icon: "📄" },
     ],
   },
@@ -1986,7 +1988,17 @@ export default function AdminDashboard({ user, onLogout }) {
   );
 }
     if (activeView === "qc") {
-      return <QCReview user={user} filters={filters} />;
+      return (
+        <QCReview
+          user={user}
+          filters={filters}
+          onOpenFieldResults={() => setActiveView("fieldResults")}
+        />
+      );
+    }
+
+    if (activeView === "fieldResults") {
+      return <FieldResultsPage user={user} role={user?.role || "admin"} />;
     }
 
     if (activeView === "reports") {
@@ -2011,6 +2023,7 @@ export default function AdminDashboard({ user, onLogout }) {
     "timeline",
     "updates",
     "qc",
+    "fieldResults",
     "reports",
   ]);
 
@@ -2023,6 +2036,7 @@ export default function AdminDashboard({ user, onLogout }) {
     timeline: "Timeline Filters",
     updates: "FE Updates Filters",
     qc: "QC Review Filters",
+    fieldResults: "Field Results Filters",
     reports: "Report Filters",
   };
 

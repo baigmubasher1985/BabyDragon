@@ -42,12 +42,20 @@ import {
   queueMobileAction,
   shouldQueueAfterError,
   syncMobileOfflineQueue,
+  updateMobileQueueItem,
 } from "./mobileOfflineQueue";
 import { deleteQueuedFile, readQueuedFile, saveQueuedFile } from "./mobileIndexedDb";
 import MobileLogin from "./MobileLogin";
 import MobileMyTasks from "./MobileMyTasks";
 import MobileRouteView from "./MobileRouteView";
 import MobileSyncStatus from "./MobileSyncStatus";
+import MobileResultUploadStatus from "./MobileResultUploadStatus";
+import {
+  cancelQueuedFieldTestResult,
+  listFieldTestResultQueueItems,
+  processResultPackagePayload,
+  getSharedMockResultTransport,
+} from "./rf/submission/index.js";
 import MobileProfile from "./MobileProfile";
 import MobileRfKpi from "./MobileRfKpi";
 
@@ -132,9 +140,11 @@ export default function MobileApp() {
   const [isOnline, setIsOnline] = useState(() => isBrowserOnline());
   const [pendingSyncCount, setPendingSyncCount] = useState(() => getMobileQueueCount());
   const [pendingSyncItems, setPendingSyncItems] = useState(() => getMobileQueueItems());
+  const [resultUploadItems, setResultUploadItems] = useState(() => listFieldTestResultQueueItems());
   const [syncingPending, setSyncingPending] = useState(false);
   const [activeTab, setActiveTab] = useState("tasks");
   const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState(null);
+  const [resultLocalMessage, setResultLocalMessage] = useState("");
 
   const user = session?.user || null;
 
@@ -335,6 +345,7 @@ export default function MobileApp() {
     setIsOnline(isBrowserOnline());
     setPendingSyncCount(getMobileQueueCount());
     setPendingSyncItems(getMobileQueueItems());
+    setResultUploadItems(listFieldTestResultQueueItems());
   }
 
   function resetMobileDataState() {
@@ -557,6 +568,25 @@ export default function MobileApp() {
           return;
         }
 
+        if (item.type === OFFLINE_ACTION_TYPES.FIELD_TEST_RESULT_SUBMIT) {
+          // Phase 2: MOCK transport only — never hits real Supabase Storage / RPCs.
+          const result = await processResultPackagePayload(payload, {
+            transport: getSharedMockResultTransport(),
+            currentUser: user,
+            sessionValid: Boolean(user?.id),
+            manualRetry: Boolean(item.meta?.manual_retry),
+          });
+          if (item.meta?.manual_retry) {
+            updateMobileQueueItem(item.id, {
+              meta: { ...(item.meta || {}), manual_retry: false },
+            });
+          }
+          if (result.keep) {
+            return { keep: true, done: result.done, payload: result.payload };
+          }
+          return;
+        }
+
         throw new Error(`Unsupported offline action type: ${item.type}`);
       });
 
@@ -591,6 +621,33 @@ export default function MobileApp() {
     if (isBrowserOnline() && pendingBeforeSync === 0) {
       await loadMobileData();
     }
+  }
+
+  async function handleResultRetryNow(item) {
+    if (!item?.id) return;
+    updateMobileQueueItem(item.id, {
+      meta: { ...(item.meta || {}), manual_retry: true },
+      payload: {
+        ...(item.payload || {}),
+        next_attempt_at: null,
+      },
+    });
+    await syncPendingOfflineActions();
+  }
+
+  function handleResultCancel(item) {
+    const clientRunId = item?.summary?.client_run_id || item?.payload?.client_run_id;
+    if (!clientRunId) return;
+    cancelQueuedFieldTestResult(clientRunId);
+    refreshOfflineQueueState();
+    setResultLocalMessage("Upload cancelled locally. The report package remains on this device.");
+  }
+
+  function handleResultViewLocal(item) {
+    const name = item?.summary?.report_name || "Local report package";
+    setResultLocalMessage(
+      `Local report retained: ${name}. Queued status is not the same as uploaded.`,
+    );
   }
 
   async function refreshGpsNow(options = {}) {
@@ -1604,9 +1661,22 @@ export default function MobileApp() {
             onSyncNow={handleSyncNow}
           />
 
+          <MobileResultUploadStatus
+            items={resultUploadItems}
+            isOnline={isOnline}
+            syncing={syncingPending}
+            onRetryNow={handleResultRetryNow}
+            onCancel={handleResultCancel}
+            onViewLocal={handleResultViewLocal}
+            onRefresh={refreshOfflineQueueState}
+          />
+
+          {resultLocalMessage && <div className="bd-mobile-success">{resultLocalMessage}</div>}
+
           <section className="bd-mobile-profile-panel">
             <h3>Sync Notes</h3>
             <p>Checklist, issues, notes/photos, manual GPS checkpoints, and task start/complete actions can wait here when the FE has weak signal.</p>
+            <p>Field-test result packages use the same mobile offline queue (mock upload in Phase 2). Queued does not mean uploaded. Local reports stay on device.</p>
             <p>Auto GPS trail points are not queued offline, so the queue stays lean instead of growing like a pocket full of marbles.</p>
           </section>
         </section>

@@ -1,0 +1,33 @@
+-- DRAFT / UNAPPLIED / DO NOT RUN
+-- F10C2 PHASE 1
+-- NO DATABASE TARGET AUTHORIZED
+-- NOTE: BLOCKED_PENDING_SCHEMA_AND_DISPOSABLE_VALIDATION
+-- NOTE: Documentation-only. No bucket DDL. No Storage policies applied.
+-- PAIR: 112_result_artifacts_storage_contract
+-- ROLE: FORWARD
+-- CLASSIFICATION: (b) blocked documentation-only
+
+-- =============================================================================
+-- BLOCKED — result-artifacts private bucket is NOT created in F10C2 Phase 1.
+-- =============================================================================
+-- Future bucket name: result-artifacts
+-- Distinct from: operational-evidence, task-photos
+--
+-- object_key layout (bucket stored separately — never as prefix in object_key):
+--   {project_id}/{task_id}/{verified_user_id}/{field_test_run_id}/{artifact_id}.{safe_ext}
+--
+-- Rules (binding contract — implement only when disposable Storage authorized):
+--   1. Durable DB ref = bucket + object_key (never signed / public URL)
+--   2. MIME allow-list + size ceiling enforced at register RPC
+--   3. Path ownership: verified_user_id segment MUST equal auth.uid()
+--   4. No overwrite of existing object_key
+--   5. Idempotency: same artifact_id + checksum → success; same key different checksum → reject
+--   6. Do not store RF packages in task-photos or operational-evidence
+--   7. Do not modify or delete existing task-photos objects
+--
+-- Supported artifact_type values (not all required every run):
+--   unified_json, rf_csv, gps_csv, events_csv, scenario_csv,
+--   excel_plot, ookla_evidence, fcc_evidence, package_zip, other
+-- =============================================================================
+
+SELECT 'result_artifacts_storage_blocked_pending_disposable_validation' AS status;

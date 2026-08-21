@@ -1,0 +1,323 @@
+/* F10C2 Phase 3 — Field Results dashboard styles (mock/local). Reuses QC visual language. */
+
+.bdfr-page {
+  padding: 18px;
+  color: var(--text, #e7eefb);
+}
+
+.bdfr-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  border: 1px solid var(--border, #1d3350);
+  background: linear-gradient(180deg, #0d1b2f, #0a1524);
+}
+
+.bdfr-header h2 {
+  margin: 4px 0 6px;
+}
+
+.bdfr-kicker {
+  margin: 0;
+  color: var(--muted, #9fb2cf);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.bdfr-mock-banner {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid #3a5a2a;
+  background: rgba(67, 255, 154, 0.08);
+  color: #b8f5d0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bdfr-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border, #1d3350);
+  background: #0b1728;
+}
+
+.bdfr-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted, #9fb2cf);
+}
+
+.bdfr-filters input,
+.bdfr-filters select {
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.bdfr-filter-actions {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.bdfr-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 800;
+  cursor: pointer;
+  background: linear-gradient(135deg, #1f8cff, #00d4ff);
+  color: #fff;
+}
+
+.bdfr-btn-secondary {
+  background: #1a2c45;
+  border: 1px solid var(--border, #1d3350);
+}
+
+.bdfr-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bdfr-table-wrap {
+  overflow-x: auto;
+  border-radius: 16px;
+  border: 1px solid var(--border, #1d3350);
+  background: #0b1728;
+}
+
+.bdfr-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.bdfr-table th,
+.bdfr-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid rgba(29, 51, 80, 0.7);
+  vertical-align: top;
+}
+
+.bdfr-table th {
+  color: var(--muted, #9fb2cf);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.bdfr-table tr:hover td {
+  background: rgba(31, 140, 255, 0.06);
+}
+
+.bdfr-link {
+  background: none;
+  border: none;
+  color: var(--blue, #00d4ff);
+  font-weight: 800;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.bdfr-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.bdfr-badge-pass { background: rgba(67, 255, 154, 0.15); color: #43ff9a; }
+.bdfr-badge-fail { background: rgba(255, 92, 122, 0.15); color: #ff5c7a; }
+.bdfr-badge-redrive { background: rgba(255, 159, 67, 0.18); color: #ff9f43; }
+.bdfr-badge-warn { background: rgba(255, 214, 107, 0.15); color: #ffd66b; }
+.bdfr-badge-wait { background: rgba(0, 212, 255, 0.12); color: #00d4ff; }
+.bdfr-badge-ok { background: rgba(67, 255, 154, 0.12); color: #7dffb5; }
+.bdfr-badge-partial { background: rgba(255, 214, 107, 0.12); color: #ffd66b; }
+
+.bdfr-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.bdfr-state {
+  padding: 28px;
+  text-align: center;
+  border-radius: 16px;
+  border: 1px dashed var(--border, #1d3350);
+  background: #0b1728;
+  color: var(--muted, #9fb2cf);
+}
+
+.bdfr-skeleton {
+  display: grid;
+  gap: 8px;
+}
+
+.bdfr-skeleton-row {
+  height: 42px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #0d1b2f, #13243a, #0d1b2f);
+  background-size: 200% 100%;
+  animation: bdfr-shimmer 1.2s infinite;
+}
+
+@keyframes bdfr-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.bdfr-cards {
+  display: none;
+  gap: 12px;
+}
+
+.bdfr-card {
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border, #1d3350);
+  background: #0b1728;
+}
+
+.bdfr-card h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.bdfr-card-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: var(--muted, #9fb2cf);
+}
+
+.bdfr-detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.bdfr-tab {
+  background: #12233a;
+  border: 1px solid var(--border, #1d3350);
+  color: var(--text, #e7eefb);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bdfr-tab.active {
+  background: linear-gradient(135deg, #1f8cff, #00d4ff);
+  border-color: transparent;
+}
+
+.bdfr-panel {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border, #1d3350);
+  background: #0b1728;
+  margin-bottom: 14px;
+}
+
+.bdfr-panel h3 {
+  margin: 0 0 12px;
+}
+
+.bdfr-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.bdfr-meta-item span {
+  display: block;
+  font-size: 11px;
+  color: var(--muted, #9fb2cf);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.bdfr-meta-item strong {
+  font-size: 14px;
+}
+
+.bdfr-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.bdfr-timeline li {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(29, 51, 80, 0.5);
+  font-size: 13px;
+}
+
+.bdfr-qc-form {
+  display: grid;
+  gap: 10px;
+}
+
+.bdfr-qc-form textarea {
+  min-height: 80px;
+}
+
+.bdfr-error-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #ff5c7a;
+  font-size: 13px;
+}
+
+.bdfr-history {
+  display: grid;
+  gap: 10px;
+}
+
+.bdfr-history-item {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border, #1d3350);
+  background: #091320;
+}
+
+.bdfr-history-item small {
+  color: var(--muted, #9fb2cf);
+}
+
+@media (max-width: 960px) {
+  .bdfr-table-wrap {
+    display: none;
+  }
+  .bdfr-cards {
+    display: grid;
+  }
+}

@@ -1,0 +1,9 @@
+-- DRAFT / UNAPPLIED / DO NOT RUN
+-- F10C2 PHASE 1
+-- NO DATABASE TARGET AUTHORIZED
+-- PAIR: 102_field_test_artifacts
+-- ROLE: ROLLBACK
+
+BEGIN;
+DROP TABLE IF EXISTS public.field_test_artifacts CASCADE;
+COMMIT;

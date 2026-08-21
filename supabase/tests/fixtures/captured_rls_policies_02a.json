@@ -1,0 +1,241 @@
+{
+  "profiles": [
+    {
+      "schemaname": "public",
+      "tablename": "profiles",
+      "policyname": "Admins can update users",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "UPDATE",
+      "using_expression": "is_admin_or_super_admin()",
+      "with_check_expression": "is_admin_or_super_admin()"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "profiles",
+      "policyname": "Admins can view all profiles",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "SELECT",
+      "using_expression": "is_admin_or_super_admin()",
+      "with_check_expression": "null"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "profiles",
+      "policyname": "Users can read their own profile",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "SELECT",
+      "using_expression": "(auth.uid() = id)",
+      "with_check_expression": "null"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "profiles",
+      "policyname": "Users can update own profile",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "UPDATE",
+      "using_expression": "(id = auth.uid())",
+      "with_check_expression": "null"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "profiles",
+      "policyname": "Users can view own profile",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "SELECT",
+      "using_expression": "(id = auth.uid())",
+      "with_check_expression": "null"
+    }
+  ],
+  "qc_reviews": [
+    {
+      "schemaname": "public",
+      "tablename": "qc_reviews",
+      "policyname": "Admins can delete QC reviews",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "DELETE",
+      "using_expression": "(EXISTS ( SELECT 1"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "qc_reviews",
+      "policyname": "Admins can insert QC reviews",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "INSERT",
+      "using_expression": "null",
+      "with_check_expression": "(EXISTS ( SELECT 1"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "qc_reviews",
+      "policyname": "Admins can update QC reviews",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "UPDATE",
+      "using_expression": "(EXISTS ( SELECT 1"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "qc_reviews",
+      "policyname": "Admins can view QC reviews",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "SELECT",
+      "using_expression": "(EXISTS ( SELECT 1"
+    }
+  ],
+  "task_checklist_items": [
+    {
+      "schemaname": "public",
+      "tablename": "task_checklist_items",
+      "policyname": "Authenticated users can delete checklist items",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "DELETE",
+      "using_expression": "true",
+      "with_check_expression": "null"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_checklist_items",
+      "policyname": "Authenticated users can insert checklist items",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "INSERT",
+      "using_expression": "null",
+      "with_check_expression": "true"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_checklist_items",
+      "policyname": "Authenticated users can update checklist items",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "UPDATE",
+      "using_expression": "true",
+      "with_check_expression": "true"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_checklist_items",
+      "policyname": "Authenticated users can view checklist items",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "SELECT",
+      "using_expression": "true",
+      "with_check_expression": "null"
+    }
+  ],
+  "task_issue_reports": [
+    {
+      "schemaname": "public",
+      "tablename": "task_issue_reports",
+      "policyname": "Authenticated users can delete issue reports",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "DELETE",
+      "using_expression": "true",
+      "with_check_expression": "null"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_issue_reports",
+      "policyname": "Authenticated users can insert issue reports",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "INSERT",
+      "using_expression": "null",
+      "with_check_expression": "true"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_issue_reports",
+      "policyname": "Authenticated users can update issue reports",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "UPDATE",
+      "using_expression": "true",
+      "with_check_expression": "true"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_issue_reports",
+      "policyname": "Authenticated users can view issue reports",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "SELECT",
+      "using_expression": "true",
+      "with_check_expression": "null"
+    }
+  ],
+  "task_updates": [
+    {
+      "schemaname": "public",
+      "tablename": "task_updates",
+      "policyname": "Admin can view all task updates",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "SELECT",
+      "using_expression": "is_admin_or_super_admin()",
+      "with_check_expression": "null"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_updates",
+      "policyname": "FE can insert own task updates",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "INSERT",
+      "using_expression": "null",
+      "with_check_expression": "(user_id = auth.uid())"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "task_updates",
+      "policyname": "FE can view own task updates",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "SELECT",
+      "using_expression": "(user_id = auth.uid())",
+      "with_check_expression": "null"
+    }
+  ],
+  "tasks": [
+    {
+      "schemaname": "public",
+      "tablename": "tasks",
+      "policyname": "Admin full access",
+      "permissive": "PERMISSIVE",
+      "roles": "{authenticated}",
+      "command": "ALL",
+      "using_expression": "is_admin_or_super_admin()",
+      "with_check_expression": "null"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "tasks",
+      "policyname": "FE can update their assigned tasks",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "UPDATE",
+      "using_expression": "(auth.uid() = assigned_to)",
+      "with_check_expression": "(auth.uid() = assigned_to)"
+    },
+    {
+      "schemaname": "public",
+      "tablename": "tasks",
+      "policyname": "FE can view their tasks",
+      "permissive": "PERMISSIVE",
+      "roles": "{public}",
+      "command": "SELECT",
+      "using_expression": "(auth.uid() = assigned_to)",
+      "with_check_expression": "null"
+    }
+  ]
+}

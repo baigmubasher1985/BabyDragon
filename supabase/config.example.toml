@@ -1,0 +1,22 @@
+# F10C1I — Example Supabase CLI config (UNAPPLIED)
+#
+# Copy to config.toml ONLY in a future disposable environment after separate authorization.
+# Do NOT commit a real project_id, API URL, or secrets.
+# Phase 1: this file is documentation-only scaffolding.
+
+[project]
+# id = "<DISPOSABLE_PROJECT_REF_NAME_ONLY_LATER>"
+
+[api]
+enabled = true
+
+[db]
+# major_version = 15
+
+[auth]
+enabled = true
+
+[storage]
+enabled = true
+
+# No secrets. No production refs. No service_role.

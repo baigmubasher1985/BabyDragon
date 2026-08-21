@@ -38,6 +38,7 @@ import {
   finalizeOoklaCsvTimeWindowOnExport,
   resolveOoklaDisplayResultId,
 } from "./utils/ooklaCsvImport";
+import { tryEnqueueFieldTestResultAfterSave } from "./submission/enqueueFieldTestResult.js";
 import {
   base64ToArrayBuffer,
   buildFccDedupeKey,
@@ -3111,6 +3112,18 @@ function getTaskLabel(task) {
     task.project_name ||
     "Active field task"
   );
+}
+
+/** F10C2 Phase 2 — task context for result packaging (no secrets). */
+function buildSubmissionTaskContext(task) {
+  if (!task?.id) return null;
+  const projectId = task.project_id || task.projectId || task.projects?.id || null;
+  if (!projectId) return null;
+  return {
+    taskId: task.id,
+    projectId,
+    gridId: task.grid_id || task.gridId || null,
+  };
 }
 
 function isUuidLike(value) {
@@ -7733,6 +7746,26 @@ export default function MobileRfKpi({
       setExportStatus(result?.fallback
         ? `Downloaded: ${primaryName}${exportExtra}`
         : `Saved: ${primaryName}${exportExtra}`);
+
+      // Soft enqueue for durable mock upload — never blocks / never fails local save.
+      const taskContext = buildSubmissionTaskContext(activeTask);
+      if (taskContext) {
+        void tryEnqueueFieldTestResultAfterSave({
+          session: sessionToExport,
+          taskContext,
+          device: { model: "Android", platform: "android", appVersion: null },
+          network: { rat: sessionToExport?.networkRat || null },
+          files: (reportPackage.files || []).map((f) => ({
+            fileName: f.fileName,
+            mimeType: f.mimeType,
+            content: f.content,
+            contentBase64: f.contentBase64,
+            path: null,
+          })),
+          reportName: reportPackage.displayName || sessionToExport.reportLogName,
+          ownerUserId: user?.id || null,
+        });
+      }
     } catch (error) {
       setExportStatus(error?.message || "Report export failed.");
     }
@@ -7922,6 +7955,32 @@ export default function MobileRfKpi({
         { fileName: built.fileName, path: result?.folderPath || result?.path || null },
         ...current,
       ].slice(0, 12));
+
+      const taskContext = buildSubmissionTaskContext(activeTask);
+      if (taskContext) {
+        void tryEnqueueFieldTestResultAfterSave({
+          unifiedReport: {
+            reportKind: "unified_field_report",
+            reportName: built.baseName || built.fileName,
+            sessionId: sessionId,
+            scenarios: selected.map((item) => ({
+              session: item.session,
+              scenarioKey: item.scenarioKey,
+              scenarioId: item.draftId,
+            })),
+          },
+          taskContext,
+          device: { model: "Android", platform: "android" },
+          files: [{
+            fileName: built.fileName,
+            mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            contentBase64: built.base64,
+            artifactType: "excel_plot",
+          }],
+          reportName: built.baseName || built.fileName,
+          ownerUserId: user?.id || null,
+        });
+      }
     } catch (error) {
       setUnifiedExportStatus(error?.message || "Unified Field Report export failed.");
     } finally {

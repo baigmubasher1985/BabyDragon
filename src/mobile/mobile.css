@@ -1337,6 +1337,138 @@
   font-size: 12px;
 }
 
+/* F10C2 Phase 2 — Result upload queue panel */
+.bd-mobile-result-upload-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 14px;
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.bd-mobile-result-upload-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bd-mobile-result-upload-header strong {
+  display: block;
+  color: #f8fafc;
+  font-size: 15px;
+  margin: 2px 0 6px;
+}
+
+.bd-mobile-result-upload-header p {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.bd-mobile-result-upload-header button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 800;
+  color: #eff6ff;
+  background: linear-gradient(135deg, #2563eb, #0ea5e9);
+}
+
+.bd-mobile-result-upload-header button:disabled {
+  opacity: 0.55;
+}
+
+.bd-mobile-result-upload-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.bd-mobile-result-upload-item {
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  background: rgba(2, 6, 23, 0.4);
+}
+
+.bd-mobile-result-upload-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.bd-mobile-result-upload-item-top strong {
+  color: #f8fafc;
+  font-size: 13px;
+}
+
+.bd-mobile-result-state {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fde68a;
+}
+
+.bd-mobile-result-upload-item p {
+  margin: 0 0 4px;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.bd-mobile-result-error {
+  color: #fecaca !important;
+}
+
+.bd-mobile-result-ok {
+  color: #bbf7d0 !important;
+}
+
+.bd-mobile-result-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.bd-mobile-result-upload-actions button {
+  border: 0;
+  border-radius: 11px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #eff6ff;
+  background: linear-gradient(135deg, #2563eb, #0891b2);
+}
+
+.bd-mobile-result-upload-actions button.secondary {
+  background: rgba(51, 65, 85, 0.95);
+  color: #e2e8f0;
+}
+
+.bd-mobile-result-upload-actions button:disabled {
+  opacity: 0.5;
+}
+
+@media (max-width: 390px) {
+  .bd-mobile-result-upload-header {
+    flex-direction: column;
+  }
+
+  .bd-mobile-result-upload-header button {
+    width: 100%;
+  }
+}
+
 @media (max-width: 390px) {
   .bd-mobile-sync-panel {
     align-items: stretch;

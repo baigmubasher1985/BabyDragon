@@ -288,7 +288,7 @@ function CheckRow({ label, checked, onChange, helper }) {
   );
 }
 
-export default function QCReview() {
+export default function QCReview({ onOpenFieldResults } = {}) {
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState("");
   const [creatingRedriveKey, setCreatingRedriveKey] = useState("");
@@ -824,6 +824,31 @@ export default function QCReview() {
           Refresh
         </button>
       </div>
+
+      {typeof onOpenFieldResults === "function" && (
+        <div
+          style={{
+            marginBottom: 14,
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "1px solid #1d3350",
+            background: "rgba(0, 212, 255, 0.08)",
+            display: "flex",
+            justifyContent: "space-between",
+            gap: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 13 }}>
+            Unified Field Results (F10C2 mock) are available in a separate QC workspace.
+            Task-level QC Review V1 below is unchanged.
+          </span>
+          <button type="button" className="bdqc-refresh-btn" onClick={onOpenFieldResults}>
+            Open Field Results
+          </button>
+        </div>
+      )}
 
       <div className="bdqc-stats-grid">
         <div className="bdqc-stat-card">

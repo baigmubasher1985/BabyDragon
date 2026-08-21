@@ -4,9 +4,15 @@ export const OFFLINE_ACTION_TYPES = {
   ISSUE_REPORT: "issue_report",
   TASK_UPDATE: "task_update",
   GPS_CHECKPOINT: "gps_checkpoint",
+  /** F10C2 Phase 2 — result packaging / mocked upload (extends this queue; no third queue). */
+  FIELD_TEST_RESULT_SUBMIT: "field_test_result_submit",
 };
 
-const QUEUE_KEY = "babydragon_mobile_offline_queue_v1";
+export const MOBILE_QUEUE_STORAGE_KEY = "babydragon_mobile_offline_queue_v1";
+export const MOBILE_QUEUE_RECORD_VERSION = 1;
+
+const QUEUE_KEY = MOBILE_QUEUE_STORAGE_KEY;
+const QUARANTINE_KEY = "babydragon_mobile_offline_queue_quarantine_v1";
 
 export function isBrowserOnline() {
   if (typeof navigator === "undefined") return true;
@@ -25,9 +31,9 @@ export function shouldQueueAfterError(error) {
   );
 }
 
-export function readMobileQueue() {
+function readRawQueueArray(key) {
   try {
-    const raw = localStorage.getItem(QUEUE_KEY);
+    const raw = localStorage.getItem(key);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
@@ -36,12 +42,68 @@ export function readMobileQueue() {
   }
 }
 
-export function saveMobileQueue(items) {
+function writeRawQueueArray(key, items) {
   try {
-    localStorage.setItem(QUEUE_KEY, JSON.stringify(Array.isArray(items) ? items : []));
+    localStorage.setItem(key, JSON.stringify(Array.isArray(items) ? items : []));
   } catch (error) {
     console.warn("BabyDragon mobile could not save offline queue:", error);
   }
+}
+
+/**
+ * Normalize legacy + versioned records. Corrupt items go to quarantine (non-destructive).
+ */
+export function normalizeMobileQueueItem(item) {
+  if (!item || typeof item !== "object") {
+    return { ok: false, reason: "not_object", item: null };
+  }
+  if (!item.id || !item.type) {
+    return { ok: false, reason: "missing_id_or_type", item };
+  }
+  return {
+    ok: true,
+    item: {
+      ...item,
+      record_version: item.record_version || item.meta?.record_version || MOBILE_QUEUE_RECORD_VERSION,
+      payload: item.payload && typeof item.payload === "object" ? item.payload : {},
+      meta: item.meta && typeof item.meta === "object" ? item.meta : {},
+      attempts: Number(item.attempts || 0),
+      created_at: item.created_at || new Date().toISOString(),
+      last_error: item.last_error || "",
+    },
+  };
+}
+
+export function quarantineMobileQueueItem(item, reason = "corrupt") {
+  const list = readRawQueueArray(QUARANTINE_KEY);
+  list.push({
+    quarantined_at: new Date().toISOString(),
+    reason,
+    item,
+  });
+  writeRawQueueArray(QUARANTINE_KEY, list.slice(-50));
+}
+
+export function readMobileQueue() {
+  const raw = readRawQueueArray(QUEUE_KEY);
+  const healthy = [];
+  for (const entry of raw) {
+    const normalized = normalizeMobileQueueItem(entry);
+    if (!normalized.ok) {
+      quarantineMobileQueueItem(entry, normalized.reason);
+      continue;
+    }
+    healthy.push(normalized.item);
+  }
+  // If we quarantined anything, rewrite cleaned queue (additive / safe).
+  if (healthy.length !== raw.length) {
+    writeRawQueueArray(QUEUE_KEY, healthy);
+  }
+  return healthy;
+}
+
+export function saveMobileQueue(items) {
+  writeRawQueueArray(QUEUE_KEY, Array.isArray(items) ? items : []);
 }
 
 export function getMobileQueueCount() {
@@ -52,12 +114,19 @@ export function getMobileQueueItems() {
   return readMobileQueue();
 }
 
+export function getMobileResultSubmitItems() {
+  return readMobileQueue().filter(
+    (item) => item.type === OFFLINE_ACTION_TYPES.FIELD_TEST_RESULT_SUBMIT,
+  );
+}
+
 export function queueMobileAction(type, payload, meta = {}) {
   const item = {
     id: `offline-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     type,
     payload,
     meta,
+    record_version: meta.record_version || MOBILE_QUEUE_RECORD_VERSION,
     attempts: 0,
     created_at: new Date().toISOString(),
     last_error: "",
@@ -68,6 +137,22 @@ export function queueMobileAction(type, payload, meta = {}) {
   return item;
 }
 
+/**
+ * Update a single queue item by id (used by result orchestrator persistence).
+ */
+export function updateMobileQueueItem(id, updater) {
+  const queue = readMobileQueue();
+  let found = false;
+  const next = queue.map((item) => {
+    if (item.id !== id) return item;
+    found = true;
+    const patch = typeof updater === "function" ? updater(item) : updater;
+    return { ...item, ...patch, updated_at: new Date().toISOString() };
+  });
+  if (found) saveMobileQueue(next);
+  return found;
+}
+
 export async function syncMobileOfflineQueue(processItem) {
   const currentQueue = readMobileQueue();
   const remaining = [];
@@ -76,7 +161,24 @@ export async function syncMobileOfflineQueue(processItem) {
 
   for (const item of currentQueue) {
     try {
-      await processItem(item);
+      const result = await processItem(item);
+      // Result submit processor may request keep=true for partial / retry_wait.
+      if (result && result.keep === true) {
+        remaining.push({
+          ...item,
+          payload: result.payload !== undefined ? result.payload : item.payload,
+          attempts: Number(result.payload?.attempts ?? item.attempts ?? 0),
+          last_error: result.payload?.last_error || item.last_error || "",
+          last_attempt_at: new Date().toISOString(),
+        });
+        if (result.done) {
+          // Terminal keep (e.g. cancelled / permanent) still counts as processed slot.
+          failed += 1;
+        } else {
+          failed += 1;
+        }
+        continue;
+      }
       synced += 1;
     } catch (error) {
       failed += 1;
