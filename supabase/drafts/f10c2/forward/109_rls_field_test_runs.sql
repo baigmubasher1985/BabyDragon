@@ -31,14 +31,7 @@ CREATE POLICY "field_test_runs_fe_select_assigned"
 CREATE POLICY "field_test_runs_admin_select"
   ON public.field_test_runs
   AS PERMISSIVE FOR SELECT TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles AS p
-      WHERE p.id = auth.uid()
-        AND p.role = ANY (ARRAY['admin'::text, 'super_admin'::text])
-        AND p.is_active IS TRUE
-    )
-  );
+  USING (public.is_admin_or_super_admin());
 
 -- Intentionally no INSERT/UPDATE/DELETE for authenticated FE/Admin via direct table.
 -- Mutations go through SECURITY DEFINER RPCs.

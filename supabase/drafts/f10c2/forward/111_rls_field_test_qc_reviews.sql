@@ -17,14 +17,7 @@ DROP POLICY IF EXISTS "field_test_qc_reviews_fe_select_own_runs" ON public.field
 CREATE POLICY "field_test_qc_reviews_admin_select"
   ON public.field_test_qc_reviews
   AS PERMISSIVE FOR SELECT TO authenticated
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.profiles AS p
-      WHERE p.id = auth.uid()
-        AND p.role = ANY (ARRAY['admin'::text, 'super_admin'::text])
-        AND p.is_active IS TRUE
-    )
-  );
+  USING (public.is_admin_or_super_admin());
 
 CREATE POLICY "field_test_qc_reviews_fe_select_own_runs"
   ON public.field_test_qc_reviews

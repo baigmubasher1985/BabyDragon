@@ -39,7 +39,7 @@ export default function MobileResultUploadStatus({
           <strong>Result Upload Queue</strong>
           <p>
             {active.length > 0
-              ? "Packaged field-test results wait here until mock upload completes. Local reports stay on device."
+              ? "Packaged field-test results wait here until upload completes. Local reports stay on device."
               : "No field-test result packages are queued. Saving a report still works offline."}
           </p>
         </div>
@@ -80,7 +80,7 @@ export default function MobileResultUploadStatus({
                 </p>
                 {s.last_error && <p className="bd-mobile-result-error">{s.last_error}</p>}
                 {uploaded && (
-                  <p className="bd-mobile-result-ok">Upload confirmed (mock transport). Local report retained.</p>
+                  <p className="bd-mobile-result-ok">Upload confirmed. Local report retained.</p>
                 )}
                 {!uploaded && (
                   <p className="bd-mobile-muted">Status: queued/packaged — not yet uploaded.</p>

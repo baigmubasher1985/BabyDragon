@@ -16,12 +16,11 @@
 
 Components **must not** query `field_test_*` tables directly.
 
-## Phase 3 implementation
+## Phase 4 implementation
 
-- Kind: **`mock`** only (`mockFieldResultsProvider.js`).
-- Deterministic fixtures in `fieldResultsFixtures.js`.
-- Loading / empty / error / retry / success statuses returned to UI.
-- No `fetch`, no Supabase client, no service-role, no production URL.
+- Kind: **`mock`** default; **`supabase`** when `VITE_F10C2_FIELD_RESULTS_PROVIDER=supabase` and an authenticated client is injected.
+- Live provider uses `field_test_*` tables + QC RPC + `createSignedUrl` only (never `getPublicUrl`).
+- Mock provider remains for deterministic tests (no `fetch`, no service-role).
 
 ## Future Supabase provider
 

@@ -4,11 +4,11 @@
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `F10C2_SERVER_SUBMIT` | **OFF** (`F10C2_SERVER_SUBMIT_ENABLED = false`) | Real server submit / Storage |
+| `F10C2_SERVER_SUBMIT` | **OFF** (`F10C2_SERVER_SUBMIT_ENABLED = false`) | Real server submit / Storage. Phase 4 may enable only via `VITE_F10C2_SERVER_SUBMIT_ENABLED=true` against a proven disposable target. |
 | `F10C2_MOCK_RESULT_UPLOAD` | **ON** (`F10C2_MOCK_RESULT_UPLOAD_ENABLED = true`) | Local mock packaging + mock transport |
-| `F10C2_RESULT_ARTIFACTS_UPLOAD` | OFF (docs) | Real Storage path (future) |
-| `F10C2_DASHBOARD_RESULTS` | **MOCK UI ON** (local provider) | Field Results dashboard Phase 3 — **not live DB** |
-| `F10C2_RUN_LEVEL_QC` | **MOCK UI ON** (local provider) | Run-level QC workspace Phase 3 — **not live RPC** |
+| `F10C2_RESULT_ARTIFACTS_UPLOAD` | OFF unless live flag | Real Storage path (Phase 4 disposable) |
+| `F10C2_DASHBOARD_RESULTS` | **MOCK UI ON** (local provider) | Set `VITE_F10C2_FIELD_RESULTS_PROVIDER=supabase` for disposable live list/detail |
+| `F10C2_RUN_LEVEL_QC` | **MOCK UI ON** (local provider) | Same provider flag selects live QC RPC |
 
 ## Compatibility rules
 

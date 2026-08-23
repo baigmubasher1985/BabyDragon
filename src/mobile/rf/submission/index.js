@@ -57,6 +57,23 @@ export {
 } from "./mockResultTransport.js";
 
 export {
+  SUPABASE_TRANSPORT_KIND,
+  createSupabaseResultTransport,
+} from "./supabaseResultTransport.js";
+
+export {
+  getResultTransportKind,
+  getResultTransport,
+  resetSharedResultTransport,
+} from "./resultTransportFactory.js";
+
+export {
+  assertUploadPlanSafe,
+  buildClientUploadRequest,
+  applyUploadPlanToArtifact,
+} from "./artifactUploadPlan.js";
+
+export {
   F10C2_MOCK_RESULT_UPLOAD_ENABLED,
   RESULT_QUEUE_RECORD_VERSION,
   buildResultPackagePayload,

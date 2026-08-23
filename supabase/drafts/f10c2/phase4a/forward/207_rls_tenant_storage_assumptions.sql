@@ -1,0 +1,39 @@
+-- DRAFT / UNAPPLIED / DO NOT RUN
+-- F10C2 PHASE 4A
+-- NO DATABASE TARGET AUTHORIZED
+-- NOTE: CLASSIFICATION: (b) blocked documentation-only
+-- NOTE: Tenant RLS is not live-tested in Phase 4A. Assumptions only.
+-- PAIR: 207_rls_tenant_storage_assumptions
+-- ROLE: FORWARD
+-- CLASSIFICATION: (b) blocked documentation-only
+
+-- =============================================================================
+-- BLOCKED — tenant-aware RLS is NOT applied in F10C2 Phase 4A.
+-- =============================================================================
+-- Assumptions for a later RLS wave (do not execute here):
+--
+-- 1. Anonymous access is denied on tenants, storage_connections,
+--    tenant_storage_policies, artifact_transfer_jobs, and field_test_*.
+-- 2. FE cannot read another tenant's rows even when assigned-task helpers match.
+-- 3. FE cannot open another FE's protected evidence unless assignment rules
+--    for the same tenant already permit it (existing is_assigned_to_task).
+-- 4. Admin access remains tenant-scoped. Cross-tenant admin is forbidden.
+-- 5. super_admin cross-tenant read, if ever enabled, must be explicit,
+--    fail-closed, and written to security_audit_log.
+-- 6. Connector secrets stay server-side (secret_reference). Service-role
+--    never reaches APK/browser. VITE_ must not carry connector credentials.
+-- 7. Signed/read authorization is short-lived and minimum-scope.
+--    Durable identity remains object_key + provider_object_id, never a URL.
+-- 8. Object keys include non-guessable stable identifiers (artifact_id / uuid).
+-- 9. Every protected read/download is auditable.
+-- 10. Provider selection never bypasses QC role gates or assignment checks.
+-- 11. Customer-worker processing may retrieve customer artifacts locally
+--     and must not transfer raw evidence when processing_location is
+--     customer_worker or deployment_mode is fully_private /
+--     customer_hosted_data_plane.
+-- 12. Phase 4B must validate the Phase 4A-R1 relational model (composite
+--     FKs, idempotency, persisted artifact_type) before any live tenant RLS.
+--     This file does NOT claim tenant RLS is complete.
+-- =============================================================================
+
+SELECT 'phase4a_tenant_rls_assumptions_unapplied' AS status;

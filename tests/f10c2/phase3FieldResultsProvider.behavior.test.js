@@ -141,7 +141,8 @@ describe('f10c2 phase3 — mock provider', () => {
     expect(res.result.overview.redrive_task_id).toBe(res.redrive_task_id)
   })
 
-  it('rejects non-mock provider kinds in Phase 3', () => {
-    expect(() => createFieldResultsRepository({ kind: 'supabase' })).toThrow(/mock-only/i)
+  it('rejects unknown provider kinds; supabase requires an injected client', () => {
+    expect(() => createFieldResultsRepository({ kind: 'not-a-provider' })).toThrow(/not available/i)
+    expect(() => createFieldResultsRepository({ kind: 'supabase' })).toThrow(/supabase_client_required/i)
   })
 })

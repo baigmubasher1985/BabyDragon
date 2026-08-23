@@ -24,6 +24,7 @@ import {
   summarizeResultPackage,
 } from "./resultUploadOrchestrator.js";
 import { PACKAGE_STATES, isPackageSuccess } from "./resultPackageStates.js";
+import { saveResultArtifactFile } from "../../mobileIndexedDb.js";
 
 /**
  * Ensure artifacts have checksums (from in-memory content when available).
@@ -115,6 +116,26 @@ export async function enqueueFieldTestResultSubmit({
     clientRunId,
     files: filesWithChecksum,
   });
+
+  for (let i = 0; i < localArtifacts.length; i += 1) {
+    const file = filesWithChecksum[i];
+    const art = localArtifacts[i];
+    const body = file?.content ?? file?.contentBase64 ?? file?.blob ?? file?.file ?? null;
+    if (!art?.artifact_id || body == null) continue;
+    try {
+      const saved = await saveResultArtifactFile(art.artifact_id, {
+        blob: body,
+        name: art.original_file_name,
+        type: art.mime_type,
+        size: art.size_bytes,
+      });
+      if (saved?.id) {
+        localArtifacts[i] = { ...art, local_file_ref: saved.id };
+      }
+    } catch {
+      // IndexedDB may be unavailable in unit tests; queue metadata still persists.
+    }
+  }
 
   const payload = buildResultPackagePayload({
     clientRunId,

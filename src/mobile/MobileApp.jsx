@@ -54,7 +54,7 @@ import {
   cancelQueuedFieldTestResult,
   listFieldTestResultQueueItems,
   processResultPackagePayload,
-  getSharedMockResultTransport,
+  getResultTransport,
 } from "./rf/submission/index.js";
 import MobileProfile from "./MobileProfile";
 import MobileRfKpi from "./MobileRfKpi";
@@ -569,9 +569,20 @@ export default function MobileApp() {
         }
 
         if (item.type === OFFLINE_ACTION_TYPES.FIELD_TEST_RESULT_SUBMIT) {
-          // Phase 2: MOCK transport only — never hits real Supabase Storage / RPCs.
           const result = await processResultPackagePayload(payload, {
-            transport: getSharedMockResultTransport(),
+            transport: getResultTransport({
+              supabase,
+              readArtifactBody: async (artifact) => {
+                const ref = artifact?.local_file_ref;
+                if (!ref) return artifact?.body || null;
+                try {
+                  const record = await readQueuedFile(ref);
+                  return record?.blob || null;
+                } catch {
+                  return null;
+                }
+              },
+            }),
             currentUser: user,
             sessionValid: Boolean(user?.id),
             manualRetry: Boolean(item.meta?.manual_retry),

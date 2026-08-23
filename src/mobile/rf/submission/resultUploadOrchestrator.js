@@ -27,6 +27,7 @@ import { evaluateResultAuthGate, stripSecretsFromPayload, assertNoSecretsInRecor
 import { toServerArtifactDescriptor } from "./artifactLocalDescriptors.js";
 import { adaptScenarioForSubmission, adaptUnifiedScenarios, buildScenarioConfigSnapshot } from "./scenarioResultAdapters.js";
 import { getSharedMockResultTransport } from "./mockResultTransport.js";
+import { assertUploadPlanSafe } from "./artifactUploadPlan.js";
 
 /** Documented Phase 2 flag: mock packaging/upload path (not real Supabase). */
 export const F10C2_MOCK_RESULT_UPLOAD_ENABLED = true;
@@ -141,7 +142,7 @@ export function buildResultPackagePayload({
     history: [],
     created_at: nowIso(),
     updated_at: nowIso(),
-    transport_kind: "mock",
+    transport_kind: "mock_or_selected_at_process",
     flags: {
       F10C2_SERVER_SUBMIT: F10C2_SERVER_SUBMIT_ENABLED,
       F10C2_MOCK_RESULT_UPLOAD: F10C2_MOCK_RESULT_UPLOAD_ENABLED,
@@ -295,9 +296,20 @@ export async function processResultPackagePayload(payload, {
         artifact: serverArt,
       });
 
+      const planSafety = ticket.upload_plan ? assertUploadPlanSafe(ticket.upload_plan) : { ok: false };
       pkg = markArtifact(pkg, art.artifact_id, {
         object_key: ticket.object_key || serverArt.object_key,
         upload_ticket: ticket.upload_ticket,
+        ...(planSafety.ok
+          ? {
+              upload_plan: {
+                provider_type: ticket.upload_plan.provider_type,
+                method: ticket.upload_plan.method,
+                expires_in_seconds: ticket.upload_plan.expires_in_seconds,
+                authorization_mode: ticket.upload_plan.authorization?.mode || null,
+              },
+            }
+          : {}),
       });
 
       const current = (pkg.local_artifacts || []).find((a) => a.artifact_id === art.artifact_id);
@@ -306,6 +318,12 @@ export async function processResultPackagePayload(payload, {
         uploadTicket: ticket.upload_ticket,
         bytesHint: current?.size_bytes || 0,
         resumeFromByte: current?.bytes_uploaded || 0,
+        objectKey: ticket.object_key || current?.object_key,
+        mimeType: current?.mime_type,
+        artifact: {
+          ...current,
+          object_key: ticket.object_key || current?.object_key,
+        },
       });
 
       await transport.confirmArtifact({

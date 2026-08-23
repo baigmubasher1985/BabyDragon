@@ -57,3 +57,7 @@ Every `.sql` file begins with:
 4. `field_test_qc_reviews` — run-level QC; **preserves** existing task-level `qc_reviews`  
 
 Future private bucket name (not created): **`result-artifacts`**.
+
+## Phase 4A tenant drafts
+
+Unapplied multi-tenant storage drafts live in [`phase4a/`](./phase4a/README.md) (201–207). They are **not** part of `forward/` 101–115 and are **not** in the Phase 4 disposable apply list.

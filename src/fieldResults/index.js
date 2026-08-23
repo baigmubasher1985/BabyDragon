@@ -28,3 +28,5 @@ export {
   toListRow,
 } from './selectors/fieldResultSelectors.js';
 export { buildFieldResultsFixtures, cloneFixtures } from './fixtures/fieldResultsFixtures.js';
+export { createSupabaseFieldResultsProvider } from './repository/supabaseFieldResultsProvider.js';
+export { mapFieldTestRunRow } from './repository/mapFieldTestRunRow.js';

@@ -29,6 +29,9 @@ Active `supabase/migrations/` remains README-only.
 | 110 | `110_rls_field_test_artifacts_metrics` | (a) | Same ownership model for artifacts + metrics | Leak across tasks |
 | 111 | `111_rls_field_test_qc_reviews` | (a) | Admin/SA/QC mutate; FE read own assigned runs | FE write QC |
 | 112 | `112_result_artifacts_storage_contract` | **(b)** | Document private bucket contract | **No bucket DDL** |
+| 113 | `113_rpc_finalize_field_test_run` | (a) Phase 4 | FE finalize run when artifacts complete | **OWNER GATE** (disposable postgres) |
+| 114 | `114_result_artifacts_private_bucket` | (a) Phase 4 | Private `result-artifacts` bucket + storage policies | Disposable Storage only |
+| 115 | `115_field_test_execute_grants` | (a) Phase 4 | REVOKE anon/PUBLIC; GRANT authenticated on result RPCs | EXECUTE regressions |
 
 ### Rollback rule
 
@@ -54,3 +57,7 @@ Active `supabase/migrations/` remains README-only.
 ### No production apply commands
 
 This manifest must not be used as a runbook to mutate production.
+
+## Phase 4A (separate folder, not this apply order)
+
+Tenant/storage drafts 201–207 live under `supabase/drafts/f10c2/phase4a/`. Do **not** add them to `scripts/f10c2/applyDisposableMigrations.mjs`. See `phase4a/MIGRATION_MANIFEST.md`.

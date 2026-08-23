@@ -106,6 +106,24 @@ export async function saveQueuedFile(file) {
   };
 }
 
+export async function saveResultArtifactFile(artifactId, fileLike) {
+  if (!artifactId || fileLike == null) return null;
+  const id = `result-artifact-${artifactId}`;
+  const blob = fileLike.blob || fileLike;
+  const record = {
+    id,
+    name: fileLike.name || fileLike.fileName || `${artifactId}.bin`,
+    type: fileLike.type || fileLike.mime_type || "application/octet-stream",
+    size: fileLike.size || fileLike.sizeBytes || 0,
+    lastModified: fileLike.lastModified || Date.now(),
+    blob,
+    created_at: new Date().toISOString(),
+    purpose: "field_test_result_artifact",
+  };
+  await runStore("readwrite", (store) => store.put(record));
+  return { id, name: record.name, type: record.type, size: record.size };
+}
+
 export async function readQueuedFile(fileId) {
   if (!fileId) return null;
   return runStore("readonly", (store) => store.get(fileId));

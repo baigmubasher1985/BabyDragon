@@ -141,6 +141,14 @@ export function createMockResultTransport(options = {}) {
         reason: "idempotent_success",
         upload_ticket: existing.upload_ticket,
         object_key: existing.object_key,
+        upload_plan: {
+          provider_type: "mock",
+          method: "mock_local_put",
+          object_key: existing.object_key,
+          expires_in_seconds: 120,
+          authorization: { mode: "mock_ticket" },
+          public_url: null,
+        },
         artifact: existing,
       };
     }
@@ -152,6 +160,14 @@ export function createMockResultTransport(options = {}) {
       mock_upload_token: `mock-upload-${artifact.artifact_id}`,
       object_key: objectKey,
       expires_at: new Date(state.now() + 15 * 60 * 1000).toISOString(),
+      upload_plan: {
+        provider_type: "mock",
+        method: "mock_local_put",
+        object_key: objectKey,
+        expires_in_seconds: 120,
+        authorization: { mode: "mock_ticket" },
+        public_url: null,
+      },
     };
 
     const row = {

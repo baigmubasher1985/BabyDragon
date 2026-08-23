@@ -10,7 +10,18 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:security": "vitest run tests/security"
+    "test:security": "vitest run tests/security",
+    "test:f10c2": "vitest run tests/f10c2",
+    "f10c2:assert-disposable": "node scripts/f10c2/assertDisposableTarget.mjs",
+    "f10c2:apply-disposable": "node scripts/f10c2/applyDisposableMigrations.mjs",
+    "f10c2:validate-disposable": "node scripts/f10c2/runDisposableValidation.mjs",
+    "f10c2:print-phase4b-plan": "node scripts/f10c2/printPhase4bPlan.mjs",
+    "f10c2:assert-phase4b-target": "node scripts/f10c2/assertPhase4bTarget.mjs",
+    "f10c2:scan-phase4b-migrations": "node scripts/f10c2/scanPhase4bMigrations.mjs",
+    "f10c2:apply-phase4b": "node scripts/f10c2/applyPhase4bMigrations.mjs",
+    "f10c2:cleanup-phase4b": "node scripts/f10c2/cleanupPhase4bSynthetic.mjs",
+    "f10c2:validate-operational-bootstrap": "node scripts/f10c2/validateOperationalBootstrap.mjs",
+    "f10c2:bootstrap-phase4b": "node scripts/f10c2/bootstrapDisposableOperationalSchema.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.4",

@@ -1,0 +1,9 @@
+-- DRAFT / UNAPPLIED / DO NOT RUN
+-- F10C2 PHASE 4A
+-- NO DATABASE TARGET AUTHORIZED
+-- PAIR: 205_artifact_transfer_jobs
+-- ROLE: ROLLBACK
+
+BEGIN;
+DROP TABLE IF EXISTS public.artifact_transfer_jobs CASCADE;
+COMMIT;

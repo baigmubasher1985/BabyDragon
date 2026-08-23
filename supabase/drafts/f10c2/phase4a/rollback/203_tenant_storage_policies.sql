@@ -1,0 +1,9 @@
+-- DRAFT / UNAPPLIED / DO NOT RUN
+-- F10C2 PHASE 4A
+-- NO DATABASE TARGET AUTHORIZED
+-- PAIR: 203_tenant_storage_policies
+-- ROLE: ROLLBACK
+
+BEGIN;
+DROP TABLE IF EXISTS public.tenant_storage_policies CASCADE;
+COMMIT;

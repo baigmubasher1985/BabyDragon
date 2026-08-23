@@ -56,12 +56,19 @@ function listSql(dir) {
     .sort()
 }
 
+const PHASE4_SLUGS = [
+  '113_rpc_finalize_field_test_run',
+  '114_result_artifacts_private_bucket',
+  '115_field_test_execute_grants',
+]
+
 describe('f10c2 artifacts — draft pairing and headers', () => {
-  it('has matching forward/rollback/verification for 101–112', () => {
+  it('has matching forward/rollback/verification for 101–112 plus Phase 4 113–115', () => {
     const fwd = listSql(path.join(DRAFTS, 'forward'))
     const rb = listSql(path.join(DRAFTS, 'rollback'))
     const vf = listSql(path.join(DRAFTS, 'verification'))
-    expect(fwd).toEqual(SLUGS.map((s) => `${s}.sql`))
+    const expected = [...SLUGS, ...PHASE4_SLUGS].map((s) => `${s}.sql`)
+    expect(fwd).toEqual(expected)
     expect(rb).toEqual(fwd)
     expect(vf).toEqual(fwd)
   })
@@ -151,7 +158,7 @@ describe('f10c2 artifacts — security invariants in drafts', () => {
     expect(rls).not.toMatch(/FOR DELETE/i)
   })
 
-  it('does not create result-artifacts bucket in any f10c2 forward draft', () => {
+  it('does not create result-artifacts bucket in Phase 1 forward drafts 101–112', () => {
     for (const slug of SLUGS) {
       const text = read(`supabase/drafts/f10c2/forward/${slug}.sql`)
       const body = stripSqlComments(text)

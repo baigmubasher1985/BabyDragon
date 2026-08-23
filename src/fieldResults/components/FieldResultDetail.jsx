@@ -49,6 +49,9 @@ function OverviewPanel({ result }) {
         <Metric label="Upload" value={o.upload_state} />
         <Metric label="Processing" value={o.processing_state} />
         <Metric label="QC" value={o.latest_qc_status} />
+        <Metric label="Re-drive needed" value={o.redrive_needed ? 'yes' : 'no'} />
+        <Metric label="Original task" value={o.task_id} />
+        <Metric label="Linked re-drive task" value={o.redrive_task_id || 'none'} />
       </div>
     </div>
   );
@@ -204,14 +207,19 @@ function ScenarioPanel({ result }) {
   );
 }
 
-function ArtifactsPanel({ result, repository, onNotice }) {
+function ArtifactsPanel({ result, repository, actor, onNotice }) {
   async function accessArtifact(artifactId) {
-    const res = await repository.requestArtifactAccess(result.id, artifactId, {});
+    const res = await repository.requestArtifactAccess(result.id, artifactId, actor || {});
     if (!res.ok) {
       onNotice(res.error?.message || 'Artifact not available');
       return;
     }
-    onNotice(res.access?.notice || 'Mock artifact access granted (no URL).');
+    if (res.access?.mode === 'signed_url' && res.access.signed_url) {
+      window.open(res.access.signed_url, '_blank', 'noopener,noreferrer');
+      onNotice('Opened protected artifact (short-lived signed access).');
+      return;
+    }
+    onNotice(res.access?.notice || 'Artifact access granted (no public URL).');
   }
 
   return (
@@ -250,7 +258,7 @@ function ArtifactsPanel({ result, repository, onNotice }) {
                       className="bdfr-btn bdfr-btn-secondary"
                       onClick={() => accessArtifact(a.artifact_id)}
                     >
-                      Mock access
+                      Open evidence
                     </button>
                   ) : (
                     <span className="bdfr-badge bdfr-badge-warn">Not downloadable</span>
@@ -262,7 +270,7 @@ function ArtifactsPanel({ result, repository, onNotice }) {
         </table>
       </div>
       <p style={{ fontSize: 12, color: 'var(--muted)' }}>
-        Artifact access uses the provider abstraction only. No public/signed Storage URLs.
+        Artifact access uses the provider abstraction only. Short-lived authorized read access is requested at open time; durable records never store public URLs.
       </p>
     </div>
   );
@@ -406,7 +414,7 @@ function QcWorkspace({ result, repository, actor, canQc, onUpdated, onNotice }) 
               {saving ? 'Saving…' : 'Save QC decision'}
             </button>
             <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={linkRedrive}>
-              Create / link re-drive (mock)
+              Create / link re-drive
             </button>
           </div>
         </div>
@@ -555,6 +563,7 @@ export default function FieldResultDetail({
             <ArtifactsPanel
               result={result}
               repository={repository}
+              actor={actor}
               onNotice={setNotice}
             />
           )}

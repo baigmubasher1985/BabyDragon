@@ -5,11 +5,13 @@
  * Phase 3 ships mock/local provider only (no Supabase).
  */
 
+import { getFieldResultsProviderKind } from '../../lib/f10c2FeatureFlags.js';
 import { createMockFieldResultsProvider } from './mockFieldResultsProvider.js';
+import { createSupabaseFieldResultsProvider } from './supabaseFieldResultsProvider.js';
 
 export const FIELD_RESULTS_PROVIDER_KINDS = Object.freeze({
   MOCK: 'mock',
-  // Future: SUPABASE: 'supabase' — not implemented in Phase 3
+  SUPABASE: 'supabase',
 });
 
 /**
@@ -28,15 +30,15 @@ export const FIELD_RESULTS_PROVIDER_KINDS = Object.freeze({
  */
 
 /**
- * Factory — Phase 3 always returns mock provider.
- * Future Supabase provider can be selected here without rewriting pages.
+ * Factory — default mock. Supabase only when kind=supabase or runtime flag is set.
  */
 export function createFieldResultsRepository(options = {}) {
-  const kind = options.kind || FIELD_RESULTS_PROVIDER_KINDS.MOCK;
+  const kind = options.kind || getFieldResultsProviderKind() || FIELD_RESULTS_PROVIDER_KINDS.MOCK;
+  if (kind === FIELD_RESULTS_PROVIDER_KINDS.SUPABASE) {
+    return createSupabaseFieldResultsProvider(options);
+  }
   if (kind !== FIELD_RESULTS_PROVIDER_KINDS.MOCK) {
-    throw new Error(
-      `Field Results provider "${kind}" is not available in Phase 3 (mock-only).`,
-    );
+    throw new Error(`Field Results provider "${kind}" is not available.`);
   }
   return createMockFieldResultsProvider(options);
 }
