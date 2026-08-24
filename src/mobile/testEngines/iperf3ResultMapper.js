@@ -377,13 +377,25 @@ export function mapIperf3NativeResult(nativeResult = {}, setup = {}) {
     intervalSamples: [],
     jsonParseFailed: false,
     source: nativeResult?.source || "native-iperf3-v1g4b",
+    failureClass: nativeResult?.failure_class || nativeResult?.failureClass || "",
   };
 
+  if (mapped.failureClass) {
+    mapped.errorCode = mapped.errorCode || mapped.failureClass;
+  }
+
   if (!rawJson) {
+    if (String(nativeResult?.status || "").toLowerCase() === "timeout") {
+      mapped.status = "incomplete";
+      mapped.message = mapped.message || "iPerf3 process wait timed out before JSON output. Server connectivity was not confirmed.";
+      mapped.errorCode = mapped.errorCode || "timeout";
+      return mapped;
+    }
     if (String(nativeResult?.stdout || "").trim() || nativeResult?.json_parse_warning) {
       mapped.jsonParseFailed = true;
       mapped.message = mapped.message || "iPerf3 JSON parse failed.";
     }
+    mapped.status = mapped.status === "error" ? "incomplete" : mapped.status;
     return mapped;
   }
 
@@ -429,8 +441,8 @@ export function buildIperfIterationResult(iteration, mapped = {}, setup = {}, na
   const ok = mapped.ok === true && !mapped.bidirIncomplete;
   const status = mapped.ok
     ? (mapped.bidirIncomplete ? "partial" : "complete")
-    : "error";
-  const classif = ok ? null : classifyIperfFailure(mapped.message || mapped.errorCode || "");
+    : "incomplete";
+  const classif = ok ? null : classifyIperfFailure(mapped.failureClass || mapped.message || mapped.errorCode || mapped.status || "");
 
   return {
     iteration,
@@ -439,10 +451,10 @@ export function buildIperfIterationResult(iteration, mapped = {}, setup = {}, na
     direction: setup.direction || "ul",
     dlMbps: mapped.dlMbps,
     ulMbps: mapped.ulMbps,
-    dlBytes: mapped.dlBytes ?? 0,
-    ulBytes: mapped.ulBytes ?? 0,
-    dlMeasuredBytes: mapped.dlBytes ?? 0,
-    ulMeasuredBytes: mapped.ulBytes ?? 0,
+    dlBytes: mapped.dlBytes ?? null,
+    ulBytes: mapped.ulBytes ?? null,
+    dlMeasuredBytes: mapped.dlBytes ?? null,
+    ulMeasuredBytes: mapped.ulBytes ?? null,
     source: mapped.source,
     startedAt: mapped.startedAt || Date.now(),
     endedAt: mapped.endedAt || Date.now(),
@@ -462,6 +474,7 @@ export function buildIperfIterationResult(iteration, mapped = {}, setup = {}, na
     errorCode: ok ? "" : (classif?.errorCode || mapped.errorCode || ""),
     failureStage: ok ? null : (classif?.failureStage || null),
     conciseReason: ok ? null : (classif?.conciseReason || null),
+    failureClass: ok ? null : (classif?.failureClass || mapped.failureClass || null),
     jsonParseFailed: mapped.jsonParseFailed === true,
     nativeStatus: nativeResult?.status || mapped.status,
   };

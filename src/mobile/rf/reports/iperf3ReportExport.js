@@ -109,7 +109,7 @@ export function mapIperfExportStatus(status) {
   if (key === "complete_with_failures") return "complete_with_failures";
   if (key === "stopped") return "cancelled";
   if (key === "partial") return "partial";
-  if (key === "error") return "error";
+  if (key === "incomplete" || key === "timeout") return "incomplete";
   if (key === "saved" || key === "cancelled" || key === "failed") return key;
   return key || "idle";
 }

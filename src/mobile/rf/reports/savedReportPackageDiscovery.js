@@ -159,23 +159,182 @@ export function groupDraftsByTaskGrid(drafts = []) {
   return [...groups.values()].sort((a, b) => a.task.localeCompare(b.task) || a.grid.localeCompare(b.grid));
 }
 
-export function filterDraftsForActiveContext(drafts = [], { taskLabel = null, grid = null } = {}) {
-  const task = cleanText(taskLabel);
-  const g = cleanText(grid);
-  if (!task && !g) return { matched: drafts, others: [], warnings: [] };
-  const matched = [];
-  const others = [];
+export const PACKAGE_SCOPES = {
+  CURRENT_TASK: "current_task",
+  UNASSIGNED: "unassigned",
+  OTHER_TASKS: "other_tasks",
+  ALL_DEVICE: "all_device",
+};
+
+export const PACKAGE_SCOPE_LABELS = {
+  current_task: "Current Task",
+  unassigned: "Unassigned / No Active Task",
+  other_tasks: "Other Tasks or Grids",
+  all_device: "All Device Packages",
+};
+
+const UNASSIGNED_TASK_LABELS = new Set([
+  "no active task",
+  "unassigned",
+  "none",
+]);
+
+const UNASSIGNED_GRID_LABELS = new Set([
+  "grid pending",
+  "unassigned",
+  "none",
+]);
+
+export function isUnassignedTaskLabel(label) {
+  const text = cleanText(label);
+  if (!text) return true;
+  return UNASSIGNED_TASK_LABELS.has(text.toLowerCase());
+}
+
+export function isUnassignedGridLabel(label) {
+  const text = cleanText(label);
+  if (!text) return true;
+  return UNASSIGNED_GRID_LABELS.has(text.toLowerCase());
+}
+
+export function durablePackageIdentity(draft = {}) {
+  return cleanText(draft.packageId)
+    || cleanText(draft.sourcePackage)
+    || cleanText(draft.session?.sourcePackage)
+    || cleanText(draft.session?.id)
+    || cleanText(draft.session?.session_id)
+    || cleanText(draft.draftId)
+    || null;
+}
+
+export function dedupeDraftsByIdentity(drafts = []) {
+  const seen = new Set();
+  const out = [];
   for (const draft of drafts) {
-    const sameTask = !task || cleanText(draft.taskLabel) === task;
-    const sameGrid = !g || cleanText(draft.grid) === g;
-    if (sameTask && sameGrid) matched.push(draft);
-    else others.push(draft);
+    const id = durablePackageIdentity(draft);
+    const key = id || JSON.stringify({
+      startedAt: draft.startedAt,
+      label: draft.label,
+      task: draft.taskLabel,
+    });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(draft);
   }
+  return out;
+}
+
+export function classifyDraftScope(draft = {}, { taskLabel = null, grid = null } = {}) {
+  const activeTask = cleanText(taskLabel);
+  const activeGrid = cleanText(grid);
+  const draftTask = cleanText(draft.taskLabel);
+  const draftGrid = cleanText(draft.grid);
+  const unassigned = isUnassignedTaskLabel(draftTask) && isUnassignedGridLabel(draftGrid);
+  if (unassigned) return PACKAGE_SCOPES.UNASSIGNED;
+  if (activeTask && !isUnassignedTaskLabel(activeTask)) {
+    const sameTask = draftTask === activeTask;
+    const sameGrid = !activeGrid || isUnassignedGridLabel(activeGrid) || draftGrid === activeGrid;
+    if (sameTask && sameGrid) return PACKAGE_SCOPES.CURRENT_TASK;
+  }
+  return PACKAGE_SCOPES.OTHER_TASKS;
+}
+
+export function partitionDraftsByScope(drafts = [], context = {}) {
+  const unique = dedupeDraftsByIdentity(drafts);
+  const current_task = [];
+  const unassigned = [];
+  const other_tasks = [];
+  for (const draft of unique) {
+    const scope = classifyDraftScope(draft, context);
+    if (scope === PACKAGE_SCOPES.CURRENT_TASK) current_task.push(draft);
+    else if (scope === PACKAGE_SCOPES.UNASSIGNED) unassigned.push(draft);
+    else other_tasks.push(draft);
+  }
+  return {
+    current_task,
+    unassigned,
+    other_tasks,
+    all_device: unique,
+  };
+}
+
+export function applyScopeAutoSelection(partition = {}) {
+  const mark = (list = [], selected) => list.map((draft) => ({ ...draft, selected, scope: draft.scope }));
+  const current = mark(partition.current_task, true).map((d) => ({ ...d, scope: PACKAGE_SCOPES.CURRENT_TASK }));
+  const unassigned = mark(partition.unassigned, false).map((d) => ({ ...d, scope: PACKAGE_SCOPES.UNASSIGNED }));
+  const others = mark(partition.other_tasks, false).map((d) => ({ ...d, scope: PACKAGE_SCOPES.OTHER_TASKS }));
+  return {
+    current_task: current,
+    unassigned,
+    other_tasks: others,
+    all_device: [...current, ...unassigned, ...others],
+  };
+}
+
+export function draftsForScope(partition = {}, scope = PACKAGE_SCOPES.CURRENT_TASK) {
+  if (scope === PACKAGE_SCOPES.ALL_DEVICE) return partition.all_device || [];
+  if (scope === PACKAGE_SCOPES.UNASSIGNED) return partition.unassigned || [];
+  if (scope === PACKAGE_SCOPES.OTHER_TASKS) return partition.other_tasks || [];
+  return partition.current_task || [];
+}
+
+export function filterDraftsForActiveContext(drafts = [], { taskLabel = null, grid = null } = {}) {
+  const partitioned = partitionDraftsByScope(drafts, { taskLabel, grid });
   const warnings = [];
-  if (others.length) {
-    warnings.push(`${others.length} saved package(s) belong to a different task/grid and were not auto-selected.`);
+  if (partitioned.unassigned.length) {
+    warnings.push(`${partitioned.unassigned.length} unassigned package(s) visible but not auto-selected.`);
   }
-  return { matched, others, warnings };
+  if (partitioned.other_tasks.length) {
+    warnings.push(`${partitioned.other_tasks.length} package(s) from other task/grid visible but not auto-selected.`);
+  }
+  return {
+    matched: partitioned.current_task,
+    others: [...partitioned.unassigned, ...partitioned.other_tasks],
+    unassigned: partitioned.unassigned,
+    otherTasks: partitioned.other_tasks,
+    all: partitioned.all_device,
+    partitioned,
+    warnings,
+  };
+}
+
+export function buildUploadAssociation({
+  packageId = null,
+  sessionId = null,
+  originalTask = null,
+  originalGrid = null,
+  currentTask = null,
+  currentGrid = null,
+} = {}) {
+  if (isUnassignedTaskLabel(currentTask)) {
+    return { ok: false, reason: "ambiguous_no_current_task" };
+  }
+  if (!cleanText(packageId) && !cleanText(sessionId)) {
+    return { ok: false, reason: "ambiguous_missing_package_identity" };
+  }
+  return {
+    ok: true,
+    association: {
+      kind: "upload_association",
+      originalImmutable: true,
+      packageId: cleanText(packageId),
+      sessionId: cleanText(sessionId),
+      originalTask: cleanText(originalTask),
+      originalGrid: cleanText(originalGrid),
+      associatedTask: cleanText(currentTask),
+      associatedGrid: cleanText(currentGrid),
+      associatedAtIso: new Date().toISOString(),
+    },
+  };
+}
+
+export function restoreSelectedIdentities(drafts = [], selectedIds = []) {
+  const set = new Set((selectedIds || []).map((id) => String(id)));
+  if (!set.size) return drafts;
+  return drafts.map((draft) => {
+    const id = durablePackageIdentity(draft);
+    return { ...draft, selected: Boolean(id && set.has(id)) };
+  });
 }
 
 export function summarizeDraftForUi(draft = {}) {
@@ -188,7 +347,7 @@ export function summarizeDraftForUi(draft = {}) {
   const attempted = session.appAttemptedIterations;
   const completed = session.appCompletedIterations;
   const failed = session.appFailedIterations;
-  let detail = "";
+  let detail;
   if (draft.scenarioKey === "ookla" || /ookla/i.test(draft.label)) {
     const n = (session.appOoklaEvidenceIterations || []).length;
     detail = n ? `${n} external result${n === 1 ? "" : "s"}` : (status || "External evidence");
@@ -213,4 +372,13 @@ export default {
   filterDraftsForActiveContext,
   summarizeDraftForUi,
   classifyPackageKind,
+  PACKAGE_SCOPES,
+  classifyDraftScope,
+  partitionDraftsByScope,
+  applyScopeAutoSelection,
+  draftsForScope,
+  durablePackageIdentity,
+  dedupeDraftsByIdentity,
+  buildUploadAssociation,
+  restoreSelectedIdentities,
 };

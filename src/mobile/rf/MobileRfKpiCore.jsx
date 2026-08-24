@@ -68,6 +68,13 @@ import {
   buildUnifiedDraftFromSession,
   filterDraftsForActiveContext,
   summarizeDraftForUi,
+  PACKAGE_SCOPES,
+  PACKAGE_SCOPE_LABELS,
+  applyScopeAutoSelection,
+  draftsForScope,
+  durablePackageIdentity,
+  buildUploadAssociation,
+  restoreSelectedIdentities,
 } from "./reports/savedReportPackageDiscovery";
 import { normalizeConnectivitySnapshot, toJsonConnectivityBlock } from "./reports/connectivitySnapshot";
 import { classifyFtpFailure, classifyIperfFailure, classifyNativeHttpFailure } from "./reports/dataTestOutcome";
@@ -4660,9 +4667,17 @@ export default function MobileRfKpi({
   const [unifiedDiscoveryWarnings, setUnifiedDiscoveryWarnings] = useState([]);
   const [unifiedCompatibleCount, setUnifiedCompatibleCount] = useState(0);
   const [unifiedPackageCount, setUnifiedPackageCount] = useState(0);
+  const [unifiedPackageScope, setUnifiedPackageScope] = useState(PACKAGE_SCOPES.CURRENT_TASK);
+  const [unifiedScopeCounts, setUnifiedScopeCounts] = useState({
+    current_task: 0,
+    unassigned: 0,
+    other_tasks: 0,
+    all_device: 0,
+  });
+  const [pendingPackageAssociation, setPendingPackageAssociation] = useState(null);
   const [iterationRunMode, setIterationRunMode] = useState("fixed"); // fixed | continuous
   const [controlledTestDialog, setControlledTestDialog] = useState(null);
-  const [dataSetupOpen, setDataSetupOpen] = useState(true);
+  const [dataSetupOpen, setDataSetupOpen] = useState(false);
   const [advancedRfOpen, setAdvancedRfOpen] = useState(false);
   const [dataTestType, setDataTestType] = useState(DEFAULT_DATA_TEST_TYPE);
   const [dataDirection, setDataDirection] = useState(DEFAULT_DATA_DIRECTION);
@@ -7803,16 +7818,7 @@ export default function MobileRfKpi({
       }
       const packages = listed.packages || [];
       setUnifiedPackageCount(packages.length);
-      const gridToken = String(activeGrid || "").trim();
-      const taskToken = String(activeTaskLabel || "").replace(/[^a-zA-Z0-9]+/g, "_");
-      const compatible = packages.filter((pkg) => {
-        const id = String(pkg.packageId || "");
-        if (gridToken && id.includes(gridToken)) return true;
-        if (taskToken && taskToken.length >= 8 && id.includes(taskToken.slice(0, 24))) return true;
-        // If no active task/grid context, treat all BabyDragon report packages as eligible for review.
-        return !gridToken && !taskToken;
-      });
-      setUnifiedCompatibleCount(compatible.length || packages.length);
+      setUnifiedCompatibleCount(packages.length);
     } catch {
       setUnifiedCompatibleCount(0);
       setUnifiedPackageCount(0);
@@ -7847,30 +7853,45 @@ export default function MobileRfKpi({
           console.warn("[BabyDragon] Unified package hydrate skipped:", pkg?.packageId, error);
         }
       }
-      const { matched, others, warnings } = filterDraftsForActiveContext(hydrated, {
+      const { partitioned, warnings } = filterDraftsForActiveContext(hydrated, {
         taskLabel: activeTaskLabel,
         grid: activeGrid,
       });
-      const preferred = matched.length ? matched : hydrated;
-      const drafts = preferred.map((item) => ({ ...item, selected: true }));
-      // Keep any in-memory current-session drafts that are not already present by package id.
+      const scoped = applyScopeAutoSelection(partitioned);
+      let persistedIds = [];
+      try {
+        persistedIds = JSON.parse(window.localStorage.getItem("bd.cr1a.unifiedPackageSelection.v1") || "[]");
+      } catch {
+        persistedIds = [];
+      }
+      const drafts = restoreSelectedIdentities(scoped.all_device, persistedIds);
+      if (!persistedIds.length) {
+        try {
+          const ids = drafts.filter((item) => item.selected).map((item) => durablePackageIdentity(item)).filter(Boolean);
+          window.localStorage.setItem("bd.cr1a.unifiedPackageSelection.v1", JSON.stringify(ids));
+        } catch {
+          /* ignore */
+        }
+      }
+      setUnifiedScopeCounts({
+        current_task: scoped.current_task.length,
+        unassigned: scoped.unassigned.length,
+        other_tasks: scoped.other_tasks.length,
+        all_device: scoped.all_device.length,
+      });
       setUnifiedScenarioDrafts((current) => {
-        const packageIds = new Set(drafts.map((d) => d.packageId || d.draftId));
-        const retained = current.filter((item) => item.origin === "current_saved_session" && !packageIds.has(item.packageId || item.draftId));
+        const packageIds = new Set(drafts.map((d) => durablePackageIdentity(d) || d.draftId));
+        const retained = current.filter((item) => item.origin === "current_saved_session"
+          && !packageIds.has(durablePackageIdentity(item) || item.draftId));
         return [...retained, ...drafts];
       });
-      setUnifiedDiscoveryWarnings([
-        ...warnings,
-        ...(others.length && matched.length
-          ? [`${others.length} package(s) from other task/grid available but not auto-selected.`]
-          : []),
-      ]);
-      setUnifiedCompatibleCount(drafts.length || hydrated.length);
+      setUnifiedDiscoveryWarnings(warnings);
+      setUnifiedCompatibleCount(drafts.length);
       setUnifiedReviewOpen(true);
       setUnifiedExportStatus(
         drafts.length
-          ? `Found ${drafts.length} saved scenario package(s) for ${activeTaskLabel || "current task"} / ${activeGrid || "current grid"}. Native packages: ${(listed.packages || []).length}.`
-          : "No compatible saved scenario packages found for the current task/grid.",
+          ? `Found ${drafts.length} device package(s). Current task ${scoped.current_task.length} auto-selected; unassigned ${scoped.unassigned.length} and other ${scoped.other_tasks.length} visible without auto-select.`
+          : "No saved scenario packages found on this device.",
       );
     } catch (error) {
       setUnifiedExportStatus(error?.message || "Saved package discovery failed.");
@@ -7880,9 +7901,62 @@ export default function MobileRfKpi({
   }
 
   function toggleUnifiedDraft(draftId) {
-    setUnifiedScenarioDrafts((current) => current.map((item) => (
-      item.draftId === draftId ? { ...item, selected: !item.selected } : item
-    )));
+    setUnifiedScenarioDrafts((current) => {
+      const next = current.map((item) => (
+        item.draftId === draftId ? { ...item, selected: !item.selected } : item
+      ));
+      try {
+        const ids = next.filter((item) => item.selected).map((item) => durablePackageIdentity(item)).filter(Boolean);
+        window.localStorage.setItem("bd.cr1a.unifiedPackageSelection.v1", JSON.stringify(ids));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
+
+  function requestAssociateUnassignedToCurrentTask() {
+    const selected = unifiedScenarioDrafts.filter((item) => item.selected && item.scope === PACKAGE_SCOPES.UNASSIGNED);
+    if (!selected.length) {
+      setUnifiedExportStatus("Select one or more Unassigned packages, then Attach to current task.");
+      return;
+    }
+    const built = selected.map((item) => buildUploadAssociation({
+      packageId: item.packageId || item.sourcePackage,
+      sessionId: item.session?.id,
+      originalTask: item.taskLabel,
+      originalGrid: item.grid,
+      currentTask: activeTaskLabel,
+      currentGrid: activeGrid,
+    }));
+    const rejected = built.find((item) => !item.ok);
+    if (rejected) {
+      setUnifiedExportStatus(`Association rejected: ${rejected.reason}. Original packages were not changed.`);
+      return;
+    }
+    setPendingPackageAssociation({
+      draftIds: selected.map((item) => item.draftId),
+      associations: built.map((item) => item.association),
+    });
+  }
+
+  function confirmPackageAssociation() {
+    if (!pendingPackageAssociation) return;
+    const idSet = new Set(pendingPackageAssociation.draftIds);
+    setUnifiedScenarioDrafts((current) => current.map((item) => {
+      if (!idSet.has(item.draftId)) return item;
+      const association = pendingPackageAssociation.associations.find((row) => (
+        row.packageId === (item.packageId || item.sourcePackage)
+        || row.sessionId === item.session?.id
+      )) || pendingPackageAssociation.associations[0];
+      return {
+        ...item,
+        uploadAssociation: association,
+        session: item.session ? { ...item.session, uploadAssociation: association } : item.session,
+      };
+    }));
+    setPendingPackageAssociation(null);
+    setUnifiedExportStatus("Upload association recorded. Original report files were not rewritten.");
   }
 
   function clearUnifiedDrafts() {
@@ -8344,15 +8418,18 @@ export default function MobileRfKpi({
           <p className="bd-rf-inline-note bd-rf-thp-error-note">{mobilityStartError}</p>
         ) : null}
 
-        <label className="bd-rf-report-name-field">
-          <span>Log / Report Name</span>
-          <input
-            type="text"
-            value={reportLogName}
-            placeholder="Optional custom export name"
-            onChange={(event) => handleReportLogNameChange(event.target.value)}
-          />
-        </label>
+        <details className="bd-rf-report-name-field bd-rf-advanced-toggle">
+          <summary>Log / Report Name</summary>
+          <label>
+            <span>Optional custom export name</span>
+            <input
+              type="text"
+              value={reportLogName}
+              placeholder="Optional custom export name"
+              onChange={(event) => handleReportLogNameChange(event.target.value)}
+            />
+          </label>
+        </details>
 
         {(testState === "paused" || testState === "recording") && collectorRunning ? (
           <p className="bd-rf-inline-note bd-rf-pause-note">
@@ -8366,7 +8443,7 @@ export default function MobileRfKpi({
           <button
             type="button"
             className={selectedMode === "data" ? "active" : ""}
-            onClick={() => { setSelectedMode("data"); setDataSetupOpen(true); }}
+            onClick={() => { setSelectedMode("data"); }}
           >
             Data Test
           </button>
@@ -8984,7 +9061,21 @@ export default function MobileRfKpi({
             </div>
             {unifiedReviewOpen && unifiedScenarioDrafts.length ? (
               <div className="bd-rf-unified-review">
-                {/* Generate stays above the scrollable list so sticky Start Data cannot bury it. */}
+                <div className="bd-rf-package-scope-tabs" role="tablist" aria-label="Package scopes">
+                  {Object.values(PACKAGE_SCOPES).map((scope) => (
+                    <button
+                      key={scope}
+                      type="button"
+                      role="tab"
+                      aria-selected={unifiedPackageScope === scope}
+                      className={unifiedPackageScope === scope ? "is-active" : ""}
+                      onClick={() => setUnifiedPackageScope(scope)}
+                    >
+                      {PACKAGE_SCOPE_LABELS[scope]}
+                      <em>{unifiedScopeCounts[scope] || 0}</em>
+                    </button>
+                  ))}
+                </div>
                 <button
                   type="button"
                   className="bd-mobile-primary bd-rf-unified-generate-btn"
@@ -8993,8 +9084,26 @@ export default function MobileRfKpi({
                 >
                   {unifiedExportBusy ? "Building Unified..." : "Generate Unified Report"}
                 </button>
+                <button
+                  type="button"
+                  className="bd-mobile-secondary"
+                  disabled={!draftsForScope({
+                    current_task: unifiedScenarioDrafts.filter((d) => d.scope === PACKAGE_SCOPES.CURRENT_TASK),
+                    unassigned: unifiedScenarioDrafts.filter((d) => d.scope === PACKAGE_SCOPES.UNASSIGNED),
+                    other_tasks: unifiedScenarioDrafts.filter((d) => d.scope === PACKAGE_SCOPES.OTHER_TASKS),
+                    all_device: unifiedScenarioDrafts,
+                  }, PACKAGE_SCOPES.UNASSIGNED).some((item) => item.selected)}
+                  onClick={requestAssociateUnassignedToCurrentTask}
+                >
+                  Attach selected unassigned to current task
+                </button>
                 <div className="bd-rf-unified-scenario-list" role="list" aria-label="Saved scenarios">
-                  {unifiedScenarioDrafts.map((item, scenarioIndex) => {
+                  {draftsForScope({
+                    current_task: unifiedScenarioDrafts.filter((d) => d.scope === PACKAGE_SCOPES.CURRENT_TASK),
+                    unassigned: unifiedScenarioDrafts.filter((d) => d.scope === PACKAGE_SCOPES.UNASSIGNED),
+                    other_tasks: unifiedScenarioDrafts.filter((d) => d.scope === PACKAGE_SCOPES.OTHER_TASKS),
+                    all_device: unifiedScenarioDrafts,
+                  }, unifiedPackageScope).map((item, scenarioIndex) => {
                     const ui = summarizeDraftForUi(item);
                     const sourceLabel = item.sourcePackage || item.packageId || item.draftId || "";
                     const scenarioId = `S${String(scenarioIndex + 1).padStart(2, "0")}`;
@@ -9003,18 +9112,28 @@ export default function MobileRfKpi({
                       <label key={item.draftId} className="bd-rf-unified-scenario-row" role="listitem">
                         <input
                           type="checkbox"
-                          checked={item.selected !== false}
+                          checked={item.selected === true}
                           onChange={() => toggleUnifiedDraft(item.draftId)}
                         />
                         <span className="bd-rf-unified-scenario-copy">
                           <b className="bd-rf-unified-scenario-title">
                             {scenarioId} · {item.label}
                           </b>
+                          <small className="bd-rf-unified-scenario-meta">
+                            {ui.timeLabel ? `${ui.timeLabel} · ` : ""}
+                            {item.taskLabel || "No active task"} · {item.grid || "Grid pending"}
+                            {item.session?.id ? ` · ${item.session.id}` : ""}
+                          </small>
                           {metaLine ? (
                             <small className="bd-rf-unified-scenario-meta">{metaLine}</small>
                           ) : null}
                           {ui.timeLabel ? (
                             <small className="bd-rf-unified-scenario-time">{ui.timeLabel}</small>
+                          ) : null}
+                          {item.uploadAssociation ? (
+                            <small className="bd-rf-unified-scenario-meta">
+                              Upload association → {item.uploadAssociation.associatedTask} (original unchanged)
+                            </small>
                           ) : null}
                           {sourceLabel ? (
                             <details className="bd-rf-unified-source-details">
@@ -9163,6 +9282,21 @@ export default function MobileRfKpi({
         ) : null}
       </div>
 
+      {pendingPackageAssociation ? (
+        <div className="bd-rf-confirm-overlay" role="dialog" aria-modal="true" aria-label="Confirm package association">
+          <div className="bd-mobile-card bd-rf-confirm-card">
+            <h3>Attach unassigned packages?</h3>
+            <p>
+              This creates upload-association metadata only. Original morning/report files stay immutable.
+              Task: {activeTaskLabel || "—"} · Grid: {activeGrid || "—"}.
+            </p>
+            <div className="bd-rf-action-grid">
+              <button type="button" className="bd-mobile-primary" onClick={confirmPackageAssociation}>Confirm association</button>
+              <button type="button" className="bd-mobile-secondary" onClick={() => setPendingPackageAssociation(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {controlledTestDialog ? (
         <div className="bd-rf-confirm-overlay" role="dialog" aria-modal="true" aria-label={controlledTestDialog.title || "Test status"}>
           <div className="bd-mobile-card bd-rf-confirm-card">

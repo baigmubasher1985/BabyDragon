@@ -6,6 +6,7 @@ import {
   IPERF_PRESETS,
 } from "../config/dataTestConfig";
 import { BabyDragonIperf } from "../../plugins/babyDragonIperf";
+import { probeIperf3Version } from "../../testEngines/iperf3Runner";
 import {
   buildIperf3CommandFromSetup,
   parseIperf3Command,
@@ -62,9 +63,11 @@ function binaryBadge(status) {
 }
 
 function binarySummaryShort(status) {
-  if (status?.ok) return "Binary ready for this device ABI.";
+  if (status?.probeStdout) return String(status.probeStdout).split("\n")[0];
+  if (status?.ok) return "Binary ready for this device ABI. Version/help probe succeeded.";
   if (status?.status === "plugin_error") return "Plugin missing. Rebuild Android with BabyDragonIperfPlugin.";
-  return "Binary missing for this device ABI.";
+  if (status?.failure_class) return `iPerf3 ${status.failure_class}: ${status.message || "not ready"}`;
+  return status?.message || "Binary missing for this device ABI.";
 }
 
 export default function Iperf3TestPage({
@@ -147,7 +150,21 @@ export default function Iperf3TestPage({
     setBinaryBusy(true);
     try {
       const status = await BabyDragonIperf.getIperfStatus();
-      publishBinaryStatus(status);
+      let probe = null;
+      try {
+        probe = typeof BabyDragonIperf.probeIperfVersion === "function"
+          ? await BabyDragonIperf.probeIperfVersion()
+          : await probeIperf3Version();
+      } catch {
+        probe = null;
+      }
+      publishBinaryStatus({
+        ...status,
+        probeOk: probe?.ok,
+        probeStdout: probe?.stdout || status?.stdout || "",
+        probeMessage: probe?.message || "",
+        failure_class: probe?.failure_class || status?.failure_class || "",
+      });
       return status;
     } catch (error) {
       const message = error?.message || "BabyDragonIperf plugin is not registered yet. Rebuild Android after adding plugin.";

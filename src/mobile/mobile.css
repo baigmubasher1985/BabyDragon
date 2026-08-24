@@ -4185,8 +4185,8 @@
    BabyDragon v1.1.0 Step 1B2: RAT isolation, AVG visibility, and compact table fit
    ------------------------------------------------------------ */
 .bd-mobile-rf-compact {
-  padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px));
-  scroll-padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(168px + env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: calc(168px + env(safe-area-inset-bottom, 0px));
 }
 
 .bd-mobile-rf-kpi-table-wrap.compact {
@@ -6207,6 +6207,34 @@
   box-sizing: border-box;
   min-width: 0;
 }
+.bd-rf-package-scope-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 8px 0 10px;
+}
+.bd-rf-package-scope-tabs button {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.55);
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 8px 8px 6px;
+  font-size: 12px;
+  text-align: left;
+}
+.bd-rf-package-scope-tabs button em {
+  display: block;
+  font-style: normal;
+  color: #93c5fd;
+  font-weight: 700;
+}
+.bd-rf-package-scope-tabs button.is-active {
+  border-color: #38bdf8;
+  background: rgba(14, 165, 233, 0.18);
+}
+.bd-rf-advanced-toggle {
+  margin: 8px 0 4px;
+}
 .bd-rf-sticky-action-bar .bd-rf-excel-saved-status,
 .bd-rf-sticky-action-bar .bd-rf-inline-note {
   max-width: 100%;
@@ -7970,8 +7998,8 @@
 }
 
 .bd-rf-ux-simplified.bd-mobile-rf-compact {
-  padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px)) !important;
-  scroll-padding-bottom: calc(520px + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(168px + env(safe-area-inset-bottom, 0px)) !important;
+  scroll-padding-bottom: calc(168px + env(safe-area-inset-bottom, 0px));
 }
 
 /* ------------------------------------------------------------

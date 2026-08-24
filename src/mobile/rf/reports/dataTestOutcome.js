@@ -190,13 +190,100 @@ export function classifyFtpFailure(message = "", opts = {}) {
 export function classifyIperfFailure(message = "") {
   const raw = cleanText(message) || "";
   const m = raw.toLowerCase();
+  const canonical = new Set([
+    "binary_missing",
+    "unsupported_abi",
+    "permission_denied",
+    "linker_failed",
+    "process_spawn_failed",
+    "dns_failed",
+    "connection_refused",
+    "network_unreachable",
+    "timeout",
+    "protocol_error",
+    "server_error",
+    "user_cancelled",
+  ]);
+  if (canonical.has(m)) {
+    return {
+      errorCode: m.toUpperCase(),
+      failureStage: m,
+      conciseReason: m,
+      customerLabel: `iPerf3 — ${m}`,
+      failureClass: m,
+    };
+  }
+  if (m.includes("binary_missing") || m.includes("not an elf") || m.includes("place a real android iperf3")) {
+    return {
+      errorCode: "BINARY_MISSING",
+      failureStage: "binary_missing",
+      conciseReason: "binary_missing",
+      customerLabel: "iPerf3 — binary_missing",
+      failureClass: "binary_missing",
+    };
+  }
+  if (m.includes("unsupported_abi") || m.includes("unsupported abi")) {
+    return {
+      errorCode: "UNSUPPORTED_ABI",
+      failureStage: "unsupported_abi",
+      conciseReason: "unsupported_abi",
+      customerLabel: "iPerf3 — unsupported_abi",
+      failureClass: "unsupported_abi",
+    };
+  }
+  if (m.includes("permission denied") || m.includes("error=13") || m.includes("eacces")) {
+    return {
+      errorCode: "PERMISSION_DENIED",
+      failureStage: "permission_denied",
+      conciseReason: "permission_denied",
+      customerLabel: "iPerf3 — permission_denied",
+      failureClass: "permission_denied",
+    };
+  }
+  if (m.includes("linker") && (m.includes("fail") || m.includes("probe"))) {
+    return {
+      errorCode: "LINKER_FAILED",
+      failureStage: "linker_failed",
+      conciseReason: "linker_failed",
+      customerLabel: "iPerf3 — linker_failed",
+      failureClass: "linker_failed",
+    };
+  }
+  if (m.includes("user_cancelled") || m.includes("throughput test stopped")) {
+    return {
+      errorCode: "USER_CANCELLED",
+      failureStage: "user_cancelled",
+      conciseReason: "user_cancelled",
+      customerLabel: "iPerf3 — user_cancelled",
+      failureClass: "user_cancelled",
+    };
+  }
+  if (m.includes("timeout") || m.includes("timed out") || m === "timeout") {
+    const connectish = m.includes("connect") || m.includes("connection");
+    return {
+      errorCode: connectish ? "IPERF_CONNECTION_TIMEOUT" : "TIMEOUT",
+      failureStage: connectish ? "server_connection" : "timeout",
+      conciseReason: connectish ? "Connection timed out" : "timeout",
+      customerLabel: connectish ? "iPerf3 — Connection timed out" : "iPerf3 — timeout",
+      failureClass: "timeout",
+    };
+  }
+  if (m.includes("process_spawn_failed") || (m.includes("exited with code -1") && !m.includes("json"))) {
+    return {
+      errorCode: "PROCESS_SPAWN_FAILED",
+      failureStage: "process_spawn_failed",
+      conciseReason: "process_spawn_failed",
+      customerLabel: "iPerf3 — process_spawn_failed",
+      failureClass: "process_spawn_failed",
+    };
+  }
   if (m.includes("server is busy") || /\bbusy\b/.test(m)) {
     return {
       errorCode: "IPERF_SERVER_BUSY",
       failureStage: "server_busy",
       conciseReason: "Server Busy",
       customerLabel: "iPerf3 — Server Busy",
-      failureClass: "SERVER_BUSY",
+      failureClass: "server_error",
     };
   }
   if (
@@ -210,7 +297,7 @@ export function classifyIperfFailure(message = "") {
       failureStage: "dns_resolution",
       conciseReason: "DNS resolution failed",
       customerLabel: "iPerf3 — DNS failed",
-      failureClass: "DNS",
+      failureClass: "dns_failed",
     };
   }
   if (m.includes("connection refused") || m.includes("connect: connection refused")) {
@@ -219,7 +306,7 @@ export function classifyIperfFailure(message = "") {
       failureStage: "server_connection",
       conciseReason: "Connection refused",
       customerLabel: "iPerf3 — Connection refused",
-      failureClass: "CONNECTION_REFUSED",
+      failureClass: "connection_refused",
     };
   }
   if (m.includes("no route to host")) {
@@ -228,7 +315,7 @@ export function classifyIperfFailure(message = "") {
       failureStage: "network_connection",
       conciseReason: "No route to host",
       customerLabel: "iPerf3 — No route to host",
-      failureClass: "NO_ROUTE",
+      failureClass: "network_unreachable",
     };
   }
   if (m.includes("network is unreachable") || m.includes("network unreachable")) {
@@ -237,17 +324,7 @@ export function classifyIperfFailure(message = "") {
       failureStage: "network_connection",
       conciseReason: "Network unreachable",
       customerLabel: "iPerf3 — Network unreachable",
-      failureClass: "NETWORK_UNREACHABLE",
-    };
-  }
-  if (m.includes("timeout") || m.includes("timed out")) {
-    const connectish = m.includes("connect") || m.includes("connection");
-    return {
-      errorCode: connectish ? "IPERF_CONNECTION_TIMEOUT" : "TIMEOUT",
-      failureStage: connectish ? "server_connection" : "transfer",
-      conciseReason: connectish ? "Connection timed out" : "Timed out",
-      customerLabel: connectish ? "iPerf3 — Connection timed out" : "iPerf3 — Timeout",
-      failureClass: "TIMEOUT",
+      failureClass: "network_unreachable",
     };
   }
   if (m.includes("connect failed") || m.includes("unable to connect") || m.includes("failed to connect")) {
@@ -256,7 +333,7 @@ export function classifyIperfFailure(message = "") {
       failureStage: "server_connection",
       conciseReason: "TCP connect failed",
       customerLabel: "iPerf3 — TCP connect failed",
-      failureClass: "TCP_CONNECT",
+      failureClass: "connection_refused",
     };
   }
   if (m.includes("unsupported") || m.includes("unknown option") || m.includes("invalid argument")) {
@@ -265,7 +342,7 @@ export function classifyIperfFailure(message = "") {
       failureStage: "command",
       conciseReason: "Unsupported mode/option",
       customerLabel: "iPerf3 — Unsupported mode",
-      failureClass: "SERVER_UNSUPPORTED_MODE",
+      failureClass: "protocol_error",
     };
   }
   if (m.includes("permission denied") || m.includes("auth")) {

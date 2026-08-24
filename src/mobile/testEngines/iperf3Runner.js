@@ -59,8 +59,18 @@ export async function getIperf3Status() {
   return BabyDragonIperf.getIperfStatus();
 }
 
-export async function prepareIperf3Binary() {
-  return BabyDragonIperf.prepareIperfBinary();
+export async function probeIperf3Version() {
+  if (typeof BabyDragonIperf.probeIperfVersion !== "function") {
+    const status = await getIperf3Status();
+    return {
+      ok: Boolean(status?.ok || status?.executionProbeOk),
+      status: status?.status || "probe_unavailable",
+      stdout: status?.stdout || "",
+      message: status?.message || "Version probe method not present; used getIperfStatus.",
+      abi: status?.abi || null,
+    };
+  }
+  return BabyDragonIperf.probeIperfVersion();
 }
 
 export async function cancelIperf3() {
@@ -93,6 +103,37 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
   }
 
   const setup = resolved.setup;
+  const probe = await probeIperf3Version();
+  if (!probe?.ok) {
+    const failMapped = {
+      ok: false,
+      status: "incomplete",
+      message: probe?.message || "iPerf3 version/help probe failed before network testing.",
+      errorCode: probe?.failure_class || probe?.status || "binary_missing",
+      dlMbps: null,
+      ulMbps: null,
+      stdout: probe?.stdout || "",
+      stderr: probe?.stderr || "",
+    };
+    const iterationResult = buildIperfIterationResult(1, failMapped, setup, probe);
+    return {
+      ok: false,
+      source: "native-iperf3-v1g4b",
+      setup,
+      warnings: resolved.warnings,
+      runMode: String(setup.runMode || config.runMode || "fixed").toLowerCase() === "continuous" ? "continuous" : "fixed",
+      iterations: [iterationResult],
+      iterationResults: [iterationResult],
+      avgDlMbps: null,
+      avgUlMbps: null,
+      downloadBytes: null,
+      uploadBytes: null,
+      lastMapped: failMapped,
+      probe,
+      message: failMapped.message,
+    };
+  }
+
   const continuous = String(setup.runMode || config.runMode || "fixed").toLowerCase() === "continuous";
   const MAX_IPERF_ITERATIONS = 999999;
   const iterations = continuous
@@ -226,8 +267,14 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
 
   const avgDl = averageMbps(iterationResults, "dlMbps");
   const avgUl = averageMbps(iterationResults, "ulMbps");
-  const totalDlBytes = iterationResults.reduce((sum, item) => sum + (item.dlMeasuredBytes || 0), 0);
-  const totalUlBytes = iterationResults.reduce((sum, item) => sum + (item.ulMeasuredBytes || 0), 0);
+  const totalDlBytes = iterationResults.reduce((sum, item) => {
+    const n = Number(item.dlMeasuredBytes);
+    return Number.isFinite(n) && n > 0 ? sum + n : sum;
+  }, 0);
+  const totalUlBytes = iterationResults.reduce((sum, item) => {
+    const n = Number(item.ulMeasuredBytes);
+    return Number.isFinite(n) && n > 0 ? sum + n : sum;
+  }, 0);
   const completed = iterationResults.filter((item) => item.status === "complete").length;
   const failed = iterationResults.length - completed;
   const allOk = failed === 0 && completed > 0;
@@ -242,9 +289,10 @@ export async function runIperf3ThroughputTest({ config = {}, onProgress, signal 
     iterationResults,
     avgDlMbps: avgDl,
     avgUlMbps: avgUl,
-    downloadBytes: totalDlBytes,
-    uploadBytes: totalUlBytes,
+    downloadBytes: completed ? totalDlBytes : null,
+    uploadBytes: completed ? totalUlBytes : null,
     lastMapped,
+    probe,
     message: continuous
       ? `iPerf3 continuous stopped. Attempted ${iterationResults.length}, completed ${completed}, failed ${failed}.`
       : (allOk

@@ -41,7 +41,32 @@ public class BabyDragonIperfPlugin extends Plugin {
 
     @PluginMethod
     public void prepareIperfBinary(PluginCall call) {
-        JSObject result = ensureBinaryReady(true);
+        call.resolve(ensureBinaryReady(true));
+    }
+
+    @PluginMethod
+    public void probeIperfVersion(PluginCall call) {
+        JSObject prep = ensureBinaryReady(false);
+        JSObject result = new JSObject();
+        result.put("source", SOURCE);
+        result.put("binary", prep);
+        if (!prep.optBoolean("ok", false)) {
+            result.put("ok", false);
+            result.put("status", prep.optString("status", "binary_missing"));
+            result.put("failure_class", prep.optString("failure_class", "binary_missing"));
+            result.put("message", prep.optString("message", "iPerf3 binary is not ready."));
+            call.resolve(result);
+            return;
+        }
+        File output = internalBinaryFile(selectedAbi());
+        ExecutionProbe probe = probeBinaryExecution(output, selectedAbi());
+        result.put("ok", probe.ok);
+        result.put("status", probe.ok ? "probe_ok" : "linker_failed");
+        result.put("failure_class", probe.ok ? "" : "linker_failed");
+        result.put("stdout", probe.stdout == null ? "" : probe.stdout);
+        result.put("stderr", probe.stderr == null ? "" : probe.stderr);
+        result.put("message", probe.message);
+        result.put("abi", selectedAbi());
         call.resolve(result);
     }
 
@@ -80,9 +105,10 @@ public class BabyDragonIperfPlugin extends Plugin {
 
                 try {
                     IperfConfig cfg = IperfConfig.from(call);
-                    JSObject prep = prepareBinaryInternal();
+                    JSObject prep = ensureBinaryReady(false);
                     if (!prep.optBoolean("ok", false)) {
                         result.put("status", "binary_not_ready");
+                        result.put("failure_class", prep.optString("failure_class", "binary_missing"));
                         result.put("message", prep.optString("message", "iPerf3 binary is not ready."));
                         result.put("binary", prep);
                         call.resolve(result);
@@ -116,8 +142,9 @@ public class BabyDragonIperfPlugin extends Plugin {
                         try { process.destroyForcibly(); } catch (Exception ignored) {}
                         result.put("ok", false);
                         result.put("status", "timeout");
+                        result.put("failure_class", "timeout");
                         result.put("error_code", "IPERF_TIMEOUT");
-                        result.put("message", "iPerf3 test timed out.");
+                        result.put("message", "iPerf3 process wait timed out before JSON output. Server connectivity was not confirmed.");
                     }
 
                     stdoutThread.join(1000);
@@ -134,9 +161,10 @@ public class BabyDragonIperfPlugin extends Plugin {
                     result.put("ok", finished && exitCode == 0);
                     result.put("status", finished && exitCode == 0 ? "complete" : result.optString("status", "error"));
                     result.put("error_code", finished && exitCode == 0 ? "" : result.optString("error_code", "IPERF_EXIT_" + exitCode));
+                    result.put("failure_class", result.optString("failure_class", classifyLaunchFailure(stderrText, stdoutText, exitCode, finished)));
                     result.put("message", finished && exitCode == 0
                         ? "iPerf3 test completed."
-                        : safeErrorMessage(stderrText, stdoutText, exitCode));
+                        : result.optString("message", safeErrorMessage(stderrText, stdoutText, exitCode)));
                     result.put("started_at_ms", startedMs);
                     result.put("ended_at_ms", endedMs);
                     result.put("elapsed_ms", endedMs - startedMs);
@@ -160,12 +188,18 @@ public class BabyDragonIperfPlugin extends Plugin {
                     result.put("config", config);
 
                     parseIperfJson(stdoutText, result);
+                    if (!finished) {
+                        result.put("ok", false);
+                        result.put("status", "timeout");
+                        result.put("failure_class", "timeout");
+                    }
 
                     notifyProgress(result.optString("status", "complete"), cfg, result.optString("message", "iPerf3 finished."), commandJson);
                 } catch (Exception ex) {
                     activeProcess = null;
                     result.put("ok", false);
                     result.put("status", "exception");
+                    result.put("failure_class", classifyLaunchFailure(ex.getMessage(), "", -1, true));
                     result.put("error_code", "IPERF_EXCEPTION");
                     String message = ex.getMessage() == null ? "iPerf3 run failed." : ex.getMessage();
                     if (message.toLowerCase(Locale.US).contains("error=13")
@@ -200,8 +234,16 @@ public class BabyDragonIperfPlugin extends Plugin {
         result.put("targetSdk", getContext().getApplicationInfo().targetSdkVersion);
 
         String abi = selectedAbi();
+        if (abi == null || abi.trim().isEmpty()) {
+            result.put("status", "unsupported_abi");
+            result.put("failure_class", "unsupported_abi");
+            result.put("message", "Device ABI is empty or unsupported.");
+            return result;
+        }
         String assetPath = assetPathForAbi(abi);
         File output = internalBinaryFile(abi);
+        boolean internalElf = output.exists() && isElfExecutable(output);
+        boolean assetElf = isAssetElf(assetPath);
 
         result.put("abi", abi);
         result.put("supportedAbis", new JSArray(Arrays.asList(Build.SUPPORTED_ABIS)));
@@ -212,6 +254,8 @@ public class BabyDragonIperfPlugin extends Plugin {
         result.put("length", output.exists() ? output.length() : 0);
         result.put("internalExists", output.exists());
         result.put("internalBytes", output.exists() ? output.length() : 0);
+        result.put("assetElf", assetElf);
+        result.put("internalElf", internalElf);
 
         try {
             InputStream stream = getContext().getAssets().open(assetPath);
@@ -224,21 +268,28 @@ public class BabyDragonIperfPlugin extends Plugin {
             result.put("assetExists", false);
             result.put("assetReadable", false);
             result.put("assetBytes", 0);
-            result.put("status", "binary_missing_or_copy_failed");
-            result.put("message", "iPerf3 asset binary is missing for ABI " + abi + ". Place it in assets and rebuild.");
-            return result;
         }
 
         try {
             boolean copied = false;
-            boolean stale = isBinaryStale(output, assetPath);
-            if (forceRecopy || stale || !output.exists() || output.length() == 0) {
+            boolean stale = assetElf && isBinaryStale(output, assetPath);
+            boolean shouldCopy = assetElf && (forceRecopy || stale || !internalElf);
+            if (shouldCopy) {
                 copied = copyAssetToFile(assetPath, output);
-                result.put("copiedFromAsset", copied);
-                result.put("staleReplaced", stale);
-            } else {
-                result.put("copiedFromAsset", false);
-                result.put("staleReplaced", false);
+                internalElf = output.exists() && isElfExecutable(output);
+            }
+            result.put("copiedFromAsset", copied);
+            result.put("staleReplaced", stale && copied);
+
+            if (!internalElf) {
+                result.put("ok", false);
+                result.put("executable", false);
+                result.put("executionProbeOk", false);
+                result.put("status", "binary_missing");
+                result.put("failure_class", "binary_missing");
+                result.put("message", "iPerf3 ELF binary is missing for ABI " + abi
+                        + ". Placeholder assets were not copied over any existing binary. Place a real Android iperf3 in assets/iperf3/" + abi + "/iperf3.");
+                return result;
             }
 
             PermissionState permissions = applyBinaryPermissions(output);
@@ -255,11 +306,14 @@ public class BabyDragonIperfPlugin extends Plugin {
             result.put("chmodApplied", permissions.chmodApplied);
             result.put("javaChmodApplied", permissions.javaChmodApplied);
             result.put("processChmodApplied", permissions.processChmodApplied);
+            result.put("probeStdout", probe.stdout == null ? "" : probe.stdout);
+            result.put("stdout", probe.stdout == null ? "" : probe.stdout);
 
             boolean ready = output.exists() && output.length() > 0 && probe.ok;
             result.put("ok", ready);
             result.put("bytes", output.length());
             result.put("status", ready ? "binary_ready" : "binary_not_executable");
+            result.put("failure_class", ready ? "" : (probe.preferLinker ? "linker_failed" : "process_spawn_failed"));
             result.put("message", ready
                     ? (probe.preferLinker
                         ? "iPerf3 binary is ready. Android " + Build.VERSION.SDK_INT + " uses linker wrapper execution."
@@ -269,6 +323,7 @@ public class BabyDragonIperfPlugin extends Plugin {
         } catch (Exception ex) {
             result.put("ok", false);
             result.put("status", "binary_missing_or_copy_failed");
+            result.put("failure_class", "process_spawn_failed");
             result.put("message", ex.getMessage() == null ? "Unable to prepare iPerf3 binary." : ex.getMessage());
             return result;
         }
@@ -335,6 +390,8 @@ public class BabyDragonIperfPlugin extends Plugin {
         boolean preferLinker;
         String linkerPath;
         String message;
+        String stdout;
+        String stderr;
     }
 
     private PermissionState applyBinaryPermissions(File output) {
@@ -396,7 +453,7 @@ public class BabyDragonIperfPlugin extends Plugin {
         }
 
         if (probe.preferLinker) {
-            probe.ok = runProbeCommand(buildProbeCommand(probe.linkerPath, output.getAbsolutePath(), new String[]{"--version"}));
+            probe.ok = runProbeCommand(buildProbeCommand(probe.linkerPath, output.getAbsolutePath(), new String[]{"--version"}), probe);
             if (!probe.ok) {
                 probe.message = "Linker wrapper probe failed for " + probe.linkerPath + ".";
             } else {
@@ -405,10 +462,10 @@ public class BabyDragonIperfPlugin extends Plugin {
             return probe;
         }
 
-        probe.ok = runProbeCommand(buildProbeCommand(null, output.getAbsolutePath(), new String[]{"--version"}));
+        probe.ok = runProbeCommand(buildProbeCommand(null, output.getAbsolutePath(), new String[]{"--version"}), probe);
         if (!probe.ok) {
             probe.preferLinker = true;
-            probe.ok = runProbeCommand(buildProbeCommand(probe.linkerPath, output.getAbsolutePath(), new String[]{"--version"}));
+            probe.ok = runProbeCommand(buildProbeCommand(probe.linkerPath, output.getAbsolutePath(), new String[]{"--version"}), probe);
             probe.message = probe.ok ? "Direct probe failed; linker wrapper probe ok." : "Direct and linker probes failed.";
         } else {
             probe.preferLinker = false;
@@ -430,25 +487,87 @@ public class BabyDragonIperfPlugin extends Plugin {
     }
 
     private boolean runProbeCommand(List<String> command) {
+        return runProbeCommand(command, null);
+    }
+
+    private boolean runProbeCommand(List<String> command, ExecutionProbe probe) {
         Process process = null;
         try {
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.redirectErrorStream(true);
             process = builder.start();
+            StreamCollector collector = new StreamCollector(process.getInputStream());
+            Thread collectorThread = new Thread(collector);
+            collectorThread.start();
             boolean finished = process.waitFor(4, TimeUnit.SECONDS);
+            collectorThread.join(1000);
+            if (probe != null) probe.stdout = collector.getText();
             if (!finished) {
                 process.destroy();
                 try { process.destroyForcibly(); } catch (Exception ignored) {}
                 return false;
             }
             return process.exitValue() == 0 || process.exitValue() == 1;
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            if (probe != null) probe.stderr = ex.getMessage();
             return false;
         } finally {
             if (process != null) {
                 try { process.destroy(); } catch (Exception ignored) {}
             }
         }
+    }
+
+    private boolean isAssetElf(String assetPath) {
+        InputStream input = null;
+        try {
+            input = getContext().getAssets().open(assetPath);
+            byte[] magic = new byte[4];
+            int read = input.read(magic);
+            return read == 4 && magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (input != null) {
+                try { input.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private boolean isElfExecutable(File file) {
+        if (file == null || !file.exists() || file.length() < 4) return false;
+        java.io.FileInputStream input = null;
+        try {
+            input = new java.io.FileInputStream(file);
+            byte[] magic = new byte[4];
+            int read = input.read(magic);
+            return read == 4 && magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (input != null) {
+                try { input.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private String classifyLaunchFailure(String stderr, String stdout, int exitCode, boolean finished) {
+        String hay = ((stderr == null ? "" : stderr) + " " + (stdout == null ? "" : stdout)).toLowerCase(Locale.US);
+        if (!finished) return "timeout";
+        if (hay.contains("permission denied") || hay.contains("error=13")) return "permission_denied";
+        if (hay.contains("not found") || hay.contains("no such file")) return "binary_missing";
+        if (hay.contains("linker") || hay.contains("elf") || hay.contains("exec format")) return "linker_failed";
+        if (hay.contains("connection refused")) return "connection_refused";
+        if (hay.contains("network is unreachable") || hay.contains("network unreachable") || hay.contains("no route to host")) return "network_unreachable";
+        if (hay.contains("name or service not known") || hay.contains("getaddrinfo") || hay.contains("unknown host")) return "dns_failed";
+        if (hay.contains("timed out") || hay.contains("timeout")) return "timeout";
+        if (hay.contains("busy running a test") || hay.contains("server is busy")) return "server_error";
+        if (hay.contains("unsupported") || hay.contains("unknown option") || hay.contains("protocol")) return "protocol_error";
+        if ((stdout == null || stdout.trim().isEmpty()) && (stderr == null || stderr.trim().isEmpty()) && exitCode != 0) {
+            return "process_spawn_failed";
+        }
+        if (exitCode != 0) return "server_error";
+        return "";
     }
 
     private String linkerPathForAbi(String abi) {
@@ -727,18 +846,15 @@ public class BabyDragonIperfPlugin extends Plugin {
 
         @Override
         public void run() {
-            BufferedReader reader = null;
             try {
-                reader = new BufferedReader(new InputStreamReader(stream));
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    builder.append(line).append("\n");
+                byte[] buffer = new byte[4096];
+                int read;
+                while ((read = stream.read(buffer)) != -1) {
+                    builder.append(new String(buffer, 0, read, java.nio.charset.StandardCharsets.UTF_8));
                 }
             } catch (Exception ignored) {
             } finally {
-                if (reader != null) {
-                    try { reader.close(); } catch (Exception ignored) {}
-                }
+                try { stream.close(); } catch (Exception ignored) {}
             }
         }
 
@@ -773,6 +889,17 @@ public class BabyDragonIperfPlugin extends Plugin {
             cfg.bidirMode = getBool(call, "bidirMode", false);
             cfg.udpBitrateMbps = clamp(getInt(call, "udpBitrateMbps", 10), 1, 100000);
             cfg.timeoutSeconds = cfg.durationSeconds + 25;
+
+            if ("ul".equals(cfg.direction)) {
+                cfg.reverseMode = false;
+                cfg.bidirMode = false;
+            } else if ("dl".equals(cfg.direction)) {
+                cfg.reverseMode = true;
+                cfg.bidirMode = false;
+            } else if ("dl_ul".equals(cfg.direction) && "TCP".equals(cfg.protocol)) {
+                cfg.reverseMode = false;
+                cfg.bidirMode = true;
+            }
 
             if (cfg.server.trim().isEmpty()) {
                 throw new IllegalArgumentException("iPerf3 server is required.");
