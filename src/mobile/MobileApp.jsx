@@ -502,10 +502,10 @@ export default function MobileApp() {
         const payload = item.payload || {};
 
         if (item.type === OFFLINE_ACTION_TYPES.TASK_STATUS) {
-          const { error: updateError } = await supabase
-            .from("tasks")
-            .update({ status: payload.status })
-            .eq("id", payload.task_id);
+          const { error: updateError } = await supabase.rpc("update_assigned_task_status", {
+            p_task_id: payload.task_id,
+            p_status: payload.status,
+          });
 
           if (updateError) throw updateError;
 
@@ -909,7 +909,10 @@ export default function MobileApp() {
       return;
     }
 
-    const { error: updateError } = await supabase.from("tasks").update({ status: nextStatus }).eq("id", task.id);
+    const { error: updateError } = await supabase.rpc("update_assigned_task_status", {
+      p_task_id: task.id,
+      p_status: nextStatus,
+    });
 
     if (updateError) {
       if (shouldQueueAfterError(updateError)) {

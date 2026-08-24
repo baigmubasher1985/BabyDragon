@@ -115,6 +115,7 @@ describe('f10c2 phase4b-e-r1 remediation', () => {
     }
     const slugs = listPhase4bApplyPlan().stages.map((s) => s.slug)
     expect(slugs).toContain('208_phase4b_validation_remediation')
+    expect(slugs).toContain('209_disposable_operational_profile_task_rls_remediation')
     expect(slugs).not.toContain('207_rls_tenant_storage_assumptions')
     expect(PHASE4A_NEVER_EXECUTE).toEqual(['207_rls_tenant_storage_assumptions'])
     expect(PHASE4B_R1_APPLY).toEqual(['208_phase4b_validation_remediation'])

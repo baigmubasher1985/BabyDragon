@@ -35,6 +35,7 @@ The SQL marker is not sufficient by itself.
 4. **F10C2:** `101–111`, `113–115`
 5. **Phase 4A-R1:** `201–206`
 5b. **Phase 4B-E-R1:** `208` (fresh install after 206; existing 4B-E disposable applies 208 only)
+5c. **Phase 4B-U-R1:** `209` (fresh install after 208; existing 4B-E/4B-U disposable applies 209 only). Production execution is not authorized.
 
 ## Synthetic data sequence (steps 6–8)
 

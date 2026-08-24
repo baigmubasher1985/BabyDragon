@@ -70,6 +70,13 @@ export const PHASE4A_NEVER_EXECUTE = ['207_rls_tenant_storage_assumptions']
 /** Additive after 206. Fresh install: 000 … 206, then 208. Existing 4B-E disposable: 208 only. */
 export const PHASE4B_R1_APPLY = ['208_phase4b_validation_remediation']
 
+/**
+ * Additive after 208. Fresh disposable: … 208 then 209.
+ * Existing 4B-E/4B-U disposable: apply ONLY 209.
+ * 207 remains NEVER EXECUTE. 009/010/012/013/112 remain excluded.
+ */
+export const PHASE4B_U_R1_APPLY = ['209_disposable_operational_profile_task_rls_remediation']
+
 function f10c1iPath(slug) {
   return path.join(ROOT, 'supabase/drafts/forward', `${slug}.sql`)
 }
@@ -118,12 +125,27 @@ export function listPhase4bApplyPlan() {
       slug,
       file: phase4bR1Path(slug),
     })),
+    ...PHASE4B_U_R1_APPLY.map((slug) => ({
+      stage: 'profile-task-rls-remediation',
+      family: 'phase4b-u-r1',
+      slug,
+      file: phase4bR1Path(slug),
+    })),
   ]
   return {
     stages,
     skipped: [...F10C1I_SKIP, ...F10C2_SKIP],
     neverExecute: [...PHASE4A_NEVER_EXECUTE],
   }
+}
+
+export function listExistingDisposable209Apply() {
+  return PHASE4B_U_R1_APPLY.map((slug) => ({
+    stage: 'profile-task-rls-remediation',
+    family: 'phase4b-u-r1',
+    slug,
+    file: phase4bR1Path(slug),
+  }))
 }
 
 export function assertPhase4bPlanFilesExist() {

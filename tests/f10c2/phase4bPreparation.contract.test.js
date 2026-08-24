@@ -9,6 +9,7 @@ import {
   PHASE4A_APPLY,
   PHASE4A_NEVER_EXECUTE,
   PHASE4B_R1_APPLY,
+  PHASE4B_U_R1_APPLY,
 } from '../../scripts/f10c2/phase4bApplyPlan.mjs'
 import { listApplyPlan } from '../../scripts/f10c2/applyDisposableMigrations.mjs'
 import {
@@ -25,10 +26,10 @@ function read(rel) {
 }
 
 describe('f10c2 phase4b-p — preparation package', () => {
-  it('lists 38 executable drafts starting with bootstrap 000, ending with 208, and never includes 207, 009, 010, 012, 013, or 112', () => {
+  it('lists 39 executable drafts starting with bootstrap 000, ending with 209, and never includes 207, 009, 010, 012, 013, or 112', () => {
     const plan = listPhase4bApplyPlan()
     const slugs = plan.stages.map((s) => s.slug)
-    expect(plan.stages).toHaveLength(38)
+    expect(plan.stages).toHaveLength(39)
     expect(slugs[0]).toBe('000_disposable_operational_schema')
     expect(plan.stages[0].stage).toBe('operational-bootstrap')
     expect(slugs).not.toContain('207_rls_tenant_storage_assumptions')
@@ -47,7 +48,9 @@ describe('f10c2 phase4b-p — preparation package', () => {
     ])
     expect(PHASE4A_NEVER_EXECUTE).toEqual(['207_rls_tenant_storage_assumptions'])
     expect(PHASE4B_R1_APPLY).toEqual(['208_phase4b_validation_remediation'])
-    expect(slugs.at(-1)).toBe('208_phase4b_validation_remediation')
+    expect(PHASE4B_U_R1_APPLY).toEqual(['209_disposable_operational_profile_task_rls_remediation'])
+    expect(slugs.at(-2)).toBe('208_phase4b_validation_remediation')
+    expect(slugs.at(-1)).toBe('209_disposable_operational_profile_task_rls_remediation')
     expect(F10C1I_SKIP.join(',')).toContain('009_rls_profiles')
     expect(F10C2_SKIP).toEqual(['112_result_artifacts_storage_contract'])
     const files = assertPhase4bPlanFilesExist()

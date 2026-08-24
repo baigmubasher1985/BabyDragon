@@ -327,7 +327,7 @@ function verifyFileFor(step) {
   if (step.family === 'phase4a') {
     return path.join(ROOT, 'supabase/drafts/f10c2/phase4a/verification', `${step.slug}.sql`)
   }
-  if (step.family === 'phase4b-r1') {
+  if (step.family === 'phase4b-r1' || step.family === 'phase4b-u-r1') {
     return path.join(ROOT, 'supabase/drafts/f10c2/phase4b/verification', `${step.slug}.sql`)
   }
   return null
@@ -411,7 +411,7 @@ async function main() {
     process.exit(2)
   }
   if (!connectionOnly) {
-    console.log(`executable schema steps: ${plan.stages.length} (000 + 36 drafts)`)
+    console.log(`executable schema steps: ${plan.stages.length} (000 + security/result/tenant/208/209 drafts)`)
     console.log(`skipped: ${[...F10C1I_SKIP, ...F10C2_SKIP].join(', ')}`)
     console.log('never execute: 207_rls_tenant_storage_assumptions')
   } else {

@@ -14,6 +14,8 @@ Canonical document: `docs/f10c2/F10C2_Phase4B_Final_Execution_Order.md`
 3. F10C1I: `001–008`, `011`, `014–020`
 4. F10C2: `101–111`, `113–115`
 5. Phase 4A-R1: `201–206`
+5b. Phase 4B-E-R1: `208` (fresh after 206; existing 4B-E disposable: 208 only)
+5c. Phase 4B-U-R1: `209` (fresh after 208; existing 4B-E/4B-U disposable: 209 only). Production execution is not authorized.
 6. Create synthetic Auth users
 7. Insert synthetic profiles / project / grid / task
 8. Apply synthetic field-result fixtures **301**

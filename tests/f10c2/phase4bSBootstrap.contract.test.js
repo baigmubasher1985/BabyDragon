@@ -97,7 +97,7 @@ describe('f10c2 phase4b-s — disposable operational bootstrap', () => {
   it('places bootstrap 000 first and keeps 207 never-execute', () => {
     const plan = listPhase4bApplyPlan()
     expect(plan.stages[0].slug).toBe(BOOTSTRAP_SLUG)
-    expect(plan.stages).toHaveLength(38)
+    expect(plan.stages).toHaveLength(39)
     expect(plan.neverExecute).toEqual(PHASE4A_NEVER_EXECUTE)
     expect(assertPhase4bPlanFilesExist().missing).toEqual([])
     expect(assertPhase4bPlanFilesExist().leaked207).toEqual([])
