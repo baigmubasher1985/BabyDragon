@@ -77,6 +77,88 @@ export const PHASE4B_R1_APPLY = ['208_phase4b_validation_remediation']
  */
 export const PHASE4B_U_R1_APPLY = ['209_disposable_operational_profile_task_rls_remediation']
 
+/**
+ * Additive after 209. Existing disposable: apply ONLY 210–213.
+ * 207 remains NEVER EXECUTE. 009/010/012/013/112 remain excluded.
+ */
+export const CR1B_APPLY = [
+  '210_cr1b_canonical_ingestion_schema',
+  '211_cr1b_acceptance_engine_schema',
+  '212_cr1b_rpc_ingest_evaluate_qc',
+  '213_cr1b_rls_grants',
+]
+
+/**
+ * SQL 214 is quarantined. Never draft-in-forward. Never execute.
+ * Archive: supabase/drafts/f10c2/never-run/214/
+ * Canonical order: 210 → 211 → 212 → 213 → skip 214 → 215 → 216
+ */
+export const CR1_NEVER_RUN = ['214_cr1b_acceptance_applicability']
+export const CR1_NEVER_RUN_DIR = 'supabase/drafts/f10c2/never-run/214'
+
+/**
+ * Empty on purpose. 214 is not a draft-in-forward slug; it is CR1_NEVER_RUN.
+ * Kept so scanners still see the export name.
+ */
+export const CR1D_DRAFT_ONLY = []
+
+/**
+ * Authorized CR1-D one-shot on disposable only. Existing disposable: apply ONLY 215.
+ * Do not add 214. Do not reapply 209–213. 207 remains NEVER EXECUTE.
+ */
+export const CR1D_APPLY = [
+  '215_cr1d_acceptance_profile_management',
+]
+
+/**
+ * Authorized CR1-E one-shot on disposable only. Existing disposable: apply ONLY 216.
+ * Do not add 214. Do not reapply 209–215. 207 remains NEVER EXECUTE.
+ * Do not add to listPhase4bApplyPlan(), CR1B_APPLY, or CR1D_APPLY.
+ */
+export const CR1E_APPLY = [
+  '216_cr1e_acceptance_profile_status',
+]
+
+/**
+ * No remaining CR1-E draft-only slugs after 216 was authorized as CR1E_APPLY.
+ * Keep this empty so 216 never auto-applies. 214 is CR1_NEVER_RUN, not draft-in-forward.
+ */
+export const CR1E_DRAFT_ONLY = []
+
+/** Fresh-chain CR1 SQL after 209: 210 → 211 → 212 → 213 → skip 214 → 215 → 216 */
+export const CR1_CANONICAL_APPLY_AFTER_209 = [
+  ...CR1B_APPLY,
+  ...CR1D_APPLY,
+  ...CR1E_APPLY,
+]
+
+export function assertNo214InApplyList(slugs, context = 'apply') {
+  const leaked = (slugs || []).filter((s) => String(s).startsWith('214_') || String(s) === '214')
+  if (leaked.length) {
+    throw new Error(`SQL 214 leaked into ${context} list: ${leaked.join(',')}`)
+  }
+  return true
+}
+
+export function find214InExecutableMigrationPaths() {
+  const dirs = [
+    'supabase/drafts/f10c2/phase4b/forward',
+    'supabase/drafts/f10c2/phase4b/verification',
+    'supabase/drafts/f10c2/phase4b/rollback',
+  ]
+  const hits = []
+  for (const dir of dirs) {
+    const abs = path.join(ROOT, dir)
+    if (!fs.existsSync(abs)) continue
+    for (const name of fs.readdirSync(abs)) {
+      if (name.startsWith('214_') || name.startsWith('214.')) {
+        hits.push(`${dir}/${name}`)
+      }
+    }
+  }
+  return hits
+}
+
 function f10c1iPath(slug) {
   return path.join(ROOT, 'supabase/drafts/forward', `${slug}.sql`)
 }
@@ -131,11 +213,19 @@ export function listPhase4bApplyPlan() {
       slug,
       file: phase4bR1Path(slug),
     })),
+    ...CR1B_APPLY.map((slug) => ({
+      stage: 'cr1b-acceptance',
+      family: 'cr1b',
+      slug,
+      file: phase4bR1Path(slug),
+    })),
   ]
+  const slugs = stages.map((s) => s.slug)
+  assertNo214InApplyList(slugs, 'listPhase4bApplyPlan')
   return {
     stages,
     skipped: [...F10C1I_SKIP, ...F10C2_SKIP],
-    neverExecute: [...PHASE4A_NEVER_EXECUTE],
+    neverExecute: [...PHASE4A_NEVER_EXECUTE, ...CR1_NEVER_RUN],
   }
 }
 
@@ -148,11 +238,51 @@ export function listExistingDisposable209Apply() {
   }))
 }
 
+export function listExistingDisposableCr1bApply() {
+  assertNo214InApplyList(CR1B_APPLY, 'CR1B_APPLY')
+  return CR1B_APPLY.map((slug) => ({
+    stage: 'cr1b-acceptance',
+    family: 'cr1b',
+    slug,
+    file: phase4bR1Path(slug),
+  }))
+}
+
+export function listExistingDisposableCr1dApply() {
+  assertNo214InApplyList(CR1D_APPLY, 'CR1D_APPLY')
+  return CR1D_APPLY.map((slug) => ({
+    stage: 'cr1d-profile-management',
+    family: 'cr1d',
+    slug,
+    file: phase4bR1Path(slug),
+  }))
+}
+
+export function listExistingDisposableCr1eApply() {
+  assertNo214InApplyList(CR1E_APPLY, 'CR1E_APPLY')
+  return CR1E_APPLY.map((slug) => ({
+    stage: 'cr1e-profile-status',
+    family: 'cr1e',
+    slug,
+    file: phase4bR1Path(slug),
+  }))
+}
+
 export function assertPhase4bPlanFilesExist() {
   const plan = listPhase4bApplyPlan()
   const missing = plan.stages.filter((s) => !fs.existsSync(s.file)).map((s) => s.slug)
   const leaked207 = plan.stages.filter((s) => s.slug.startsWith('207_'))
-  return { missing, leaked207, count: plan.stages.length }
+  const leaked214 = [
+    ...plan.stages.filter((s) => s.slug.startsWith('214_')),
+    ...find214InExecutableMigrationPaths(),
+  ]
+  assertNo214InApplyList(plan.stages.map((s) => s.slug), 'assertPhase4bPlanFilesExist')
+  assertNo214InApplyList(CR1B_APPLY, 'CR1B_APPLY')
+  assertNo214InApplyList(CR1D_APPLY, 'CR1D_APPLY')
+  assertNo214InApplyList(CR1E_APPLY, 'CR1E_APPLY')
+  assertNo214InApplyList(CR1D_DRAFT_ONLY, 'CR1D_DRAFT_ONLY')
+  const archiveMissing = !fs.existsSync(path.join(ROOT, CR1_NEVER_RUN_DIR, 'README.md'))
+  return { missing, leaked207, leaked214, archiveMissing, count: plan.stages.length }
 }
 
 export { ROOT }

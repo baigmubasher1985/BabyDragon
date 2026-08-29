@@ -49,11 +49,17 @@ export function makeUuid() {
  */
 export function buildRunIdentityKey({
   sessionId = null,
+  scenarioKey = null,
   taskId = null,
   reportName = null,
   startedAt = null,
+  identityKey = null,
 } = {}) {
+  const explicit = String(identityKey || "").trim();
+  if (explicit) return explicit;
   const sid = String(sessionId || "").trim();
+  const scenario = String(scenarioKey || "").trim();
+  if (sid && scenario) return `session:${sid}|scenario:${scenario}`;
   if (sid) return `session:${sid}`;
   const task = String(taskId || "").trim() || "notask";
   const started = String(startedAt || "").trim() || "nostart";

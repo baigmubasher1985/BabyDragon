@@ -13,6 +13,13 @@ import "leaflet/dist/leaflet.css";
 
 import { supabase } from "../lib/supabaseClient";
 import CellSectorLayer from "../components/maps/CellSectorLayer";
+import { MapInvalidateSize, TileLoadGuard } from "../components/maps/BasemapTileGuard";
+import {
+  FE_MAP_NO_ROUTE_COPY,
+  FE_MAP_TILES_UNAVAILABLE,
+  hasValidGridGeometry,
+  resolveFeMapRenderState,
+} from "../components/maps/feMapRenderState";
 
 const DEFAULT_CENTER = [32.7767, -96.797];
 const DEFAULT_ZOOM = 10;
@@ -479,6 +486,11 @@ export default function MobileRouteView({
             {selectedRow.route ? "Route Ready" : "Grid Only"}
           </span>
         </div>
+        {!selectedRow.route ? (
+          <p className="bd-mobile-muted" style={styles.pageHint}>
+            {FE_MAP_NO_ROUTE_COPY}
+          </p>
+        ) : null}
 
         <div style={styles.infoGrid}>
           <InfoItem label="Grid" value={selectedRow.gridLabel} />
@@ -497,6 +509,7 @@ export default function MobileRouteView({
           mobilityGpsStatus={mobilityGpsStatus}
           mobilitySessionActive={mobilitySessionActive}
           lastGpsLocation={lastGpsLocation}
+          onNavigate={() => handleNavigate(selectedRow)}
         />
 
         <RouteLifecycleButtons
@@ -703,6 +716,7 @@ function RouteMapCard({
   mobilityGpsStatus = null,
   mobilitySessionActive = false,
   lastGpsLocation = null,
+  onNavigate,
 }) {
   const [baseLayer, setBaseLayer] = useState("street");
   const [measureMode, setMeasureMode] = useState(false);
@@ -714,6 +728,9 @@ function RouteMapCard({
   const [locationMessage, setLocationMessage] = useState("");
   const [remoteRouteGeojsons, setRemoteRouteGeojsons] = useState([]);
   const [remoteRouteLoading, setRemoteRouteLoading] = useState(false);
+  const [showGridBoundary, setShowGridBoundary] = useState(false);
+  const [tilesFailed, setTilesFailed] = useState(false);
+  const [tileRetryKey, setTileRetryKey] = useState(0);
 
   const mapRows = useMemo(() => (taskRows.length ? taskRows : [row].filter(Boolean)), [row, taskRows]);
   const gridFeatures = useMemo(
@@ -791,6 +808,20 @@ function RouteMapCard({
   const lastTrailPoint = gpsPoints[gpsPoints.length - 1] || null;
   const measureDistanceLabel = formatDistance(getLatLngDistanceMeters(measurePoints));
   const layer = BASE_LAYERS[baseLayer] || BASE_LAYERS.street;
+  const hasRouteGeometry = routePointCount > 1;
+  const hasGridGeometry = gridFeatures.some((feature) =>
+    hasValidGridGeometry(feature.geometry || feature)
+  );
+  const mapRenderState = resolveFeMapRenderState({
+    selected: true,
+    hasRouteGeometry,
+    hasGridGeometry,
+    hasNavigationDestination: Boolean(buildNavigationUrl(row)),
+    tilesFailed,
+    viewGridBoundary: showGridBoundary,
+    gridLabel: row.gridLabel || "",
+    gridId: String(row.grid?.grid_id || row.grid?.id || row.gridId || ""),
+  });
 
   function addMeasurePoint(point) {
     setMeasurePoints((prev) => [...prev, point]);
@@ -887,11 +918,53 @@ function RouteMapCard({
           <p style={styles.mapEyebrow}>Map</p>
           <h4 style={styles.mapTitle}>{row.gridLabel}</h4>
         </div>
-        <span style={row.route ? styles.readyMini : styles.warnMini}>
-          {row.route ? routePointCount > 1 ? "Route Shown" : "Route Linked" : "Grid Only"}
+        <span style={hasRouteGeometry ? styles.readyMini : styles.warnMini}>
+          {hasRouteGeometry ? "Route Shown" : row.route && remoteRouteLoading ? "Loading Route" : "Grid Only"}
         </span>
       </div>
 
+      {!mapRenderState.showMap ? (
+        <div className="bd-fe-map-empty" style={{ margin: 12 }}>
+          <h4>
+            {remoteRouteLoading && row.route
+              ? "Loading saved route..."
+              : mapRenderState.mode === "tile_failure"
+                ? FE_MAP_TILES_UNAVAILABLE
+                : mapRenderState.emptyMessage}
+          </h4>
+          <p>
+            Grid: {mapRenderState.gridLabel || row.gridLabel || "Unknown"}
+            {mapRenderState.gridId ? ` • ID ${mapRenderState.gridId}` : ""}
+          </p>
+          <div className="bd-fe-map-empty-actions">
+            {mapRenderState.showNavigate ? (
+              <button type="button" style={styles.mapToolButton} onClick={() => onNavigate?.(row)}>
+                Navigate to Grid
+              </button>
+            ) : null}
+            {mapRenderState.showViewGridBoundary ? (
+              <button type="button" style={styles.mapToolButton} onClick={() => setShowGridBoundary(true)}>
+                View Grid Boundary
+              </button>
+            ) : null}
+            {mapRenderState.showRetry ? (
+              <button
+                type="button"
+                style={styles.mapToolButton}
+                onClick={() => {
+                  setTilesFailed(false);
+                  setTileRetryKey((value) => value + 1);
+                }}
+              >
+                Retry Map
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {mapRenderState.showMap ? (
+      <>
       <div style={styles.mapToolbar}>
         {Object.entries(BASE_LAYERS).map(([key, item]) => (
           <button
@@ -925,18 +998,26 @@ function RouteMapCard({
 
       <div style={styles.mapBox}>
         <MapContainer
+            key={`mobile-basemap-${row.id || row.gridLabel}-${tileRetryKey}`}
             center={DEFAULT_CENTER}
             zoom={DEFAULT_ZOOM}
             style={styles.map}
             scrollWheelZoom
             attributionControl={false}
-            className={measureMode ? "bd-mobile-route-map bd-route-measure-mode" : "bd-mobile-route-map"}
+            className={measureMode ? "bd-mobile-route-map bd-route-measure-mode bd-fe-basemap" : "bd-mobile-route-map bd-fe-basemap"}
           >
-          <TileLayer attribution="" url={layer.url} />
+          <TileLayer attribution="&copy; OpenStreetMap contributors" url={layer.url} />
+          <MapInvalidateSize extraKey={`${fitTaskKey}-${tileRetryKey}`} />
+          <TileLoadGuard
+            onStatus={(status) => {
+              if (status?.failed) setTilesFailed(true);
+              if (status && status.failed === false) setTilesFailed(false);
+            }}
+          />
 
           <MapBoundsController
-            gridFeatures={gridFeatures}
-            routeGeojsons={routeGeojsons}
+            gridFeatures={mapRenderState.drawGrid ? gridFeatures : []}
+            routeGeojsons={mapRenderState.drawRoute ? routeGeojsons : []}
             gpsPoints={gpsPoints}
             fitKey={fitTaskKey}
           />
@@ -957,7 +1038,7 @@ function RouteMapCard({
             sectorRadiusM={550}
           />
 
-          {gridFeatures.map((feature, index) => (
+          {mapRenderState.drawGrid && gridFeatures.map((feature, index) => (
             <GeoJSON
               key={`route-grid-${row.id}-${index}`}
               data={feature}
@@ -977,7 +1058,7 @@ function RouteMapCard({
             </GeoJSON>
           ))}
 
-          {routeGeojsons.map((geojson, index) => (
+          {mapRenderState.drawRoute && routeGeojsons.map((geojson, index) => (
             <RouteLineLayer key={`route-line-${row.id}-${index}`} geojson={geojson} interactive={!measureMode} />
           ))}
           {gpsPoints.length > 1 && <GpsTrailLayer points={gpsPoints} />}
@@ -1086,6 +1167,8 @@ function RouteMapCard({
         {mobilitySessionActive ? " · Live Driven Trail active" : ""}
         {mobilityGpsStatus ? ` · GPS ${mobilityGpsStatus}` : ""}
       </div>
+      </>
+      ) : null}
 
       {(locationMessage || remoteRouteLoading) && (
         <p style={styles.mapSystemNote}>
@@ -1093,17 +1176,19 @@ function RouteMapCard({
         </p>
       )}
 
+      {mapRenderState.showMap ? (
       <div style={styles.mapFacts}>
-        <MapFact label="Route" value={routePointCount} />
+        <MapFact label="Route" value={mapRenderState.routeCount} />
         <MapFact label="GPS" value={gpsPoints.length} />
         <MapFact label="Off" value={offRouteCount} warn={offRouteCount > 0} />
-        <MapFact label="Miles" value={routeLengthLabel} />
+        <MapFact label="Miles" value={hasRouteGeometry ? routeLengthLabel : "N/A"} />
       </div>
+      ) : null}
 
       <p style={styles.mapNote}>
-        {routeGeojsons.length
+        {hasRouteGeometry
           ? "Saved route is shown as a clean blue road line. Green trail means driven near the route. Orange means off-route movement."
-          : "Grid is shown. If the blue route line is missing, tap Refresh after Admin saves/links the route for this grid."}
+          : FE_MAP_NO_ROUTE_COPY}
         {latestIssue ? ` Latest issue: ${latestIssue.description || formatIssueType(latestIssue.issue_type)}` : ""}
       </p>
     </div>
@@ -1155,6 +1240,7 @@ function MapBoundsController({ gridFeatures = [], routeGeojsons = [], gpsPoints 
 
       if (bounds.isValid()) {
         const maxFitZoom = (routeGeojsons || []).length ? 16 : 14;
+        map.invalidateSize(true);
         map.fitBounds(bounds, { padding: [38, 38], maxZoom: maxFitZoom });
       }
     } catch (error) {

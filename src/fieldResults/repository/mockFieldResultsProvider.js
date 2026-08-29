@@ -14,6 +14,7 @@ import {
   collectFilterOptions,
 } from '../selectors/fieldResultSelectors.js';
 import { canPerformFieldResultQc } from '../models/fieldResultTypes.js';
+import { loadGpsRouteForRun } from '../gps/loadGpsRoute.js';
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -295,10 +296,6 @@ export function createMockFieldResultsProvider(options = {}) {
       };
     },
 
-    /**
-     * Artifact access via provider only.
-     * Returns mock blob descriptor — never public/signed Storage URLs.
-     */
     async requestArtifactAccess(resultId, artifactId, actor = {}) {
       void actor;
       const run = findRun(resultId);
@@ -356,6 +353,20 @@ export function createMockFieldResultsProvider(options = {}) {
           notice: 'MOCK DEVELOPMENT ACCESS — not a real Storage signed URL.',
         },
       };
+    },
+
+    async getGpsRoute(resultId, actor = {}) {
+      void actor;
+      const run = findRun(resultId);
+      if (!run) {
+        return {
+          ok: false,
+          status: 'error',
+          error: { code: 'not_found', message: 'Field result not found.' },
+        };
+      }
+      const loaded = await loadGpsRouteForRun({ run, artifacts: run.artifacts });
+      return { ok: true, status: 'success', route: loaded.route, mock: true };
     },
   };
 }

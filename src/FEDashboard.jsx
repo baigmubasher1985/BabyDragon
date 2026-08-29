@@ -9,6 +9,13 @@ import {
   syncOfflineQueue,
   tryOnlineThenQueue,
 } from "./utils/offlineQueue";
+import {
+  DASHBOARD_DENSITY_COMPACT,
+  DASHBOARD_DENSITY_COMFORTABLE,
+  densityLabel,
+  persistDashboardDensity,
+  readStoredDashboardDensity,
+} from "./lib/dashboardDensity.js";
 
 
 const DEFAULT_CHECKLIST_ITEMS = [
@@ -161,6 +168,8 @@ export default function FEDashboard({ user: appUser, onLogout, offlineMode = fal
     return localStorage.getItem("babyDragonTheme") || "night";
   });
 
+  const [density, setDensity] = useState(() => readStoredDashboardDensity());
+
   const [tasks, setTasks] = useState([]);
   const [updates, setUpdates] = useState({});
   const [taskRoutes, setTaskRoutes] = useState({});
@@ -227,14 +236,16 @@ export default function FEDashboard({ user: appUser, onLogout, offlineMode = fal
   useEffect(() => {
     localStorage.setItem("babyDragonTheme", themeMode);
 
+    document.documentElement.classList.toggle("bd-theme-day", themeMode === "day");
+    document.documentElement.classList.toggle("bd-theme-night", themeMode === "night");
     document.body.classList.toggle("bd-theme-day", themeMode === "day");
     document.body.classList.toggle("bd-theme-night", themeMode === "night");
-
-    return () => {
-      document.body.classList.remove("bd-theme-day");
-      document.body.classList.remove("bd-theme-night");
-    };
   }, [themeMode]);
+
+  useEffect(() => {
+    persistDashboardDensity(density);
+    document.body.dataset.bdDensity = density;
+  }, [density]);
 
   useEffect(() => {
     localStorage.setItem("feActiveTab", activeTab);
@@ -1333,19 +1344,41 @@ export default function FEDashboard({ user: appUser, onLogout, offlineMode = fal
   }
 
   return (
-    <div className={`fe-page theme-${themeMode}`}>
+    <div className={`fe-page theme-${themeMode}`} data-bd-density={density}>
       <style>{feThemeCss}</style>
 
       <div className="fe-topbar">
-        <h2 className="fe-title">🚙 Field Engineer Dashboard</h2>
-        <button
-          type="button"
-          className="fe-theme-toggle"
-          onClick={() => setThemeMode((current) => (current === "night" ? "day" : "night"))}
-          title="Switch day/night theme"
-        >
-          {themeMode === "night" ? "☀️ Day" : "🌙 Night"}
-        </button>
+        <h2 className="fe-title">Field Engineer Dashboard</h2>
+        <div className="fe-topbar-actions">
+          <button
+            type="button"
+            className="fe-theme-toggle"
+            onClick={() => setDensity((current) => (
+              current === DASHBOARD_DENSITY_COMPACT
+                ? DASHBOARD_DENSITY_COMFORTABLE
+                : DASHBOARD_DENSITY_COMPACT
+            ))}
+            title="Switch compact/comfortable density"
+          >
+            {densityLabel(density)}
+          </button>
+          <button
+            type="button"
+            className="fe-theme-toggle"
+            onClick={() => setThemeMode((current) => (current === "night" ? "day" : "night"))}
+            title="Switch day/night theme"
+          >
+            {themeMode === "night" ? "☀️ Day" : "🌙 Night"}
+          </button>
+          <button
+            type="button"
+            className="fe-logout-btn"
+            onClick={onLogout}
+            aria-label="Logout"
+          >
+            Logout
+          </button>
+        </div>
       </div>
 
       <div style={styles.tabBar}>
@@ -1998,21 +2031,34 @@ const feThemeCss = `
     margin: 0 auto 10px;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     gap: 12px;
-    position: relative;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    box-sizing: border-box;
+    padding: 10px 8px;
+    background: var(--bd-fe-bg);
   }
 
   .fe-title {
     color: var(--bd-fe-text) !important;
     margin: 0 !important;
-    text-align: center !important;
-    font-size: clamp(18px, 1.35vw, 24px) !important;
+    text-align: left !important;
+    font-size: clamp(16px, 1.35vw, 22px) !important;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .fe-topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
   }
 
   .fe-theme-toggle {
-    position: absolute;
-    right: 0;
+    position: static;
     border: 1px solid var(--bd-fe-border);
     border-radius: 999px;
     background: var(--bd-fe-panel);
@@ -2022,6 +2068,18 @@ const feThemeCss = `
     font-weight: 900;
     cursor: pointer;
     box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+  }
+
+  .fe-logout-btn {
+    border: none;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #ff5c7a, #ff9f43);
+    color: #ffffff;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 900;
+    cursor: pointer;
+    white-space: nowrap;
   }
 
 
@@ -2327,7 +2385,7 @@ const feThemeCss = `
     color: #0f172a !important;
   }
 
-  .fe-page.theme-day button:not(.fe-theme-toggle) {
+  .fe-page.theme-day button:not(.fe-theme-toggle):not(.fe-logout-btn) {
     box-shadow: none !important;
   }
 
@@ -2356,6 +2414,12 @@ const feThemeCss = `
     background: #ffffff !important;
     color: #0f172a !important;
     border-color: rgba(30, 64, 175, 0.22) !important;
+  }
+
+  .fe-page.theme-day .fe-logout-btn {
+    background: linear-gradient(135deg, #dc2626, #f97316) !important;
+    color: #ffffff !important;
+    border: none !important;
   }
 
   .fe-page.theme-day .fe-task-card,
@@ -2424,7 +2488,7 @@ const feThemeCss = `
     outline: none !important;
   }
 
-  .fe-page.theme-day button:not(.fe-theme-toggle) {
+  .fe-page.theme-day button:not(.fe-theme-toggle):not(.fe-logout-btn) {
     box-shadow: none !important;
   }
 

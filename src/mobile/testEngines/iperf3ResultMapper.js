@@ -89,9 +89,80 @@ function readJsonFromNativeResult(nativeResult = {}) {
   }
 }
 
+function flattenEndStreams(streams = []) {
+  const flat = [];
+  for (const item of streams || []) {
+    if (!item || typeof item !== "object") continue;
+    if (item.bits_per_second !== undefined || item.bytes !== undefined) {
+      flat.push(item);
+      continue;
+    }
+    if (item.sender && typeof item.sender === "object" && item.sender !== true && item.sender !== false) {
+      flat.push({ ...item.sender, sender: true, socket: item.sender.socket ?? item.socket });
+    }
+    if (item.receiver && typeof item.receiver === "object") {
+      flat.push({ ...item.receiver, sender: false, socket: item.receiver.socket ?? item.socket });
+    }
+  }
+  return flat;
+}
+
+function pickBidirReverseBlock(end = {}) {
+  return end.sum_received_bidir_reverse
+    || end.sum_sent_bidir_reverse
+    || end.sum_received_other
+    || end.sum_sent_other
+    || end.sum_bidir_reverse
+    || null;
+}
+
+/**
+ * Bidirectional iPerf JSON: end.sum_sent / end.sum_received are the FORWARD
+ * (client-send / UL) pair. True DL lives on the reverse connection:
+ * sum_received_bidir_reverse / sum_sent_other / the other socket's receiver.
+ */
+function mapBidirEndTotals(end = {}) {
+  const sumSent = end.sum_sent || null;
+  const reverse = pickBidirReverseBlock(end);
+
+  let ulMbps = sumSent ? bpsToMbps(sumSent.bits_per_second) : null;
+  let ulBytes = sumSent ? safeBytes(sumSent.bytes) : null;
+  let dlMbps = reverse ? bpsToMbps(reverse.bits_per_second) : null;
+  let dlBytes = reverse ? safeBytes(reverse.bytes) : null;
+
+  const streams = flattenEndStreams(Array.isArray(end.streams) ? end.streams : []);
+  if ((dlMbps == null || ulMbps == null) && streams.length) {
+    const bySocket = new Map();
+    for (const stream of streams) {
+      const socket = stream.socket != null ? String(stream.socket) : "_";
+      if (!bySocket.has(socket)) bySocket.set(socket, []);
+      bySocket.get(socket).push(stream);
+    }
+    const sockets = [...bySocket.keys()];
+    if (sockets.length >= 2) {
+      const ulSocket = sumSent?.socket != null ? String(sumSent.socket) : sockets[0];
+      const dlSocket = sockets.find((id) => id !== ulSocket) || sockets[1];
+      const ulStreams = bySocket.get(ulSocket) || [];
+      const dlStreams = bySocket.get(dlSocket) || [];
+      const ulSender = ulStreams.find((s) => s.sender === true) || ulStreams[0];
+      const dlReceiver = dlStreams.find((s) => s.sender === false) || dlStreams.find((s) => s.sender === true) || dlStreams[0];
+      if (ulMbps == null && ulSender) {
+        ulMbps = bpsToMbps(ulSender.bits_per_second);
+        ulBytes = safeBytes(ulSender.bytes);
+      }
+      if (dlMbps == null && dlReceiver) {
+        dlMbps = bpsToMbps(dlReceiver.bits_per_second);
+        dlBytes = safeBytes(dlReceiver.bytes);
+      }
+    }
+  }
+
+  return { dlMbps, ulMbps, dlBytes, ulBytes, isReverse: false, isBidir: true };
+}
+
 function mapDirectionTotals(setup = {}, end = {}) {
   const isReverse = setup.reverseMode === true;
-  const isBidir = setup.bidirMode === true;
+  const isBidir = setup.bidirMode === true || wantsBidir(setup);
   const protocol = String(setup.protocol || "TCP").toUpperCase();
   const sumSent = end.sum_sent || null;
   const sumReceived = end.sum_received || null;
@@ -103,14 +174,7 @@ function mapDirectionTotals(setup = {}, end = {}) {
   let ulBytes = null;
 
   if (isBidir) {
-    if (sumSent) {
-      ulMbps = bpsToMbps(sumSent.bits_per_second);
-      ulBytes = safeBytes(sumSent.bytes);
-    }
-    if (sumReceived) {
-      dlMbps = bpsToMbps(sumReceived.bits_per_second);
-      dlBytes = safeBytes(sumReceived.bytes);
-    }
+    return mapBidirEndTotals(end);
   } else if (isReverse) {
     if (sumReceived) {
       dlMbps = bpsToMbps(sumReceived.bits_per_second);
@@ -149,10 +213,169 @@ function pickTiming(...candidates) {
     const end = safeNumber(candidate.end);
     const seconds = safeNumber(candidate.seconds);
     if (start !== null || end !== null || seconds !== null) {
-      return { start, end, seconds };
+      return { start, end, seconds: resolveIntervalDuration({ start, end, seconds }) };
     }
   }
   return { start: null, end: null, seconds: null };
+}
+
+/**
+ * Prefer (end - start) when `seconds` looks like a cumulative end timestamp
+ * rather than this interval's duration.
+ */
+export function resolveIntervalDuration(timing = {}) {
+  const start = safeNumber(timing.start);
+  const end = safeNumber(timing.end);
+  const seconds = safeNumber(timing.seconds);
+  if (start !== null && end !== null && end > start) {
+    const span = end - start;
+    if (seconds === null || seconds <= 0) return span;
+    const looksLikeEndTimestamp = Math.abs(seconds - end) <= 0.51 && seconds > span * 1.2;
+    if (looksLikeEndTimestamp) return span;
+    return seconds;
+  }
+  return seconds;
+}
+
+export const CONTINUOUS_IPERF_AGGREGATION_RULE = [
+  "Per-iteration DL/UL is the iPerf end-direction total for that iteration.",
+  "Bidirectional: UL = client sum_sent; DL = reverse receiver (sum_received_bidir_reverse / other socket), never forward sum_received.",
+  "When end totals omit the reverse direction, reconstruct from interval samples (unweighted mean of interval Mbps; bytes summed).",
+  "Session headline is the arithmetic mean of completed iteration totals only.",
+  "Warmup, wait-between-iterations, and retries are not extra throughput iterations.",
+  "Failed or missing measurements stay null and evaluate INCOMPLETE — never numeric 0 Mbps FAIL.",
+].join(" ");
+
+export function aggregateDirectionFromIntervals(samples = []) {
+  const list = Array.isArray(samples) ? samples : [];
+  const dlValues = [];
+  const ulValues = [];
+  let dlBytes = 0;
+  let ulBytes = 0;
+  let hasDlBytes = false;
+  let hasUlBytes = false;
+  for (const sample of list) {
+    const dl = safeNumber(sample?.dlMbps);
+    const ul = safeNumber(sample?.ulMbps);
+    if (dl !== null) dlValues.push(dl);
+    if (ul !== null) ulValues.push(ul);
+    const dlb = safeBytes(sample?.dlBytes);
+    const ulb = safeBytes(sample?.ulBytes);
+    if (dlb !== null) {
+      dlBytes += dlb;
+      hasDlBytes = true;
+    }
+    if (ulb !== null) {
+      ulBytes += ulb;
+      hasUlBytes = true;
+    }
+  }
+  const mean = (values) => (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null);
+  return {
+    dlMbps: safeMbps(mean(dlValues)),
+    ulMbps: safeMbps(mean(ulValues)),
+    dlBytes: hasDlBytes ? Math.round(dlBytes) : null,
+    ulBytes: hasUlBytes ? Math.round(ulBytes) : null,
+    intervalCount: list.length,
+  };
+}
+
+export function aggregateCompletedIterationThroughput(iterations = []) {
+  const rows = (Array.isArray(iterations) ? iterations : []).filter((row) => {
+    const status = String(row?.status || "").toLowerCase();
+    return status === "complete" || status === "completed" || status === "success" || status === "ok";
+  });
+  const mean = (key) => {
+    const values = rows.map((row) => safeNumber(row?.[key])).filter((value) => value !== null);
+    if (!values.length) return null;
+    return Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 1000) / 1000;
+  };
+  return {
+    avgDlMbps: mean("dlMbps"),
+    avgUlMbps: mean("ulMbps"),
+    completed: rows.length,
+    rule: CONTINUOUS_IPERF_AGGREGATION_RULE,
+  };
+}
+
+function reconcileBidirFromIntervals(mapped = {}, setup = {}) {
+  if (!wantsBidir(setup)) return mapped;
+  const fromIntervals = aggregateDirectionFromIntervals(mapped.intervalSamples || []);
+  if (fromIntervals.dlMbps == null && fromIntervals.ulMbps == null) return mapped;
+
+  const endDl = mapped.dlMbps;
+  const intervalDl = fromIntervals.dlMbps;
+  const looksLikeForwardReceiverAsDl = intervalDl != null && (
+    endDl == null
+    || (intervalDl > endDl * 1.25 && (intervalDl - endDl) >= 0.5)
+  );
+  if (looksLikeForwardReceiverAsDl) {
+    mapped.dlMbps = fromIntervals.dlMbps;
+    if (fromIntervals.dlBytes != null) mapped.dlBytes = fromIntervals.dlBytes;
+    mapped.throughputSource = "interval_reconciled_bidir";
+  }
+  if (mapped.ulMbps == null && fromIntervals.ulMbps != null) {
+    mapped.ulMbps = fromIntervals.ulMbps;
+    if (fromIntervals.ulBytes != null) mapped.ulBytes = fromIntervals.ulBytes;
+  }
+  return mapped;
+}
+
+export function reconcileIperfSessionThroughput(session = {}) {
+  const rows = Array.isArray(session.appIterationResults) ? session.appIterationResults : [];
+  const nextRows = rows.map((row) => {
+    const samples = Array.isArray(row.intervalSamples) ? row.intervalSamples : [];
+    if (!samples.length) return row;
+    const fromIntervals = aggregateDirectionFromIntervals(samples);
+    const endDl = safeNumber(row.dlMbps);
+    const intervalDl = fromIntervals.dlMbps;
+    if (intervalDl == null) return row;
+    if (endDl != null && !(intervalDl > endDl * 1.25 && (intervalDl - endDl) >= 0.5)) return row;
+    return {
+      ...row,
+      dlMbps: fromIntervals.dlMbps,
+      ulMbps: fromIntervals.ulMbps ?? row.ulMbps,
+      dlBytes: fromIntervals.dlBytes ?? row.dlBytes,
+      ulBytes: fromIntervals.ulBytes ?? row.ulBytes,
+      dlMeasuredBytes: fromIntervals.dlBytes ?? row.dlMeasuredBytes,
+      ulMeasuredBytes: fromIntervals.ulBytes ?? row.ulMeasuredBytes,
+      throughputSource: "interval_reconciled_bidir",
+    };
+  });
+  const summary = aggregateCompletedIterationThroughput(nextRows);
+  return {
+    ...session,
+    appIterationResults: nextRows,
+    appDlMbps: summary.avgDlMbps,
+    appUlMbps: summary.avgUlMbps,
+    iperfAggregationRule: CONTINUOUS_IPERF_AGGREGATION_RULE,
+  };
+}
+
+export function attachIperfExportIntervals(session = {}, iperfJson = {}) {
+  const intervals = Array.isArray(iperfJson?.intervals) ? iperfJson.intervals : [];
+  if (!intervals.length) return session;
+  const byIter = new Map();
+  for (const row of intervals) {
+    const n = Number(row.iteration);
+    if (!Number.isFinite(n)) continue;
+    if (!byIter.has(n)) byIter.set(n, []);
+    byIter.get(n).push({
+      index: row.interval ?? row.intervalIndex,
+      seconds: row.seconds,
+      dlMbps: row.dlMbps,
+      ulMbps: row.ulMbps,
+      dlBytes: row.dlBytes,
+      ulBytes: row.ulBytes,
+    });
+  }
+  const rows = (Array.isArray(session.appIterationResults) ? session.appIterationResults : []).map((row) => {
+    const samples = Array.isArray(row.intervalSamples) && row.intervalSamples.length
+      ? row.intervalSamples
+      : (byIter.get(Number(row.iteration)) || []);
+    return samples.length ? { ...row, intervalSamples: samples } : row;
+  });
+  return reconcileIperfSessionThroughput({ ...session, appIterationResults: rows });
 }
 
 function aggregateStreamStats(streams = []) {
@@ -408,6 +631,7 @@ export function mapIperf3NativeResult(nativeResult = {}, setup = {}) {
 
   const intervals = Array.isArray(rawJson.intervals) ? rawJson.intervals : [];
   mapped.intervalSamples = intervals.map((item, index) => mapIntervalSample(setup, item, index));
+  reconcileBidirFromIntervals(mapped, setup);
 
   applyBidirResultPolicy(mapped, setup);
 

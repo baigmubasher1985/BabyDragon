@@ -1,11 +1,11 @@
 /**
- * F10C2 Phase 3 — Field Results list (admin/QC).
- * Data via repository only — no direct table queries.
+ * F10C2 CR1-D — simplified Field Results list (ops-friendly).
+ * Data via repository only — no direct table queries. No long UUIDs in default table.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, Fragment } from 'react';
 import { emptyListFilters } from '../selectors/fieldResultSelectors.js';
-import { scenarioLabel } from '../models/fieldResultTypes.js';
+import { formatCountOrNA, scenarioLabel } from '../models/fieldResultTypes.js';
 import './FieldResults.css';
 
 function badgeClassForQc(decision) {
@@ -15,15 +15,6 @@ function badgeClassForQc(decision) {
   if (decision === 'Log Naming Issue' || decision === 'Missing Evidence') {
     return 'bdfr-badge bdfr-badge-warn';
   }
-  return 'bdfr-badge bdfr-badge-wait';
-}
-
-function badgeClassForUpload(state) {
-  if (state === 'uploaded') return 'bdfr-badge bdfr-badge-ok';
-  if (state === 'partial' || state === 'uploading' || state === 'queued') {
-    return 'bdfr-badge bdfr-badge-partial';
-  }
-  if (state === 'failed') return 'bdfr-badge bdfr-badge-fail';
   return 'bdfr-badge bdfr-badge-wait';
 }
 
@@ -37,6 +28,8 @@ export default function FieldResultsList({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [data, setData] = useState(null);
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const [moreFilters, setMoreFilters] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -121,6 +114,15 @@ export default function FieldResultsList({
     [options.scenarios],
   );
 
+  function toggleExpanded(id) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   return (
     <div>
       <div className="bdfr-filters" role="search" aria-label="Field Results filters">
@@ -135,134 +137,57 @@ export default function FieldResultsList({
         </label>
         <label>
           Project
-          <select
-            aria-label="Filter by project"
-            value={filters.project}
-            onChange={(e) => updateFilter('project', e.target.value)}
-          >
+          <select aria-label="Filter by project" value={filters.project} onChange={(e) => updateFilter('project', e.target.value)}>
             <option value="">All</option>
             {options.projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
+              <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
         </label>
         <label>
-          Market
-          <select
-            aria-label="Filter by market"
-            value={filters.market}
-            onChange={(e) => updateFilter('market', e.target.value)}
-          >
+          Vendor
+          <select aria-label="Filter by vendor" value={filters.vendor || ''} onChange={(e) => updateFilter('vendor', e.target.value)}>
             <option value="">All</option>
-            {options.markets.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Grid
-          <select
-            aria-label="Filter by grid"
-            value={filters.grid}
-            onChange={(e) => updateFilter('grid', e.target.value)}
-          >
-            <option value="">All</option>
-            {options.grids.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
+            {(options.vendors || []).map((v) => (
+              <option key={v} value={v}>{v}</option>
             ))}
           </select>
         </label>
         <label>
           FE
-          <select
-            aria-label="Filter by field engineer"
-            value={filters.fe}
-            onChange={(e) => updateFilter('fe', e.target.value)}
-          >
+          <select aria-label="Filter by field engineer" value={filters.fe} onChange={(e) => updateFilter('fe', e.target.value)}>
             <option value="">All</option>
             {options.fieldEngineers.map((fe) => (
-              <option key={fe.id} value={fe.id}>
-                {fe.name}
-              </option>
+              <option key={fe.id} value={fe.id}>{fe.name}</option>
             ))}
           </select>
         </label>
         <label>
-          Scenario
-          <select
-            aria-label="Filter by scenario"
-            value={filters.scenario}
-            onChange={(e) => updateFilter('scenario', e.target.value)}
-          >
+          Test Type
+          <select aria-label="Filter by test type" value={filters.scenario} onChange={(e) => updateFilter('scenario', e.target.value)}>
             <option value="">All</option>
             {scenarioOptions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
+              <option key={s.id} value={s.id}>{s.label}</option>
             ))}
           </select>
         </label>
         <label>
-          Start date
-          <input
-            type="date"
-            aria-label="Start date"
-            value={filters.dateFrom}
-            onChange={(e) => updateFilter('dateFrom', e.target.value)}
-          />
+          Date
+          <input type="date" aria-label="Start date" value={filters.dateFrom} onChange={(e) => updateFilter('dateFrom', e.target.value)} />
         </label>
         <label>
-          End date
-          <input
-            type="date"
-            aria-label="End date"
-            value={filters.dateTo}
-            onChange={(e) => updateFilter('dateTo', e.target.value)}
-          />
-        </label>
-        <label>
-          Upload
-          <select
-            aria-label="Filter by upload state"
-            value={filters.upload_state}
-            onChange={(e) => updateFilter('upload_state', e.target.value)}
-          >
+          Acceptance
+          <select aria-label="Filter by acceptance verdict" value={filters.acceptance_verdict} onChange={(e) => updateFilter('acceptance_verdict', e.target.value)}>
             <option value="">All</option>
-            <option value="uploaded">uploaded</option>
-            <option value="partial">partial</option>
-            <option value="uploading">uploading</option>
-            <option value="queued">queued</option>
-            <option value="failed">failed</option>
+            <option value="PASS">PASS</option>
+            <option value="FAIL">FAIL</option>
+            <option value="INCOMPLETE">INCOMPLETE</option>
+            <option value="NOT_EVALUATED">NOT_EVALUATED</option>
           </select>
         </label>
         <label>
-          Processing
-          <select
-            aria-label="Filter by processing state"
-            value={filters.processing_state}
-            onChange={(e) => updateFilter('processing_state', e.target.value)}
-          >
-            <option value="">All</option>
-            <option value="ready">ready</option>
-            <option value="processing">processing</option>
-            <option value="pending">pending</option>
-            <option value="incomplete">incomplete</option>
-            <option value="failed">failed</option>
-          </select>
-        </label>
-        <label>
-          QC decision
-          <select
-            aria-label="Filter by QC decision"
-            value={filters.qc_decision}
-            onChange={(e) => updateFilter('qc_decision', e.target.value)}
-          >
+          QC
+          <select aria-label="Filter by QC decision" value={filters.qc_decision} onChange={(e) => updateFilter('qc_decision', e.target.value)}>
             <option value="">All</option>
             <option value="QC Passed">QC Passed</option>
             <option value="QC Failed">QC Failed</option>
@@ -273,39 +198,79 @@ export default function FieldResultsList({
             <option value="Missing Evidence">Missing Evidence</option>
           </select>
         </label>
-        <label>
-          Failures
-          <select
-            aria-label="Filter by failures present"
-            value={filters.failures_present}
-            onChange={(e) => updateFilter('failures_present', e.target.value)}
-          >
-            <option value="">All</option>
-            <option value="yes">Yes</option>
-            <option value="no">No</option>
-          </select>
-        </label>
-        <label>
-          Re-drive
-          <select
-            aria-label="Filter by re-drive required"
-            value={filters.redrive_required}
-            onChange={(e) => updateFilter('redrive_required', e.target.value)}
-          >
-            <option value="">All</option>
-            <option value="yes">Required</option>
-            <option value="no">Not required</option>
-          </select>
-        </label>
         <div className="bdfr-filter-actions">
-          <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={resetFilters}>
-            Reset filters
+          <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={() => setMoreFilters((v) => !v)}>
+            {moreFilters ? 'Fewer Filters' : 'More Filters'}
           </button>
-          <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={load}>
-            Refresh
-          </button>
+          <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={resetFilters}>Reset filters</button>
+          <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={load}>Refresh</button>
         </div>
       </div>
+
+      {moreFilters && (
+        <div className="bdfr-filters bdfr-filters-more" role="search" aria-label="More Field Results filters">
+          <label>
+            Market
+            <select aria-label="Filter by market" value={filters.market} onChange={(e) => updateFilter('market', e.target.value)}>
+              <option value="">All</option>
+              {options.markets.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            End date
+            <input type="date" aria-label="End date" value={filters.dateTo} onChange={(e) => updateFilter('dateTo', e.target.value)} />
+          </label>
+          <label>
+            Grid
+            <select aria-label="Filter by grid" value={filters.grid} onChange={(e) => updateFilter('grid', e.target.value)}>
+              <option value="">All</option>
+              {options.grids.map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Upload
+            <select aria-label="Filter by upload state" value={filters.upload_state} onChange={(e) => updateFilter('upload_state', e.target.value)}>
+              <option value="">All</option>
+              <option value="uploaded">uploaded</option>
+              <option value="partial">partial</option>
+              <option value="uploading">uploading</option>
+              <option value="queued">queued</option>
+              <option value="failed">failed</option>
+            </select>
+          </label>
+          <label>
+            Processing
+            <select aria-label="Filter by processing state" value={filters.processing_state} onChange={(e) => updateFilter('processing_state', e.target.value)}>
+              <option value="">All</option>
+              <option value="ready">ready</option>
+              <option value="processing">processing</option>
+              <option value="pending">pending</option>
+              <option value="incomplete">incomplete</option>
+              <option value="failed">failed</option>
+            </select>
+          </label>
+          <label>
+            Failures
+            <select aria-label="Filter by failures present" value={filters.failures_present} onChange={(e) => updateFilter('failures_present', e.target.value)}>
+              <option value="">All</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label>
+            Re-drive
+            <select aria-label="Filter by re-drive required" value={filters.redrive_required} onChange={(e) => updateFilter('redrive_required', e.target.value)}>
+              <option value="">All</option>
+              <option value="yes">Required</option>
+              <option value="no">Not required</option>
+            </select>
+          </label>
+        </div>
+      )}
 
       {loading && (
         <div className="bdfr-skeleton" aria-busy="true" aria-label="Loading field results">
@@ -318,18 +283,14 @@ export default function FieldResultsList({
       {!loading && error && (
         <div className="bdfr-state" role="alert">
           <p>{error}</p>
-          <button type="button" className="bdfr-btn" onClick={load}>
-            Retry
-          </button>
+          <button type="button" className="bdfr-btn" onClick={load}>Retry</button>
         </div>
       )}
 
       {!loading && !error && data?.status === 'empty' && (
         <div className="bdfr-state">
           <p>No field results match the current filters.</p>
-          <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={resetFilters}>
-            Clear filters
-          </button>
+          <button type="button" className="bdfr-btn bdfr-btn-secondary" onClick={resetFilters}>Clear filters</button>
         </div>
       )}
 
@@ -339,71 +300,88 @@ export default function FieldResultsList({
             <table className="bdfr-table">
               <thead>
                 <tr>
-                  <th onClick={() => toggleSort('report_name')} scope="col">
-                    Report
-                  </th>
-                  <th scope="col">Task</th>
+                  <th scope="col"> </th>
+                  <th onClick={() => toggleSort('report_name')} scope="col">Report</th>
                   <th scope="col">Project</th>
-                  <th scope="col">Grid</th>
-                  <th scope="col">Market</th>
+                  <th scope="col">Task / Grid</th>
+                  <th scope="col">Vendor</th>
                   <th scope="col">FE</th>
-                  <th onClick={() => toggleSort('scenario_type')} scope="col">
-                    Scenario
-                  </th>
-                  <th onClick={() => toggleSort('started_at')} scope="col">
-                    Started
-                  </th>
-                  <th scope="col">Duration</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Attempts</th>
-                  <th scope="col">Upload</th>
-                  <th scope="col">Processing</th>
+                  <th onClick={() => toggleSort('scenario_type')} scope="col">Test Type</th>
+                  <th onClick={() => toggleSort('started_at')} scope="col">Date</th>
+                  <th scope="col">Iterations</th>
+                  <th scope="col">Acceptance</th>
                   <th scope="col">QC</th>
-                  <th scope="col">Re-drive</th>
-                  <th scope="col">Summary</th>
+                  <th scope="col">View</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.id}>
+                  <Fragment key={row.id}>
+                  <tr onClick={() => onOpenResult(row.id)} style={{ cursor: 'pointer' }}>
                     <td>
                       <button
                         type="button"
-                        className="bdfr-link"
-                        onClick={() => onOpenResult(row.id)}
+                        className="bdfr-expand"
+                        aria-expanded={expandedIds.has(row.id)}
+                        aria-label={expandedIds.has(row.id) ? 'Collapse run details' : 'Expand run details'}
+                        onClick={(e) => { e.stopPropagation(); toggleExpanded(row.id); }}
                       >
-                        {row.report_name}
+                        {expandedIds.has(row.id) ? '▾' : '▸'}
                       </button>
                     </td>
-                    <td>{row.task_name}</td>
-                    <td>{row.project_name}</td>
-                    <td>{row.grid_name}</td>
-                    <td>{row.market || '—'}</td>
+                    <td>
+                      <button type="button" className="bdfr-link" onClick={(e) => { e.stopPropagation(); onOpenResult(row.id); }}>
+                        {row.report_name}
+                      </button>
+                      {row.labeled_synthetic && (
+                        <span className="bdfr-badge bdfr-badge-synth">SYNTHETIC</span>
+                      )}
+                    </td>
+                    <td>{row.project_name || '—'}</td>
+                    <td>{row.task_grid_label || row.grid_name || '—'}</td>
+                    <td>{row.vendor_name && row.vendor_name !== row.project_id ? row.vendor_name : '—'}</td>
                     <td>{row.field_engineer_name}</td>
                     <td>{row.scenario_label || scenarioLabel(row.scenario_type)}</td>
-                    <td>{row.started_at ? new Date(row.started_at).toLocaleString() : '—'}</td>
-                    <td>{row.duration_label}</td>
-                    <td>{row.completion_status}</td>
+                    <td>{row.started_at ? new Date(row.started_at).toLocaleDateString() : '—'}</td>
+                    <td>{formatCountOrNA(row.completed)}/{formatCountOrNA(row.requested ?? row.attempted)}</td>
                     <td>
-                      {row.attempted}/{row.completed}/{row.failed}
-                    </td>
-                    <td>
-                      <span className={badgeClassForUpload(row.upload_state)}>
-                        {row.upload_state}
+                      <span className={
+                        row.acceptance_verdict === 'PASS'
+                          ? 'bdfr-badge bdfr-badge-pass'
+                          : row.acceptance_verdict === 'FAIL'
+                            ? 'bdfr-badge bdfr-badge-fail'
+                            : row.acceptance_verdict === 'INCOMPLETE'
+                              ? 'bdfr-badge bdfr-badge-warn'
+                              : 'bdfr-badge bdfr-badge-wait'
+                      }>
+                        {row.acceptance_verdict || '—'}
                       </span>
                     </td>
-                    <td>{row.processing_state}</td>
                     <td>
-                      <span className={badgeClassForQc(row.latest_qc_status)}>
-                        {row.latest_qc_status}
-                      </span>
+                      <span className={badgeClassForQc(row.latest_qc_status)}>{row.latest_qc_status}</span>
                     </td>
-                    <td>{row.redrive_needed ? 'Yes' : 'No'}</td>
                     <td>
-                      <div>{row.data_summary_concise}</div>
-                      <div>{row.rf_summary_concise}</div>
+                      <button type="button" className="bdfr-link" onClick={(e) => { e.stopPropagation(); onOpenResult(row.id); }}>View</button>
                     </td>
                   </tr>
+                  {expandedIds.has(row.id) && (
+                    <tr className="bdfr-expand-row">
+                      <td colSpan={12}>
+                        <div className="bdfr-expand-grid">
+                          <div><span>Advanced Details</span><strong title={row.id}>Copy IDs from overview</strong></div>
+                          <div><span>Run ID</span><strong className="bdfr-id-sub" title={row.id}>{row.id}</strong></div>
+                          <div><span>Session</span><strong className="bdfr-id-sub">{row.client_run_id || '—'}</strong></div>
+                          <div><span>Canonical</span><strong className="bdfr-id-sub">{row.canonical_package_id || '—'}</strong></div>
+                          <div><span>RF</span><strong>{row.rf_summary_concise}</strong></div>
+                          <div><span>Profile</span><strong>{row.acceptance_profile_version || '—'}</strong></div>
+                          <button type="button" className="bdfr-link" onClick={() => onOpenResult(row.id)}>
+                            Open technical detail
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -413,14 +391,13 @@ export default function FieldResultsList({
             {rows.map((row) => (
               <article key={row.id} className="bdfr-card">
                 <h3>
-                  <button
-                    type="button"
-                    className="bdfr-link"
-                    onClick={() => onOpenResult(row.id)}
-                  >
+                  <button type="button" className="bdfr-link" onClick={() => onOpenResult(row.id)}>
                     {row.report_name}
                   </button>
                 </h3>
+                {row.labeled_synthetic && (
+                  <span className="bdfr-badge bdfr-badge-synth">SYNTHETIC</span>
+                )}
                 <div className="bdfr-card-meta">
                   <div>Scenario: {row.scenario_label}</div>
                   <div>FE: {row.field_engineer_name}</div>
@@ -428,9 +405,7 @@ export default function FieldResultsList({
                   <div>Grid: {row.grid_name}</div>
                   <div>
                     QC:{' '}
-                    <span className={badgeClassForQc(row.latest_qc_status)}>
-                      {row.latest_qc_status}
-                    </span>
+                    <span className={badgeClassForQc(row.latest_qc_status)}>{row.latest_qc_status}</span>
                   </div>
                   <div>Upload: {row.upload_state}</div>
                 </div>
@@ -439,26 +414,10 @@ export default function FieldResultsList({
           </div>
 
           <div className="bdfr-pagination">
-            <span>
-              Page {data.page} of {data.totalPages} · {data.total} results
-            </span>
+            <span>Page {data.page} of {data.totalPages} · {data.total} results</span>
             <div className="bdfr-filter-actions">
-              <button
-                type="button"
-                className="bdfr-btn bdfr-btn-secondary"
-                disabled={!data.hasPrev}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="bdfr-btn bdfr-btn-secondary"
-                disabled={!data.hasNext}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next
-              </button>
+              <button type="button" className="bdfr-btn bdfr-btn-secondary" disabled={!data.hasPrev} onClick={() => setPage((p) => Math.max(1, p - 1))}>Previous</button>
+              <button type="button" className="bdfr-btn bdfr-btn-secondary" disabled={!data.hasNext} onClick={() => setPage((p) => p + 1)}>Next</button>
             </div>
           </div>
         </>

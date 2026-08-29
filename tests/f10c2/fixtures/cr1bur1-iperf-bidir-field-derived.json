@@ -1,0 +1,483 @@
+{
+  "source": "derived-from-F10C2-P4BU-E2E field package 20260824; source ZIP not committed",
+  "sessionId": "bd-rf-1787606300946",
+  "task": "F10C2-P4BU-E2E",
+  "grid": "F10C2-P4BU-E2E",
+  "bidir": true,
+  "headlinePersistedWrong": {
+    "avgDlMbps": 2.64,
+    "avgUlMbps": 3.94
+  },
+  "dedicatedIntervalUnweighted": {
+    "avgDlMbps": 29.91,
+    "avgUlMbps": 4.18
+  },
+  "completed": 21,
+  "failed": 0,
+  "iterations": [
+    {
+      "iteration": 1,
+      "status": "complete",
+      "dlMbps": 0.42,
+      "ulMbps": 0.51,
+      "dlBytes": 1123808,
+      "ulBytes": 1310720
+    },
+    {
+      "iteration": 2,
+      "status": "complete",
+      "dlMbps": 3.23,
+      "ulMbps": 6.18,
+      "dlBytes": 4766496,
+      "ulBytes": 7864320
+    },
+    {
+      "iteration": 3,
+      "status": "complete",
+      "dlMbps": 7.9,
+      "ulMbps": 12.28,
+      "dlBytes": 11123208,
+      "ulBytes": 15728640
+    },
+    {
+      "iteration": 4,
+      "status": "complete",
+      "dlMbps": 9.92,
+      "ulMbps": 12.6,
+      "dlBytes": 14032376,
+      "ulBytes": 17039360
+    },
+    {
+      "iteration": 5,
+      "status": "complete",
+      "dlMbps": 4.39,
+      "ulMbps": 6.28,
+      "dlBytes": 8460392,
+      "ulBytes": 11796480
+    },
+    {
+      "iteration": 6,
+      "status": "complete",
+      "dlMbps": 1.89,
+      "ulMbps": 3.8,
+      "dlBytes": 3071096,
+      "ulBytes": 5242880
+    },
+    {
+      "iteration": 7,
+      "status": "complete",
+      "dlMbps": 0.43,
+      "ulMbps": 0.49,
+      "dlBytes": 1143490,
+      "ulBytes": 1310720
+    },
+    {
+      "iteration": 8,
+      "status": "complete",
+      "dlMbps": 1,
+      "ulMbps": 1.87,
+      "dlBytes": 1468424,
+      "ulBytes": 2621440
+    },
+    {
+      "iteration": 9,
+      "status": "complete",
+      "dlMbps": 1.8,
+      "ulMbps": 2.64,
+      "dlBytes": 4006680,
+      "ulBytes": 5242880
+    },
+    {
+      "iteration": 10,
+      "status": "complete",
+      "dlMbps": 1.59,
+      "ulMbps": 3.43,
+      "dlBytes": 2626832,
+      "ulBytes": 5242880
+    },
+    {
+      "iteration": 11,
+      "status": "complete",
+      "dlMbps": 1.29,
+      "ulMbps": 1.8,
+      "dlBytes": 1997112,
+      "ulBytes": 2621440
+    },
+    {
+      "iteration": 12,
+      "status": "complete",
+      "dlMbps": 2.84,
+      "ulMbps": 3.6,
+      "dlBytes": 4363752,
+      "ulBytes": 5242880
+    },
+    {
+      "iteration": 13,
+      "status": "complete",
+      "dlMbps": 4.51,
+      "ulMbps": 6.75,
+      "dlBytes": 6713784,
+      "ulBytes": 9175040
+    },
+    {
+      "iteration": 14,
+      "status": "complete",
+      "dlMbps": 5.89,
+      "ulMbps": 8.04,
+      "dlBytes": 10087976,
+      "ulBytes": 13107200
+    },
+    {
+      "iteration": 15,
+      "status": "complete",
+      "dlMbps": 0.85,
+      "ulMbps": 1.17,
+      "dlBytes": 1944520,
+      "ulBytes": 2621440
+    },
+    {
+      "iteration": 16,
+      "status": "complete",
+      "dlMbps": 0.66,
+      "ulMbps": 0.8,
+      "dlBytes": 1134880,
+      "ulBytes": 1310720
+    },
+    {
+      "iteration": 17,
+      "status": "complete",
+      "dlMbps": 0.33,
+      "ulMbps": 0.69,
+      "dlBytes": 643560,
+      "ulBytes": 1310720
+    },
+    {
+      "iteration": 18,
+      "status": "complete",
+      "dlMbps": 2.24,
+      "ulMbps": 3.02,
+      "dlBytes": 4936728,
+      "ulBytes": 6553600
+    },
+    {
+      "iteration": 19,
+      "status": "complete",
+      "dlMbps": 2.02,
+      "ulMbps": 3.69,
+      "dlBytes": 4500768,
+      "ulBytes": 7864320
+    },
+    {
+      "iteration": 20,
+      "status": "complete",
+      "dlMbps": 1.63,
+      "ulMbps": 1.85,
+      "dlBytes": 2445528,
+      "ulBytes": 2621440
+    },
+    {
+      "iteration": 21,
+      "status": "complete",
+      "dlMbps": 0.69,
+      "ulMbps": 1.28,
+      "dlBytes": 1442128,
+      "ulBytes": 2621440
+    }
+  ],
+  "intervals": [
+    {
+      "iteration": 1,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 28.71,
+      "ulMbps": 0.42
+    },
+    {
+      "iteration": 1,
+      "interval": 2,
+      "seconds": 15.61,
+      "dlMbps": 18.61,
+      "ulMbps": 0.54
+    },
+    {
+      "iteration": 2,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 44.2,
+      "ulMbps": 9.01
+    },
+    {
+      "iteration": 2,
+      "interval": 2,
+      "seconds": 5.17,
+      "dlMbps": 74.67,
+      "ulMbps": 3.45
+    },
+    {
+      "iteration": 3,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 42.32,
+      "ulMbps": 12.78
+    },
+    {
+      "iteration": 3,
+      "interval": 2,
+      "seconds": 5.24,
+      "dlMbps": 80.08,
+      "ulMbps": 11.81
+    },
+    {
+      "iteration": 4,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 39.61,
+      "ulMbps": 12.78
+    },
+    {
+      "iteration": 4,
+      "interval": 2,
+      "seconds": 5.81,
+      "dlMbps": 62.96,
+      "ulMbps": 12.45
+    },
+    {
+      "iteration": 5,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 22.2,
+      "ulMbps": 11.94
+    },
+    {
+      "iteration": 5,
+      "interval": 2,
+      "seconds": 10.02,
+      "dlMbps": 25.33,
+      "ulMbps": 3.45
+    },
+    {
+      "iteration": 6,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 26.39,
+      "ulMbps": 6.07
+    },
+    {
+      "iteration": 6,
+      "interval": 2,
+      "seconds": 6.04,
+      "dlMbps": 36.64,
+      "ulMbps": 1.91
+    },
+    {
+      "iteration": 7,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 4.4,
+      "ulMbps": 0.21
+    },
+    {
+      "iteration": 7,
+      "interval": 2,
+      "seconds": 16.17,
+      "dlMbps": 2.79,
+      "ulMbps": 0.58
+    },
+    {
+      "iteration": 8,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 1.26,
+      "ulMbps": 1.89
+    },
+    {
+      "iteration": 8,
+      "interval": 2,
+      "seconds": 6.2,
+      "dlMbps": 5.07,
+      "ulMbps": 1.86
+    },
+    {
+      "iteration": 9,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 12.36,
+      "ulMbps": 3.77
+    },
+    {
+      "iteration": 9,
+      "interval": 2,
+      "seconds": 10.9,
+      "dlMbps": 14.91,
+      "ulMbps": 2.12
+    },
+    {
+      "iteration": 10,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 38.96,
+      "ulMbps": 5.87
+    },
+    {
+      "iteration": 10,
+      "interval": 2,
+      "seconds": 7.23,
+      "dlMbps": 30.01,
+      "ulMbps": 1.74
+    },
+    {
+      "iteration": 11,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 17.18,
+      "ulMbps": 1.89
+    },
+    {
+      "iteration": 11,
+      "interval": 2,
+      "seconds": 6.63,
+      "dlMbps": 22.13,
+      "ulMbps": 1.74
+    },
+    {
+      "iteration": 12,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 24.72,
+      "ulMbps": 3.77
+    },
+    {
+      "iteration": 12,
+      "interval": 2,
+      "seconds": 6.65,
+      "dlMbps": 32.98,
+      "ulMbps": 3.47
+    },
+    {
+      "iteration": 13,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 32.47,
+      "ulMbps": 9.64
+    },
+    {
+      "iteration": 13,
+      "interval": 2,
+      "seconds": 5.86,
+      "dlMbps": 47.57,
+      "ulMbps": 4.29
+    },
+    {
+      "iteration": 14,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 33.34,
+      "ulMbps": 7.55
+    },
+    {
+      "iteration": 14,
+      "interval": 2,
+      "seconds": 8.05,
+      "dlMbps": 39.08,
+      "ulMbps": 8.34
+    },
+    {
+      "iteration": 15,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 45.67,
+      "ulMbps": 2.72
+    },
+    {
+      "iteration": 15,
+      "interval": 2,
+      "seconds": 12.92,
+      "dlMbps": 24.43,
+      "ulMbps": 0.57
+    },
+    {
+      "iteration": 16,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 23.88,
+      "ulMbps": 0.42
+    },
+    {
+      "iteration": 16,
+      "interval": 2,
+      "seconds": 8.18,
+      "dlMbps": 30.25,
+      "ulMbps": 1.03
+    },
+    {
+      "iteration": 17,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 43.15,
+      "ulMbps": 1.26
+    },
+    {
+      "iteration": 17,
+      "interval": 2,
+      "seconds": 10.18,
+      "dlMbps": 18.44,
+      "ulMbps": 0.41
+    },
+    {
+      "iteration": 18,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 5.24,
+      "ulMbps": 3.77
+    },
+    {
+      "iteration": 18,
+      "interval": 2,
+      "seconds": 12.35,
+      "dlMbps": 5.01,
+      "ulMbps": 2.72
+    },
+    {
+      "iteration": 19,
+      "interval": 1,
+      "seconds": 5,
+      "dlMbps": 48.19,
+      "ulMbps": 8.8
+    },
+    {
+      "iteration": 19,
+      "interval": 2,
+      "seconds": 12.06,
+      "dlMbps": 28.77,
+      "ulMbps": 1.56
+    },
+    {
+      "iteration": 20,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 28.49,
+      "ulMbps": 1.26
+    },
+    {
+      "iteration": 20,
+      "interval": 2,
+      "seconds": 6.35,
+      "dlMbps": 40.31,
+      "ulMbps": 2.31
+    },
+    {
+      "iteration": 21,
+      "interval": 1,
+      "seconds": 5.01,
+      "dlMbps": 28.7,
+      "ulMbps": 2.72
+    },
+    {
+      "iteration": 21,
+      "interval": 2,
+      "seconds": 11.36,
+      "dlMbps": 24.73,
+      "ulMbps": 0.65
+    }
+  ]
+}

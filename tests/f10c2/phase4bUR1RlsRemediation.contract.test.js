@@ -70,8 +70,8 @@ describe('f10c2 phase4b-u-r1 209 RLS remediation', () => {
     const plan = listPhase4bApplyPlan()
     const slugs = plan.stages.map((s) => s.slug)
     expect(slugs).toContain(SLUG)
-    expect(slugs.at(-1)).toBe(SLUG)
-    expect(slugs.at(-2)).toBe('208_phase4b_validation_remediation')
+    expect(slugs.indexOf(SLUG)).toBeGreaterThan(slugs.indexOf('208_phase4b_validation_remediation'))
+    expect(slugs.at(-1)).toBe('213_cr1b_rls_grants')
     expect(PHASE4B_R1_APPLY).toEqual(['208_phase4b_validation_remediation'])
     expect(PHASE4B_U_R1_APPLY).toEqual([SLUG])
     expect(listExistingDisposable209Apply().map((s) => s.slug)).toEqual([SLUG])
@@ -85,7 +85,7 @@ describe('f10c2 phase4b-u-r1 209 RLS remediation', () => {
     expect(F10C1I_SKIP).toEqual(expect.arrayContaining(['009_rls_profiles', '010_rls_tasks']))
     expect(F10C2_SKIP).toEqual(['112_result_artifacts_storage_contract'])
     expect(PHASE4A_NEVER_EXECUTE).toEqual(['207_rls_tenant_storage_assumptions'])
-    expect(plan.neverExecute).toEqual(['207_rls_tenant_storage_assumptions'])
+    expect(plan.neverExecute).toEqual(['207_rls_tenant_storage_assumptions', '214_cr1b_acceptance_applicability'])
   })
 
   it('keeps 209 additive, named-policy-only, RLS-enabling, and production-unauthorized', () => {

@@ -16,8 +16,10 @@ import {
   collectFilterOptions,
 } from "../selectors/fieldResultSelectors.js";
 import { canPerformFieldResultQc } from "../models/fieldResultTypes.js";
+import { denyQcMutation, denyOverride } from "../../acceptance/permissions.js";
 import { mapFieldTestRunRow } from "./mapFieldTestRunRow.js";
 import { createSupabaseArtifactStorageProvider } from "../../storage/providers/supabaseArtifactStorageProvider.js";
+import { loadGpsRouteForRun } from "../gps/loadGpsRoute.js";
 
 function fail(code, message, extra = {}) {
   return {
@@ -65,7 +67,7 @@ export function createSupabaseFieldResultsProvider(options = {}) {
     const gridIds = [...new Set(runs.map((r) => r.grid_id).filter(Boolean))];
     const feIds = [...new Set(runs.map((r) => r.submitted_by).filter(Boolean))];
 
-    const [arts, qcs, tasks, projects, grids, profiles] = await Promise.all([
+    const [arts, qcs, tasks, projects, grids, profiles, snaps, calls, overrides] = await Promise.all([
       supabase.from("field_test_artifacts").select("*").in("run_id", runIds),
       supabase.from("field_test_qc_reviews").select("*").in("field_test_run_id", runIds),
       taskIds.length
@@ -80,7 +82,15 @@ export function createSupabaseFieldResultsProvider(options = {}) {
       feIds.length
         ? supabase.from("profiles").select("id,email,full_name,role").in("id", feIds)
         : Promise.resolve({ data: [] }),
+      supabase.from("field_test_run_acceptance_snapshots").select("*").in("run_id", runIds),
+      supabase.from("field_test_call_summaries").select("*").in("run_id", runIds),
+      supabase.from("qc_verdict_overrides").select("*").in("run_id", runIds),
     ]);
+
+    const snapshotIds = (snaps.data || []).map((s) => s.id).filter(Boolean);
+    const evals = snapshotIds.length
+      ? await supabase.from("field_test_iteration_evaluations").select("*").in("snapshot_id", snapshotIds)
+      : { data: [] };
 
     const artByRun = new Map();
     for (const a of arts.data || []) {
@@ -93,9 +103,19 @@ export function createSupabaseFieldResultsProvider(options = {}) {
     const projectById = new Map((projects.data || []).map((p) => [p.id, p]));
     const gridById = new Map((grids.data || []).map((g) => [g.id, g]));
     const profileById = new Map((profiles.data || []).map((p) => [p.id, p]));
+    const snapByRun = new Map((snaps.data || []).map((s) => [s.run_id, s]));
+    const evalBySnap = new Map();
+    for (const row of evals.data || []) {
+      const list = evalBySnap.get(row.snapshot_id) || [];
+      list.push(row);
+      evalBySnap.set(row.snapshot_id, list);
+    }
+    const callByRun = new Map((calls.data || []).map((c) => [c.run_id, c]));
+    const overrideByRun = new Map((overrides.data || []).map((o) => [o.run_id, o]));
 
-    return runs.map((run) =>
-      mapFieldTestRunRow({
+    return runs.map((run) => {
+      const snap = snapByRun.get(run.id) || null;
+      return mapFieldTestRunRow({
         run,
         artifacts: artByRun.get(run.id) || [],
         qcReview: qcByRun.get(run.id) || null,
@@ -103,8 +123,12 @@ export function createSupabaseFieldResultsProvider(options = {}) {
         project: projectById.get(run.project_id),
         grid: gridById.get(run.grid_id),
         profile: profileById.get(run.submitted_by),
-      }),
-    );
+        acceptanceSnapshot: snap,
+        iterationEvaluations: snap ? (evalBySnap.get(snap.id) || []) : [],
+        callSummary: callByRun.get(run.id) || null,
+        acceptanceOverride: overrideByRun.get(run.id) || null,
+      });
+    });
   }
 
   async function loadMapped(resultId) {
@@ -183,6 +207,10 @@ export function createSupabaseFieldResultsProvider(options = {}) {
     },
 
     async saveResultQcDecision(resultId, decisionInput, actor = {}) {
+      const denied = denyQcMutation(actor);
+      if (!denied.ok) {
+        return fail(denied.code, denied.message);
+      }
       if (!canPerformFieldResultQc(actor.role)) {
         return fail("forbidden_role", "FE users cannot submit Field Result QC.");
       }
@@ -309,6 +337,33 @@ export function createSupabaseFieldResultsProvider(options = {}) {
       return result;
     },
 
+    async overrideAcceptanceVerdict(resultId, input = {}, actor = {}) {
+      const denied = denyOverride(actor);
+      if (!denied.ok) {
+        return fail(denied.code, denied.message);
+      }
+      const reason = String(input.reason || "").trim();
+      const verdict = String(input.verdict || "").trim();
+      if (!reason) return fail("override_reason_required", "Override reason is required.");
+      const { data, error } = await supabase.rpc("override_field_test_acceptance_verdict", {
+        p_run_id: resultId,
+        p_override_verdict: verdict,
+        p_reason: reason,
+      });
+      if (error) {
+        const c = classifyQueryError(error);
+        return fail(c.code, c.message, { retryable: c.retryable });
+      }
+      const after = await loadMapped(resultId);
+      if (!after.ok) return after;
+      return {
+        ok: true,
+        status: "success",
+        override: data,
+        result: buildDetailViewModel(after.run),
+      };
+    },
+
     async requestArtifactAccess(resultId, artifactId, actor = {}) {
       void actor;
       const loaded = await loadMapped(resultId);
@@ -350,6 +405,43 @@ export function createSupabaseFieldResultsProvider(options = {}) {
         const c = classifyQueryError(error);
         return fail(c.code, c.message, { retryable: c.retryable });
       }
+    },
+
+    async getGpsRoute(resultId, actor = {}) {
+      const loaded = await loadMapped(resultId);
+      if (!loaded.ok) return loaded;
+      const requestArtifactText = async (art) => {
+        try {
+          if (!art?.object_key) return { ok: false };
+          const access = await storageProvider.createAuthorizedReadAccess({
+            objectKey: art.object_key,
+            filename: art.filename,
+            mimeType: art.mime_type,
+            sizeBytes: art.size_bytes,
+          });
+          const url = access?.signed_url;
+          if (!url) return { ok: false };
+          const res = await fetch(url);
+          const text = await res.text();
+          if (String(art.artifact_type || "").includes("json") || String(art.mime_type || "").includes("json")) {
+            try {
+              return { ok: true, json: JSON.parse(text), text };
+            } catch {
+              return { ok: true, text };
+            }
+          }
+          return { ok: true, text };
+        } catch {
+          return { ok: false };
+        }
+      };
+      const route = await loadGpsRouteForRun({
+        run: loaded.run,
+        artifacts: loaded.run.artifacts,
+        requestArtifactText,
+      });
+      void actor;
+      return { ok: true, status: "success", route: route.route };
     },
   };
 }

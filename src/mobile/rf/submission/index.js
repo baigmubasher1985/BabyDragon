@@ -88,4 +88,7 @@ export {
   cancelQueuedFieldTestResult,
   listFieldTestResultQueueItems,
   ensureArtifactChecksums,
+  selectFieldTestQueueTargets,
+  processSelectedFieldTestResultQueue,
+  PROTECTED_QUEUE_SESSION_ID,
 } from "./enqueueFieldTestResult.js";

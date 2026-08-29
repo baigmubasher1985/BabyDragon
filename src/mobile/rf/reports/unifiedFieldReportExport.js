@@ -257,6 +257,9 @@ export function hydrateSessionFromReportPackage({
       intervalSeconds: dataTest.requested?.interval_sec,
     },
     sourcePackage: sourcePackage || report.report?.display_name || null,
+    canonicalPackageId: sessionBlock.canonical_package_id || null,
+    scenarioKey: sessionBlock.scenario_key || mapEngineId(engineId),
+    exportInstanceId: report.report?.export_instance_id || null,
   };
   return attachConnectivityFromReport(base, report);
 }

@@ -10,6 +10,14 @@ import QCReview from "./pages/QCReview";
 import Reports from "./pages/Reports";
 import UserManagement from "./pages/UserManagement";
 import { FieldResultsPage } from "./fieldResults";
+import AcceptanceCriteriaPage from "./acceptance/components/AcceptanceCriteriaPage.jsx";
+import {
+  DASHBOARD_DENSITY_COMPACT,
+  DASHBOARD_DENSITY_COMFORTABLE,
+  densityLabel,
+  persistDashboardDensity,
+  readStoredDashboardDensity,
+} from "./lib/dashboardDensity.js";
 
 const emptyProject = {
   name: "",
@@ -25,6 +33,7 @@ const menuGroups = [
       { id: "createProject", label: "Create Project", icon: "➕" },
       { id: "assignTask", label: "Assign Task", icon: "🧾" },
       { id: "taskTracking", label: "Task Tracking", icon: "✅" },
+      { id: "acceptanceCriteria", label: "Acceptance Criteria", icon: "📏" },
     ],
   },
   {
@@ -42,13 +51,13 @@ const menuGroups = [
       { id: "liveMap", label: "Live FE Map", icon: "📡" },
       { id: "timeline", label: "Task Timeline", icon: "🕒" },
       { id: "updates", label: "FE Updates / Photos", icon: "🖼️" },
+      { id: "fieldResults", label: "Field Results", icon: "📡" },
     ],
   },
   {
     title: "QC & Reports",
     items: [
       { id: "qc", label: "QC Review", icon: "🔍" },
-      { id: "fieldResults", label: "Field Results", icon: "📡" },
       { id: "reports", label: "Reports", icon: "📄" },
     ],
   },
@@ -191,6 +200,9 @@ export default function AdminDashboard({ user, onLogout }) {
     return localStorage.getItem("babyDragonTheme") || "night";
   });
 
+  const [density, setDensity] = useState(() => readStoredDashboardDensity());
+  const [qcFocus, setQcFocus] = useState(null);
+
   const [collapsedMenuGroups, setCollapsedMenuGroups] = useState(() => {
     const saved = localStorage.getItem("adminCollapsedMenuGroups");
 
@@ -258,14 +270,26 @@ export default function AdminDashboard({ user, onLogout }) {
   useEffect(() => {
     localStorage.setItem("babyDragonTheme", themeMode);
 
+    document.documentElement.classList.toggle("bd-theme-day", themeMode === "day");
+    document.documentElement.classList.toggle("bd-theme-night", themeMode === "night");
     document.body.classList.toggle("bd-theme-day", themeMode === "day");
     document.body.classList.toggle("bd-theme-night", themeMode === "night");
 
     return () => {
+      document.documentElement.classList.remove("bd-theme-day");
+      document.documentElement.classList.remove("bd-theme-night");
       document.body.classList.remove("bd-theme-day");
       document.body.classList.remove("bd-theme-night");
     };
   }, [themeMode]);
+
+  useEffect(() => {
+    persistDashboardDensity(density);
+    document.body.dataset.bdDensity = density;
+    return () => {
+      delete document.body.dataset.bdDensity;
+    };
+  }, [density]);
 
   useEffect(() => {
     localStorage.setItem("adminProjectForm", JSON.stringify(projectForm));
@@ -1993,12 +2017,39 @@ export default function AdminDashboard({ user, onLogout }) {
           user={user}
           filters={filters}
           onOpenFieldResults={() => setActiveView("fieldResults")}
+          focusTaskId={qcFocus?.taskId || null}
+          focusGridName={qcFocus?.gridName || null}
+          focusReportName={qcFocus?.reportName || null}
         />
       );
     }
 
     if (activeView === "fieldResults") {
-      return <FieldResultsPage user={user} role={user?.role || "admin"} />;
+      // Auth JWT role is typically "authenticated"; AdminDashboard is admin/super_admin only.
+      const dashboardRole = user?.appRole || user?.profileRole || "admin";
+      return (
+        <FieldResultsPage
+          user={user}
+          role={dashboardRole}
+          onOpenQcReview={(ctx) => {
+            setQcFocus(ctx && typeof ctx === "object" ? ctx : null);
+            setActiveView("qc");
+          }}
+        />
+      );
+    }
+
+    if (activeView === "acceptanceCriteria") {
+      const dashboardRole = user?.appRole || user?.profileRole || "admin";
+      return (
+        <AcceptanceCriteriaPage
+          user={user}
+          role={dashboardRole}
+          projects={projects}
+          tasks={tasks}
+          fieldEngineers={fieldEngineers}
+        />
+      );
     }
 
     if (activeView === "reports") {
@@ -2023,7 +2074,6 @@ export default function AdminDashboard({ user, onLogout }) {
     "timeline",
     "updates",
     "qc",
-    "fieldResults",
     "reports",
   ]);
 
@@ -2043,7 +2093,7 @@ export default function AdminDashboard({ user, onLogout }) {
   const pageFilterTitle = pageFilterTitles[activeView] || "Page Filters";
 
   return (
-    <div className={`admin-shell theme-${themeMode}`}>
+    <div className={`admin-shell theme-${themeMode}`} data-bd-density={density}>
       <style>{adminCompactLayoutCss}</style>
 
       <aside className="admin-sidebar">
@@ -2124,14 +2174,38 @@ export default function AdminDashboard({ user, onLogout }) {
             <p className="workflow-ribbon">Project → Scope → Route → Assignment → Execution → Upload → QC → Report → Close</p>
           </div>
 
-          <button
-            type="button"
-            className="theme-toggle"
-            onClick={() => setThemeMode((current) => (current === "night" ? "day" : "night"))}
-            title="Switch day/night theme"
-          >
-            {themeMode === "night" ? "☀️ Day" : "🌙 Night"}
-          </button>
+          <div className="admin-topbar-actions" role="group" aria-label="Display settings">
+            <div className="admin-header-control">
+              <span className="admin-header-control-label" id="bd-density-label">Density</span>
+              <button
+                type="button"
+                className="theme-toggle density-toggle"
+                aria-labelledby="bd-density-label"
+                aria-pressed={density === DASHBOARD_DENSITY_COMFORTABLE}
+                onClick={() => setDensity((current) => (
+                  current === DASHBOARD_DENSITY_COMPACT
+                    ? DASHBOARD_DENSITY_COMFORTABLE
+                    : DASHBOARD_DENSITY_COMPACT
+                ))}
+                title="Switch compact or comfortable density"
+              >
+                {densityLabel(density)}
+              </button>
+            </div>
+            <div className="admin-header-control">
+              <span className="admin-header-control-label" id="bd-theme-label">Theme</span>
+              <button
+                type="button"
+                className="theme-toggle"
+                aria-labelledby="bd-theme-label"
+                aria-pressed={themeMode === "night"}
+                onClick={() => setThemeMode((current) => (current === "night" ? "day" : "night"))}
+                title="Switch day or night theme"
+              >
+                {themeMode === "night" ? "Day" : "Night"}
+              </button>
+            </div>
+          </div>
         </header>
 
         {showPageFilters && (
@@ -2321,14 +2395,53 @@ function DashboardMiniBar({ label, value, total, tone = "default" }) {
 const adminCompactLayoutCss = `
   :root {
     --bd-admin-right-gutter: 12px;
+    --bd-density-sidebar: 196px;
+    --bd-density-font-body: 14px;
+    --bd-density-font-label: 12px;
+    --bd-density-font-title: 18px;
+    --bd-density-space: 8px;
+    --bd-density-card-pad: 10px 12px;
+    --bd-density-header-pad: 8px 12px;
+  }
+
+  [data-bd-density="compact"],
+  .admin-shell[data-bd-density="compact"] {
+    --bd-density-sidebar: 196px;
+    --bd-density-font-body: 14px;
+    --bd-density-font-label: 12px;
+    --bd-density-font-title: 18px;
+    --bd-density-space: 8px;
+    --bd-density-card-pad: 10px 12px;
+    --bd-density-header-pad: 8px 12px;
+  }
+
+  [data-bd-density="comfortable"],
+  .admin-shell[data-bd-density="comfortable"] {
+    --bd-density-sidebar: 240px;
+    --bd-density-font-body: 15px;
+    --bd-density-font-label: 13px;
+    --bd-density-font-title: 20px;
+    --bd-density-space: 12px;
+    --bd-density-card-pad: 14px 16px;
+    --bd-density-header-pad: 12px 16px;
+  }
+
+  .admin-shell {
+    font-size: var(--bd-density-font-body);
+  }
+
+  .density-toggle {
+    position: static !important;
+    right: auto !important;
+    min-width: 118px !important;
   }
 
   body.bd-theme-night {
-    background: #07111f !important;
+    background: var(--bd-page-bg, #07111f) !important;
   }
 
   body.bd-theme-day {
-    background: #edf5ff !important;
+    background: var(--bd-page-bg, #edf5ff) !important;
   }
 
   html,
@@ -2339,7 +2452,7 @@ const adminCompactLayoutCss = `
     margin: 0 !important;
     padding: 0 !important;
     overflow-x: hidden !important;
-    background: #07111f !important;
+    background: var(--bd-page-bg, #07111f) !important;
   }
 
   .admin-shell {
@@ -2350,15 +2463,16 @@ const adminCompactLayoutCss = `
     display: flex !important;
     align-items: stretch !important;
     justify-content: flex-start !important;
-    background: #07111f !important;
+    background: var(--bd-page-bg, #07111f) !important;
     box-sizing: border-box !important;
     padding-right: var(--bd-admin-right-gutter) !important;
   }
 
   .admin-sidebar {
-    flex: 0 0 210px !important;
-    width: 210px !important;
-    max-width: 210px !important;
+    flex: 0 0 var(--bd-density-sidebar) !important;
+    width: var(--bd-density-sidebar) !important;
+    min-width: var(--bd-density-sidebar) !important;
+    max-width: var(--bd-density-sidebar) !important;
     min-height: 100vh !important;
     box-sizing: border-box !important;
     padding: 12px 10px !important;
@@ -2383,7 +2497,7 @@ const adminCompactLayoutCss = `
   }
 
   .brand-block p {
-    font-size: 11px !important;
+    font-size: var(--bd-density-font-label) !important;
     line-height: 1.25 !important;
     margin: 0 !important;
   }
@@ -2395,16 +2509,16 @@ const adminCompactLayoutCss = `
   }
 
   .sidebar-user span {
-    font-size: 10px !important;
+    font-size: var(--bd-density-font-label) !important;
   }
 
   .sidebar-user b {
-    font-size: 12px !important;
+    font-size: var(--bd-density-font-label) !important;
   }
 
   .admin-main {
     flex: 1 1 auto !important;
-    width: calc(100vw - 210px - var(--bd-admin-right-gutter)) !important;
+    width: calc(100vw - var(--bd-density-sidebar) - var(--bd-admin-right-gutter)) !important;
     max-width: none !important;
     min-width: 0 !important;
     padding: 10px 18px 14px 14px !important;
@@ -2414,19 +2528,49 @@ const adminCompactLayoutCss = `
   .admin-topbar {
     width: 100% !important;
     display: flex !important;
-    justify-content: center !important;
+    justify-content: space-between !important;
     align-items: center !important;
-    text-align: center !important;
+    text-align: left !important;
     margin-bottom: 8px !important;
     position: relative !important;
+    gap: 12px !important;
     padding-right: 0 !important;
     box-sizing: border-box !important;
+    flex-wrap: nowrap !important;
   }
 
   .admin-topbar-inner {
-    width: 100% !important;
-    max-width: 980px !important;
-    margin: 0 auto !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    margin: 0 !important;
+  }
+
+  .admin-topbar-actions {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    gap: 10px !important;
+    flex: 0 0 auto !important;
+    margin-left: auto !important;
+    position: static !important;
+  }
+
+  .admin-header-control {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    flex: 0 0 auto !important;
+  }
+
+  .admin-header-control-label {
+    font-size: 11px !important;
+    font-weight: 800 !important;
+    letter-spacing: 0.04em !important;
+    text-transform: uppercase !important;
+    color: #93c5fd !important;
+    white-space: nowrap !important;
   }
 
   .admin-topbar h2 {
@@ -2956,19 +3100,29 @@ const adminCompactLayoutCss = `
 
 
   .theme-toggle {
-    position: absolute !important;
-    right: 4px !important;
-    top: 0 !important;
+    position: static !important;
+    right: auto !important;
+    top: auto !important;
     transform: none !important;
     border: 1px solid rgba(56, 189, 248, 0.35) !important;
     background: rgba(15, 23, 42, 0.85) !important;
     color: #e5eefc !important;
     border-radius: 999px !important;
-    padding: 7px 11px !important;
+    padding: 7px 12px !important;
     font-weight: 900 !important;
     font-size: 12px !important;
     cursor: pointer !important;
     box-shadow: 0 8px 24px rgba(0,0,0,0.18) !important;
+    white-space: nowrap !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    flex: 0 0 auto !important;
+  }
+
+  .theme-toggle:focus-visible,
+  .density-toggle:focus-visible {
+    outline: 2px solid #38bdf8 !important;
+    outline-offset: 2px !important;
   }
 
   .theme-toggle:hover {
@@ -3027,6 +3181,10 @@ const adminCompactLayoutCss = `
   .theme-day .live-map-status-banner,
   .theme-day .live-location-list .muted {
     color: #2563eb !important;
+  }
+
+  .theme-day .admin-header-control-label {
+    color: #1e40af !important;
   }
 
   .theme-day .filters-grid select,
@@ -3564,9 +3722,10 @@ const adminCompactLayoutCss = `
 
   @media (max-width: 1180px) {
     .admin-sidebar {
-      flex-basis: 200px !important;
-      width: 200px !important;
-      max-width: 200px !important;
+      flex-basis: var(--bd-density-sidebar) !important;
+      width: var(--bd-density-sidebar) !important;
+      min-width: var(--bd-density-sidebar) !important;
+      max-width: var(--bd-density-sidebar) !important;
     }
 
     .admin-main {
@@ -3610,14 +3769,22 @@ const adminCompactLayoutCss = `
 
     .admin-topbar {
       padding-right: 0 !important;
-      padding-bottom: 40px !important;
+      padding-bottom: 0 !important;
+      flex-wrap: wrap !important;
+      align-items: flex-start !important;
+    }
+
+    .admin-topbar-actions {
+      width: 100% !important;
+      justify-content: flex-end !important;
     }
 
     .theme-toggle {
-      right: 50% !important;
+      position: static !important;
+      right: auto !important;
       top: auto !important;
-      bottom: 0 !important;
-      transform: translateX(50%) !important;
+      bottom: auto !important;
+      transform: none !important;
     }
 
     .admin-map,

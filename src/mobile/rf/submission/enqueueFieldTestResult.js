@@ -13,6 +13,11 @@ import {
   buildRunIdentityKey,
   getOrCreateClientRunId,
 } from "./clientRunIdStore.js";
+import { resolveScenarioKey } from "../reports/scenarioReportModel.js";
+
+/** Local-only sentinels so unassigned Stop/Save can register without a live task. */
+export const UNASSIGNED_LOCAL_PROJECT_ID = "00000000-0000-4000-8000-c01b00000001";
+export const UNASSIGNED_LOCAL_TASK_ID = "00000000-0000-4000-8000-c01b00000002";
 import {
   buildLocalArtifactsFromReportFiles,
   computeChecksumHex,
@@ -74,22 +79,36 @@ export async function enqueueFieldTestResultSubmit({
   reportName = null,
   ownerUserId = null,
   forceNewRunId = false,
+  identityKey = null,
+  allowUnassigned = false,
 } = {}) {
   if (!F10C2_MOCK_RESULT_UPLOAD_ENABLED) {
     return { ok: false, reason: "mock_upload_disabled" };
   }
-  if (!taskContext?.taskId || !taskContext?.projectId) {
-    return { ok: false, reason: "task_context_unavailable" };
+
+  let resolvedTaskContext = taskContext;
+  const missingTask = !taskContext?.taskId || !taskContext?.projectId;
+  if (missingTask) {
+    if (!allowUnassigned) {
+      return { ok: false, reason: "task_context_unavailable" };
+    }
+    resolvedTaskContext = {
+      taskId: UNASSIGNED_LOCAL_TASK_ID,
+      projectId: UNASSIGNED_LOCAL_PROJECT_ID,
+      gridId: taskContext?.gridId || null,
+      unassigned: true,
+    };
   }
 
-  const identityKey = buildRunIdentityKey({
+  const resolvedIdentityKey = identityKey || buildRunIdentityKey({
     sessionId: session?.id || unifiedReport?.sessionId || reportName,
-    taskId: taskContext.taskId,
+    scenarioKey: session?.scenarioKey || session?.canonicalPackageId?.split?.("::")?.[1] || resolveScenarioKey(session || {}),
+    taskId: resolvedTaskContext.taskId,
     reportName: reportName || session?.reportLogName || unifiedReport?.reportName,
     startedAt: session?.startedAt || unifiedReport?.startedAt,
   });
 
-  const { client_run_id: clientRunId } = getOrCreateClientRunId(identityKey, {
+  const { client_run_id: clientRunId } = getOrCreateClientRunId(resolvedIdentityKey, {
     forceNew: forceNewRunId,
   });
 
@@ -141,15 +160,18 @@ export async function enqueueFieldTestResultSubmit({
     clientRunId,
     session,
     unifiedReport,
-    taskContext,
+    taskContext: resolvedTaskContext,
     device,
     network,
     localArtifacts,
     reportName,
     ownerUserId,
-    identityKey,
+    identityKey: resolvedIdentityKey,
   });
   payload.package_state = PACKAGE_STATES.QUEUED;
+  if (resolvedTaskContext.unassigned) {
+    payload.flags = { ...(payload.flags || {}), unassigned_local: true };
+  }
 
   if (existing) {
     // Merge: keep run id / attempts / confirmed artifacts where possible
@@ -196,7 +218,7 @@ export async function enqueueFieldTestResultSubmit({
     payload,
     {
       client_run_id: clientRunId,
-      task_id: taskContext.taskId,
+      task_id: resolvedTaskContext.taskId,
       record_version: payload.record_version,
     },
   );
@@ -275,6 +297,137 @@ export function listFieldTestResultQueueItems() {
       summary: summarizeResultPackage(item.payload || {}),
       payload: item.payload,
     }));
+}
+
+export const PROTECTED_QUEUE_SESSION_ID = "bd-rf-1787606300946";
+
+function identityBlob(item = {}) {
+  const payload = item.payload || {};
+  const manifest = payload.manifest || {};
+  return [
+    payload.identity_key,
+    payload.client_run_id,
+    manifest.client_run_id,
+    manifest.report_name,
+    payload.package_identity,
+    payload.canonical_id,
+    manifest.config?.scenario_adapter?.canonical_id,
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function targetNeedles(canonicalId) {
+  const canonical = String(canonicalId || "").trim();
+  const [session, scenario] = canonical.split("::");
+  return {
+    canonical: canonical.toLowerCase(),
+    session: String(session || "").toLowerCase(),
+    scenario: String(scenario || "").toLowerCase(),
+    identityKey: session && scenario ? `session:${session}|scenario:${scenario}`.toLowerCase() : "",
+  };
+}
+
+function itemMatchesCanonical(item, canonicalId) {
+  const needles = targetNeedles(canonicalId);
+  if (!needles.session || !needles.scenario) return false;
+  const blob = identityBlob(item);
+  if (blob.includes(needles.canonical) || blob.includes(needles.identityKey)) return true;
+  return blob.includes(needles.session) && blob.includes(needles.scenario);
+}
+
+function itemTouchesProtected(item) {
+  const blob = identityBlob(item);
+  return blob.includes(PROTECTED_QUEUE_SESSION_ID.toLowerCase());
+}
+
+/**
+ * Fail-closed selector: exactly the requested canonical packages, never the protected session.
+ */
+export function selectFieldTestQueueTargets(canonicalIds = [], queue = readMobileQueue()) {
+  const targets = [...new Set((canonicalIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (targets.length === 0) {
+    return { ok: false, code: "selective_targets_required", matches: [] };
+  }
+  if (targets.some((id) => id.toLowerCase().includes(PROTECTED_QUEUE_SESSION_ID.toLowerCase()))) {
+    return { ok: false, code: "protected_package_denied", matches: [] };
+  }
+
+  const submitItems = (queue || []).filter(
+    (item) => item.type === OFFLINE_ACTION_TYPES.FIELD_TEST_RESULT_SUBMIT,
+  );
+  const matches = [];
+  const seen = new Set();
+  for (const target of targets) {
+    const found = submitItems.filter((item) => itemMatchesCanonical(item, target));
+    if (found.length !== 1) {
+      return {
+        ok: false,
+        code: "selective_target_ambiguous_or_missing",
+        target,
+        count: found.length,
+        matches: [],
+      };
+    }
+    const item = found[0];
+    if (itemTouchesProtected(item)) {
+      return { ok: false, code: "protected_package_denied", matches: [] };
+    }
+    if (seen.has(item.id)) {
+      return { ok: false, code: "selective_target_duplicate_item", target, matches: [] };
+    }
+    seen.add(item.id);
+    matches.push({ target, item });
+  }
+  return { ok: true, matches };
+}
+
+/**
+ * Retry ONLY the listed canonical packages. Does not walk the rest of the offline queue.
+ * @param {object} args
+ * @param {string[]} args.canonicalIds
+ * @param {(item: object) => Promise<object>} args.processItem
+ */
+export async function processSelectedFieldTestResultQueue({
+  canonicalIds = [],
+  processItem,
+} = {}) {
+  if (typeof processItem !== "function") {
+    return { ok: false, code: "process_item_required" };
+  }
+  const queue = readMobileQueue();
+  const selected = selectFieldTestQueueTargets(canonicalIds, queue);
+  if (!selected.ok) return selected;
+
+  const byId = new Map(queue.map((item) => [item.id, item]));
+  const results = [];
+  for (const { target, item } of selected.matches) {
+    const result = await processItem({
+      ...item,
+      meta: { ...(item.meta || {}), manual_retry: true },
+    });
+    results.push({
+      target,
+      client_run_id: item.payload?.client_run_id || null,
+      reason: result?.reason || null,
+      package_state: result?.payload?.package_state || item.payload?.package_state || null,
+      field_test_run_id: result?.payload?.field_test_run_id || item.payload?.field_test_run_id || null,
+      keep: result?.keep !== false,
+    });
+    if (result?.keep === false) {
+      byId.delete(item.id);
+    } else if (result?.payload) {
+      byId.set(item.id, {
+        ...item,
+        payload: result.payload,
+        attempts: Number(result.payload?.attempts ?? item.attempts ?? 0),
+        last_error: result.payload?.last_error || item.last_error || "",
+        meta: { ...(item.meta || {}), manual_retry: false },
+      });
+    }
+  }
+
+  const next = queue.map((item) => byId.get(item.id)).filter(Boolean);
+  saveMobileQueue(next);
+  return { ok: true, results, pending: next.length };
 }
 
 export default {

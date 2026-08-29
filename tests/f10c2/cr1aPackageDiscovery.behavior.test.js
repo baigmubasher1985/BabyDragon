@@ -85,7 +85,7 @@ describe('CR1-A unified report package discovery', () => {
       const draft = morningDraft(row.id, { kind: row.kind })
       expect(classifyDraftScope(draft, { taskLabel: CURRENT_TASK, grid: CURRENT_GRID }))
         .toBe(PACKAGE_SCOPES.UNASSIGNED)
-      expect(durablePackageIdentity(draft)).toBe(row.id)
+      expect(durablePackageIdentity(draft)).toBe(`${row.id}::${row.kind === 'iperf3' ? 'iperf3' : 'rf_data'}`)
     }
   })
 
@@ -106,7 +106,7 @@ describe('CR1-A unified report package discovery', () => {
     expect(scoped.unassigned).toHaveLength(5)
     expect(scoped.other_tasks).toHaveLength(1)
     expect(scoped.all_device).toHaveLength(7)
-    expect(draftsForScope(scoped, PACKAGE_SCOPES.ALL_DEVICE).map((d) => durablePackageIdentity(d)))
+    expect(draftsForScope(scoped, PACKAGE_SCOPES.ALL_DEVICE).map((d) => d.session.id))
       .toEqual(expect.arrayContaining(MORNING_SESSIONS.map((row) => row.id)))
     expect(scoped.current_task.every((d) => d.selected === true)).toBe(true)
     expect(scoped.unassigned.every((d) => d.selected === false)).toBe(true)
@@ -129,10 +129,10 @@ describe('CR1-A unified report package discovery', () => {
       currentTaskDraft(),
       morningDraft('bd-rf-1787575357767'),
     ], { taskLabel: CURRENT_TASK, grid: CURRENT_GRID })).all_device
-    const morningId = 'bd-rf-1787575357767'
+    const morningId = 'bd-rf-1787575357767::rf_data'
     const restored = restoreSelectedIdentities(drafts, [morningId])
     const morning = restored.find((d) => durablePackageIdentity(d) === morningId)
-    const current = restored.find((d) => durablePackageIdentity(d) === 'bd-rf-current-1')
+    const current = restored.find((d) => durablePackageIdentity(d) === 'bd-rf-current-1::native_http')
     expect(morning.selected).toBe(true)
     expect(current.selected).toBe(false)
   })
@@ -147,7 +147,7 @@ describe('CR1-A unified report package discovery', () => {
     const b = morningDraft('bd-rf-1787575493983', { packageId: 'pkg-b' })
     const unique = dedupeDraftsByIdentity([a, cloneName, b])
     expect(unique).toHaveLength(2)
-    expect(unique.map((d) => durablePackageIdentity(d))).toEqual(['pkg-a', 'pkg-b'])
+    expect(unique.map((d) => d.session.id)).toEqual(['bd-rf-1787575357767', 'bd-rf-1787575493983'])
   })
 
   it('creates upload-association metadata without rewriting original identity', () => {

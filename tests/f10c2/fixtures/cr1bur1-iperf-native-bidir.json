@@ -1,0 +1,36 @@
+{
+  "comment": "Synthetic iPerf 3.21 --bidir JSON. Forward sum_sent/sum_received are UL; reverse receiver is DL.",
+  "start": {
+    "connected": [
+      { "socket": 5, "local_port": 38126 },
+      { "socket": 7, "local_port": 38128 }
+    ],
+    "test_start": { "protocol": "TCP", "duration": 10, "interval": 5, "bidir": 1, "reverse": 0 }
+  },
+  "intervals": [
+    {
+      "streams": [
+        { "socket": 5, "sender": true, "start": 0, "end": 5, "seconds": 5, "bytes": 262144, "bits_per_second": 419430 },
+        { "socket": 7, "sender": false, "start": 0, "end": 5, "seconds": 5, "bytes": 17943750, "bits_per_second": 28710000 }
+      ]
+    },
+    {
+      "streams": [
+        { "socket": 5, "sender": true, "start": 5, "end": 10.17, "seconds": 5.17, "bytes": 349525, "bits_per_second": 540000 },
+        { "socket": 7, "sender": false, "start": 5, "end": 10.17, "seconds": 5.17, "bytes": 11950000, "bits_per_second": 18610000 }
+      ]
+    }
+  ],
+  "end": {
+    "sum_sent": { "socket": 5, "sender": true, "bytes": 1310720, "bits_per_second": 510000, "seconds": 10.17 },
+    "sum_received": { "socket": 5, "sender": false, "bytes": 1123808, "bits_per_second": 420000, "seconds": 10.17 },
+    "sum_sent_bidir_reverse": { "socket": 7, "sender": true, "bytes": 35000000, "bits_per_second": 28000000, "seconds": 10.17 },
+    "sum_received_bidir_reverse": { "socket": 7, "sender": false, "bytes": 34800000, "bits_per_second": 27800000, "seconds": 10.17 },
+    "streams": [
+      { "socket": 5, "sender": true, "bytes": 1310720, "bits_per_second": 510000 },
+      { "socket": 5, "sender": false, "bytes": 1123808, "bits_per_second": 420000 },
+      { "socket": 7, "sender": true, "bytes": 35000000, "bits_per_second": 28000000 },
+      { "socket": 7, "sender": false, "bytes": 34800000, "bits_per_second": 27800000 }
+    ]
+  }
+}

@@ -9,6 +9,11 @@ import {
   hydrateSessionFromOoklaPackage,
 } from "./unifiedFieldReportExport.js";
 import { resolveScenarioKey, scenarioDisplayName } from "./scenarioReportModel.js";
+import {
+  buildCanonicalPackageIdentity,
+  scenarioCoreFingerprint,
+} from "./canonicalPackageIdentity.js";
+import { attachIperfExportIntervals, reconcileIperfSessionThroughput } from "../../testEngines/iperf3ResultMapper.js";
 
 function cleanText(value) {
   if (value === null || value === undefined) return null;
@@ -112,23 +117,56 @@ export async function hydrateDiscoveredPackage(BabyDragonRfKpi, pkg = {}) {
     return { ok: true, kind, session, sourcePackage, packageId: pkg.packageId, modifiedAtMs: pkg.modifiedAtMs || null };
   }
 
-  const session = hydrateSessionFromReportPackage({
+  let session = hydrateSessionFromReportPackage({
     reportJson,
     rfGpsTraceCsv,
     sourcePackage,
   });
-  return { ok: true, kind, session, sourcePackage, packageId: pkg.packageId, modifiedAtMs: pkg.modifiedAtMs || null };
+  if (kind === "iperf3") {
+    const iperfFile = pickFile(files, (n) => n.includes("iperf3") && n.endsWith(".json"));
+    if (iperfFile) {
+      try {
+        const iperfJson = JSON.parse(await readTextFile(BabyDragonRfKpi, iperfFile));
+        session = attachIperfExportIntervals(session, iperfJson);
+      } catch {
+        session = reconcileIperfSessionThroughput(session);
+      }
+    } else {
+      session = reconcileIperfSessionThroughput(session);
+    }
+  }
+  const identity = buildCanonicalPackageIdentity(session);
+  if (identity.ok) {
+    session.canonicalPackageId = identity.canonicalPackageId;
+    session.scenarioKey = identity.scenarioKey;
+  }
+  return {
+    ok: true,
+    kind,
+    session,
+    sourcePackage,
+    packageId: pkg.packageId,
+    modifiedAtMs: pkg.modifiedAtMs || null,
+    canonicalPackageId: identity.ok ? identity.canonicalPackageId : null,
+  };
 }
 
 export function buildUnifiedDraftFromSession(session = {}, extras = {}) {
-  const scenarioKey = resolveScenarioKey(session);
+  const identity = buildCanonicalPackageIdentity(session, {
+    sessionId: session.id,
+    scenarioKey: extras.scenarioKey,
+  });
+  const scenarioKey = identity.scenarioKey || resolveScenarioKey(session);
   const startedAt = session.startedAt || null;
   const endedAt = session.endedAt || null;
+  const canonicalId = identity.ok ? identity.canonicalPackageId : null;
   const draftId = extras.draftId
+    || canonicalId
     || `${extras.packageId || session.id || "session"}-${endedAt || startedAt || Date.now()}`;
   return {
     draftId,
     scenarioKey,
+    canonicalIdentity: canonicalId,
     label: scenarioDisplayName(scenarioKey),
     mode: session.appRunModeLabel || session.appRunMode || "",
     direction: session.appDirectionLabel || session.appDirection || "",
@@ -137,11 +175,16 @@ export function buildUnifiedDraftFromSession(session = {}, extras = {}) {
     status: session.appTestStatus || session.status || "",
     taskLabel: session.taskLabel || null,
     grid: session.grid || null,
-    session,
+    session: {
+      ...session,
+      canonicalPackageId: canonicalId || session.canonicalPackageId || null,
+      scenarioKey,
+    },
     sourcePackage: session.sourcePackage || extras.sourcePackage || extras.packageId || null,
-    packageId: extras.packageId || null,
+    packageId: extras.packageId || canonicalId || null,
     selected: extras.selected !== false,
     origin: extras.origin || "saved_package",
+    exportArtifacts: extras.exportArtifacts || [],
   };
 }
 
@@ -197,14 +240,68 @@ export function isUnassignedGridLabel(label) {
   return UNASSIGNED_GRID_LABELS.has(text.toLowerCase());
 }
 
+export function canonicalScenarioIdentity(draft = {}) {
+  const session = draft.session || {};
+  const built = buildCanonicalPackageIdentity(session, {
+    sessionId: session.id || session.session_id,
+    scenarioKey: draft.scenarioKey,
+  });
+  if (built.ok) return built.canonicalPackageId;
+  return durablePackageIdentity(draft);
+}
+
 export function durablePackageIdentity(draft = {}) {
-  return cleanText(draft.packageId)
+  return cleanText(draft.canonicalIdentity)
+    || cleanText(draft.session?.canonicalPackageId)
+    || canonicalScenarioIdentity(draft)
+    || cleanText(draft.packageId)
     || cleanText(draft.sourcePackage)
     || cleanText(draft.session?.sourcePackage)
     || cleanText(draft.session?.id)
     || cleanText(draft.session?.session_id)
     || cleanText(draft.draftId)
     || null;
+}
+
+export function groupDraftsByCanonicalIdentity(drafts = []) {
+  const groups = new Map();
+  for (const draft of drafts || []) {
+    const key = canonicalScenarioIdentity(draft);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(draft);
+  }
+
+  const out = [];
+  const collisions = [];
+  for (const [identity, members] of groups.entries()) {
+    const cores = new Set(members.map((draft) => scenarioCoreFingerprint(draft.session || {}, draft.scenarioKey)));
+    if (cores.size > 1 && members.length > 1) {
+      collisions.push({
+        identity,
+        reason: "ambiguous_identity_collision",
+        packageIds: members.map((draft) => draft.packageId || draft.sourcePackage).filter(Boolean),
+        fingerprints: [...cores],
+      });
+      continue;
+    }
+    const primary = members.slice().sort((a, b) => (Number(b.modifiedAtMs) || 0) - (Number(a.modifiedAtMs) || 0))[0];
+    const artifacts = members.map((draft) => ({
+      packageId: draft.packageId || draft.sourcePackage || null,
+      sourcePackage: draft.sourcePackage || draft.packageId || null,
+      modifiedAtMs: draft.modifiedAtMs || null,
+      folderId: draft.packageId || null,
+    }));
+    out.push({
+      ...primary,
+      canonicalIdentity: identity,
+      packageId: identity,
+      exportArtifacts: artifacts,
+      sourcePackage: artifacts.length > 1
+        ? `${artifacts.length} export artifacts`
+        : (primary.sourcePackage || primary.packageId || identity),
+    });
+  }
+  return { drafts: out, collisions };
 }
 
 export function dedupeDraftsByIdentity(drafts = []) {
@@ -240,7 +337,8 @@ export function classifyDraftScope(draft = {}, { taskLabel = null, grid = null }
 }
 
 export function partitionDraftsByScope(drafts = [], context = {}) {
-  const unique = dedupeDraftsByIdentity(drafts);
+  const grouped = groupDraftsByCanonicalIdentity(drafts);
+  const unique = dedupeDraftsByIdentity(grouped.drafts);
   const current_task = [];
   const unassigned = [];
   const other_tasks = [];
@@ -280,12 +378,16 @@ export function draftsForScope(partition = {}, scope = PACKAGE_SCOPES.CURRENT_TA
 
 export function filterDraftsForActiveContext(drafts = [], { taskLabel = null, grid = null } = {}) {
   const partitioned = partitionDraftsByScope(drafts, { taskLabel, grid });
+  const grouped = groupDraftsByCanonicalIdentity(drafts);
   const warnings = [];
   if (partitioned.unassigned.length) {
     warnings.push(`${partitioned.unassigned.length} unassigned package(s) visible but not auto-selected.`);
   }
   if (partitioned.other_tasks.length) {
     warnings.push(`${partitioned.other_tasks.length} package(s) from other task/grid visible but not auto-selected.`);
+  }
+  for (const collision of grouped.collisions || []) {
+    warnings.push(`Ambiguous identity collision for ${collision.identity}; packages excluded until identity is unique.`);
   }
   return {
     matched: partitioned.current_task,
@@ -378,6 +480,8 @@ export default {
   applyScopeAutoSelection,
   draftsForScope,
   durablePackageIdentity,
+  canonicalScenarioIdentity,
+  groupDraftsByCanonicalIdentity,
   dedupeDraftsByIdentity,
   buildUploadAssociation,
   restoreSelectedIdentities,

@@ -1,0 +1,84 @@
+/**
+ * Shared semantic theme tokens for Admin / Field Results / Acceptance / QC.
+ * Flip with html/body.bd-theme-day and .theme-day (and night equivalents).
+ * Feature pages should consume these tokens — not hardcode navy panels.
+ */
+
+:root,
+html.bd-theme-night,
+body.bd-theme-night,
+.theme-night {
+  --bd-page-bg: #07111f;
+  --bd-card-bg: #0d1b2f;
+  --bd-card-bg-2: #101f35;
+  --bd-input-bg: #12233a;
+  --bd-text: #e8f1ff;
+  --bd-text-strong: #ffffff;
+  --bd-muted: #b7c8e0;
+  --bd-border: #2a4568;
+  --bd-link: #7ed6ff;
+  --bd-accent: #00d4ff;
+  --bd-shadow: 0 16px 34px rgba(0, 0, 0, 0.28);
+  --bd-badge-pass-bg: #14532d;
+  --bd-badge-pass-fg: #bbf7d0;
+  --bd-badge-fail-bg: #7f1d1d;
+  --bd-badge-fail-fg: #fecaca;
+  --bd-badge-warn-bg: #713f12;
+  --bd-badge-warn-fg: #fde68a;
+  --bd-badge-wait-bg: #0e4a67;
+  --bd-badge-wait-fg: #a5f3fc;
+  --bd-badge-info-bg: #1e3a5f;
+  --bd-badge-info-fg: #bfdbfe;
+
+  --bdfr-text: var(--bd-text);
+  --bdfr-muted: var(--bd-muted);
+  --bdfr-link: var(--bd-link);
+  --bdfr-panel: var(--bd-card-bg);
+  --bdfr-border: var(--bd-border);
+  --bdfr-input-bg: var(--bd-input-bg);
+}
+
+html.bd-theme-day,
+body.bd-theme-day,
+.theme-day {
+  --bd-page-bg: #edf5ff;
+  --bd-card-bg: #ffffff;
+  --bd-card-bg-2: #f8fbff;
+  --bd-input-bg: #f8fbff;
+  --bd-text: #0f172a;
+  --bd-text-strong: #0f172a;
+  --bd-muted: #475569;
+  --bd-border: rgba(37, 99, 235, 0.22);
+  --bd-link: #0369a1;
+  --bd-accent: #2563eb;
+  --bd-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
+  --bd-badge-pass-bg: #dcfce7;
+  --bd-badge-pass-fg: #166534;
+  --bd-badge-fail-bg: #fee2e2;
+  --bd-badge-fail-fg: #991b1b;
+  --bd-badge-warn-bg: #fef3c7;
+  --bd-badge-warn-fg: #92400e;
+  --bd-badge-wait-bg: #e0f2fe;
+  --bd-badge-wait-fg: #075985;
+  --bd-badge-info-bg: #dbeafe;
+  --bd-badge-info-fg: #1e3a8a;
+
+  --bdfr-text: var(--bd-text);
+  --bdfr-muted: var(--bd-muted);
+  --bdfr-link: var(--bd-link);
+  --bdfr-panel: var(--bd-card-bg);
+  --bdfr-border: var(--bd-border);
+  --bdfr-input-bg: var(--bd-input-bg);
+}
+
+html.bd-theme-day,
+body.bd-theme-day {
+  background: var(--bd-page-bg) !important;
+  color: var(--bd-text);
+}
+
+html.bd-theme-night,
+body.bd-theme-night {
+  background: var(--bd-page-bg) !important;
+  color: var(--bd-text);
+}

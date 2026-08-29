@@ -38,7 +38,16 @@ import {
   finalizeOoklaCsvTimeWindowOnExport,
   resolveOoklaDisplayResultId,
 } from "./utils/ooklaCsvImport";
-import { tryEnqueueFieldTestResultAfterSave } from "./submission/enqueueFieldTestResult.js";
+import { tryEnqueueFieldTestResultAfterSave, enqueueFieldTestResultSubmit } from "./submission/enqueueFieldTestResult.js";
+import {
+  buildCanonicalPackageIdentity,
+  formatExportStamp,
+} from "./reports/canonicalPackageIdentity.js";
+import {
+  persistCanonicalStopSave,
+  CANONICAL_PERSIST_MODES,
+} from "./reports/canonicalStopSave.js";
+import { reconcileIperfSessionThroughput } from "../testEngines/iperf3ResultMapper.js";
 import {
   base64ToArrayBuffer,
   buildFccDedupeKey,
@@ -2491,6 +2500,8 @@ function buildJsonReport(session, user, activeTask, baseName, generatedAt) {
     },
     session: {
       session_id: session?.id || null,
+      canonical_package_id: session?.canonicalPackageId || buildCanonicalPackageIdentity(session).canonicalPackageId || null,
+      scenario_key: session?.scenarioKey || resolveScenarioKey(session) || null,
       report_log_name: jsonText(session?.reportLogName) || null,
       mode: session?.mode || null,
       fe: user?.email || null,
@@ -2549,16 +2560,15 @@ function buildReportPackage({
   user,
   activeTask,
   includeDeveloperDebugExport = INCLUDE_DEVELOPER_DEBUG_EXPORT_DEFAULT,
+  persistMode = CANONICAL_PERSIST_MODES.EXPORT_ARTIFACT,
 }) {
   const generatedAt = Date.now();
   const baseName = buildProfessionalReportName(session, activeTask);
-  // Unique folder per export action so MediaStore never creates "file (1)" duplicates in-folder.
-  const exportStamp = (() => {
-    const date = new Date(generatedAt);
-    const pad = (value) => String(value).padStart(2, "0");
-    return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-  })();
-  const sessionId = cleanFilePart(`${baseName}_${exportStamp}`, `bd-rf-${generatedAt}`);
+  const identity = buildCanonicalPackageIdentity(session);
+  const exportStamp = formatExportStamp(generatedAt);
+  const sessionId = (persistMode === CANONICAL_PERSIST_MODES.CANONICAL || persistMode === CANONICAL_PERSIST_MODES.EXCEL)
+    ? (identity.folderId || cleanFilePart(baseName, `bd-rf-${generatedAt}`))
+    : cleanFilePart(`${identity.folderId || baseName}__export_${exportStamp}`, `bd-rf-${generatedAt}`);
   const iperfSession = isIperf3Session(session);
   const ooklaSession = isOoklaSession(session);
   const fccSession = isFccSession(session);
@@ -2610,6 +2620,9 @@ function buildReportPackage({
       sessionId,
       displayName: baseName,
       generatedAt,
+      canonicalPackageId: identity.canonicalPackageId || null,
+      persistMode,
+      overwrite: persistMode !== CANONICAL_PERSIST_MODES.EXPORT_ARTIFACT,
       files: uniqueFiles,
       iperfSession: false,
       ooklaSession: true,
@@ -2646,6 +2659,9 @@ function buildReportPackage({
       sessionId,
       displayName: sessionId,
       generatedAt,
+      canonicalPackageId: identity.canonicalPackageId || null,
+      persistMode,
+      overwrite: persistMode !== CANONICAL_PERSIST_MODES.EXPORT_ARTIFACT,
       files: fccFiles,
       iperfSession: false,
       ooklaSession: false,
@@ -2670,6 +2686,9 @@ function buildReportPackage({
     sessionId,
     displayName: baseName,
     generatedAt,
+    canonicalPackageId: identity.canonicalPackageId || null,
+    persistMode,
+    overwrite: persistMode !== CANONICAL_PERSIST_MODES.EXPORT_ARTIFACT,
     files,
     iperfSession,
     ooklaSession: false,
@@ -2705,6 +2724,7 @@ async function saveReportPackage(reportPackage) {
     const response = await BabyDragonRfKpi.saveReportFiles({
       sessionId,
       displayName: String(reportPackage?.displayName || sessionId),
+      overwrite: reportPackage?.overwrite !== false,
       files: Array.isArray(reportPackage?.files) ? reportPackage.files : [],
     });
     if (response?.ok) return response;
@@ -3794,11 +3814,20 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
   const appSource = appTest || session?.appTest || {};
   const isOokla = appSource.testType === "ookla_app";
   const isFcc = appSource.testType === "fcc_app";
-  const appIterationResults = (isOokla || isFcc)
+  const isIperf = appSource.testType === "iperf";
+  const rawIterationResults = (isOokla || isFcc)
     ? []
     : (Array.isArray(appSource.iterationResults) ? appSource.iterationResults : []);
-  const appDlMbps = (isOokla || isFcc) ? null : getNumber(appSource.dlMbps);
-  const appUlMbps = (isOokla || isFcc) ? null : getNumber(appSource.ulMbps);
+  const reconciledIperf = isIperf
+    ? reconcileIperfSessionThroughput({
+      appIterationResults: rawIterationResults,
+      appDlMbps: getNumber(appSource.dlMbps),
+      appUlMbps: getNumber(appSource.ulMbps),
+    })
+    : null;
+  const appIterationResults = reconciledIperf?.appIterationResults || rawIterationResults;
+  const appDlMbps = (isOokla || isFcc) ? null : (reconciledIperf?.appDlMbps ?? getNumber(appSource.dlMbps));
+  const appUlMbps = (isOokla || isFcc) ? null : (reconciledIperf?.appUlMbps ?? getNumber(appSource.ulMbps));
   const isContinuousApp = String(appSource.runMode || appSource.setupSnapshot?.runMode || "").toLowerCase() === "continuous"
     || String(appSource.status || "").toLowerCase() === "continuous_complete"
     || String(appSource.endReason || "").toLowerCase() === "user_stopped_continuous";
@@ -3834,7 +3863,6 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
       : appWarmupSeconds,
   }, DEFAULT_KPI_WARMUP_DURATION_SEC);
   const appDirection = appSource.direction || DEFAULT_DATA_DIRECTION;
-  const isIperf = appSource.testType === "iperf";
   const setupSnapshot = isIperf ? (appSource.setupSnapshot || {}) : null;
   const lastIperfIter = isIperf && appIterationResults.length ? appIterationResults[appIterationResults.length - 1] : null;
   const failedIperfIter = isIperf
@@ -4038,6 +4066,17 @@ function buildSessionSummary({ session, samples, endedAt, mode, taskLabel, grid,
 
   return {
     id: session?.id || `bd-rf-${start}`,
+    canonicalPackageId: session?.canonicalPackageId || buildCanonicalPackageIdentity({
+      ...session,
+      id: session?.id || `bd-rf-${start}`,
+      appEngineId: appSource.engineId,
+      appTestType: appSource.testType,
+    }).canonicalPackageId || null,
+    scenarioKey: session?.scenarioKey || resolveScenarioKey({
+      ...session,
+      appEngineId: appSource.engineId,
+      appTestType: appSource.testType,
+    }),
     mode: session?.mode || mode || "data",
     taskLabel: session?.taskLabel || taskLabel || "Active field task",
     grid: session?.grid || grid || "Grid pending",
@@ -4652,6 +4691,7 @@ export default function MobileRfKpi({
   const [savedSession, setSavedSession] = useState(null);
   const [dataTest, setDataTest] = useState(makeDataTestIdle());
   const [exportStatus, setExportStatus] = useState("");
+  const [savePersistStatus, setSavePersistStatus] = useState("");
   const [exportFiles, setExportFiles] = useState([]);
   const [exportPackageName, setExportPackageName] = useState("");
   const [exportBasePath, setExportBasePath] = useState("");
@@ -4715,6 +4755,7 @@ export default function MobileRfKpi({
   const throughputAbortRef = useRef(null);
   const throughputRunPromiseRef = useRef(null);
   const continuousSaveInFlightRef = useRef(false);
+  const stopSaveInFlightRef = useRef(false);
   const throughputPhaseAbortRef = useRef(null);
   const controlledTestCompletionRef = useRef(null);
   const rfReadInFlightRef = useRef(false);
@@ -7701,7 +7742,7 @@ export default function MobileRfKpi({
     setControlledTestDialog(null);
     continuousSaveInFlightRef.current = false;
 
-    setSavedSession(buildSessionSummary({
+    const summary = buildSessionSummary({
       session,
       samples: sessionList,
       endedAt,
@@ -7709,17 +7750,47 @@ export default function MobileRfKpi({
       taskLabel: activeTaskLabel,
       grid: activeGrid,
       appTest: finalDataTest,
-    }));
-    currentSessionRef.current = null;
-    testStateRef.current = "saved";
-    sessionPausedRef.current = false;
-    collectorRunningRef.current = false;
-    setCurrentSession(null);
-    setClockTick(endedAt);
-    setTestState("saved");
-    setCollectorRunning(false);
-    // Return to preview while RF KPI remains visible; do not kill the native stream.
-    demoteToPreviewMode({ notificationText: "Live RF / GPS preview" }).catch(() => {});
+    });
+
+    if (stopSaveInFlightRef.current) return;
+    stopSaveInFlightRef.current = true;
+    setSavePersistStatus("Saving report package...");
+    try {
+      const persistResult = await persistCanonicalStopSave({
+        session: summary,
+        user,
+        activeTask,
+        taskContext: buildSubmissionTaskContext(activeTask),
+        device: { model: "Android", platform: "android", appVersion: null },
+        network: { rat: summary?.rat || null },
+        ownerUserId: user?.id || null,
+        buildPackage: buildReportPackage,
+        savePackage: saveReportPackage,
+        enqueue: enqueueFieldTestResultSubmit,
+      });
+      if (!persistResult.ok) {
+        setSavePersistStatus(persistResult.error || "Stop / Save failed. Session was kept; tap Stop / Save to retry.");
+        return;
+      }
+      setSavePersistStatus("");
+      setSavedSession({
+        ...summary,
+        canonicalPackageId: persistResult.identity?.canonicalPackageId || summary.canonicalPackageId,
+        clientRunId: persistResult.enqueueResult?.client_run_id || null,
+      });
+      currentSessionRef.current = null;
+      testStateRef.current = "saved";
+      sessionPausedRef.current = false;
+      collectorRunningRef.current = false;
+      setCurrentSession(null);
+      setClockTick(endedAt);
+      setTestState("saved");
+      setCollectorRunning(false);
+      setExportBasePath(persistResult.saveResult?.basePath || `Downloads/BabyDragon/Reports/${persistResult.identity?.folderId || ""}`);
+      demoteToPreviewMode({ notificationText: "Live RF / GPS preview" }).catch(() => {});
+    } finally {
+      stopSaveInFlightRef.current = false;
+    }
   }
 
   async function restartRfStream() {
@@ -7744,7 +7815,12 @@ export default function MobileRfKpi({
     setExportPackageName("");
     setExportBasePath("");
     try {
-      const reportPackage = buildReportPackage({ session: sessionToExport, user, activeTask });
+      const reportPackage = buildReportPackage({
+        session: sessionToExport,
+        user,
+        activeTask,
+        persistMode: CANONICAL_PERSIST_MODES.EXPORT_ARTIFACT,
+      });
       const result = await saveReportPackage(reportPackage);
       const files = Array.isArray(result?.savedFiles) ? result.savedFiles : [];
       setExportFiles(files);
@@ -7760,27 +7836,7 @@ export default function MobileRfKpi({
       const primaryName = reportPackage.displayName || result?.displayName || files[0]?.fileName || files[0]?.name || "report package";
       setExportStatus(result?.fallback
         ? `Downloaded: ${primaryName}${exportExtra}`
-        : `Saved: ${primaryName}${exportExtra}`);
-
-      // Soft enqueue for durable mock upload — never blocks / never fails local save.
-      const taskContext = buildSubmissionTaskContext(activeTask);
-      if (taskContext) {
-        void tryEnqueueFieldTestResultAfterSave({
-          session: sessionToExport,
-          taskContext,
-          device: { model: "Android", platform: "android", appVersion: null },
-          network: { rat: sessionToExport?.networkRat || null },
-          files: (reportPackage.files || []).map((f) => ({
-            fileName: f.fileName,
-            mimeType: f.mimeType,
-            content: f.content,
-            contentBase64: f.contentBase64,
-            path: null,
-          })),
-          reportName: reportPackage.displayName || sessionToExport.reportLogName,
-          ownerUserId: user?.id || null,
-        });
-      }
+        : `Exported artifact: ${primaryName}${exportExtra} Canonical identity reused; not queued for upload.`);
     } catch (error) {
       setExportStatus(error?.message || "Report export failed.");
     }
@@ -8079,10 +8135,8 @@ export default function MobileRfKpi({
     try {
       const generatedAt = Date.now();
       const baseName = buildProfessionalReportName(sessionToExport, activeTask);
-      const pad = (value) => String(value).padStart(2, "0");
-      const date = new Date(generatedAt);
-      const exportStamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-      const sessionId = cleanFilePart(`${baseName}_${exportStamp}`, `bd-rf-${generatedAt}`);
+      const identity = buildCanonicalPackageIdentity(sessionToExport);
+      const sessionId = identity.folderId || cleanFilePart(baseName, `bd-rf-${generatedAt}`);
       const reportProgress = (stage) => {
         setExcelPlotExportStatus(String(stage || "Building Excel Plot Report..."));
       };
@@ -9139,8 +9193,13 @@ export default function MobileRfKpi({
                             <details className="bd-rf-unified-source-details">
                               <summary>Package identity</summary>
                               <code className="bd-rf-unified-source" title={sourceLabel}>
-                                {sourceLabel}
+                                {item.canonicalIdentity || sourceLabel}
                               </code>
+                              {(item.exportArtifacts || []).length > 1 ? (
+                                <small className="bd-rf-unified-scenario-meta">
+                                  {(item.exportArtifacts || []).length} export artifacts: {(item.exportArtifacts || []).map((art) => art.packageId || art.folderId).filter(Boolean).join(", ")}
+                                </small>
+                              ) : null}
                             </details>
                           ) : null}
                         </span>
@@ -9256,6 +9315,9 @@ export default function MobileRfKpi({
           <button type="button" className="bd-mobile-secondary" onClick={stopWorkflow} disabled={!showRecordingControls && !savedSession}>
             {showRecordingControls ? "Stop / Save" : savedSession ? "Saved" : "Stop / Save"}
           </button>
+          {savePersistStatus ? (
+            <p className="bd-rf-inline-note warning">{savePersistStatus}</p>
+          ) : null}
           {(canExportSession || exportStatus?.startsWith("Building") || excelPlotExportBusy) ? (
             <button
               type="button"

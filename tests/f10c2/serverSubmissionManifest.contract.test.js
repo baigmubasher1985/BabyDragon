@@ -13,6 +13,7 @@ import {
   buildArtifactDescriptor,
   buildResultArtifactObjectKey,
   durableArtifactRef,
+  coerceDeviceTimestamp,
 } from '../../src/mobile/rf/reports/serverSubmissionManifest.js'
 import {
   F10C2_UUIDS,
@@ -185,5 +186,29 @@ describe('serverSubmissionManifest — artifacts', () => {
         safeExtension: 'exe',
       }),
     ).toThrow('unsafe_extension')
+  })
+})
+
+describe('serverSubmissionManifest — device timestamps', () => {
+  it('coerces epoch millis to ISO so Postgres timestamptz is not given 13-digit strings', () => {
+    expect(coerceDeviceTimestamp(1787694437783)).toBe('2026-08-25T21:47:17.783Z')
+    expect(coerceDeviceTimestamp('1787694437783')).toBe('2026-08-25T21:47:17.783Z')
+    expect(coerceDeviceTimestamp('2026-08-25T21:47:17.783Z')).toBe('2026-08-25T21:47:17.783Z')
+    expect(coerceDeviceTimestamp(null)).toBeNull()
+  })
+
+  it('writes ISO started_at_device when session.startedAt is epoch millis', () => {
+    const session = makeSession('native_http', {
+      startedAt: 1787694437783,
+      endedAt: 1787694455617,
+    })
+    const manifest = buildServerSubmissionManifest({
+      clientRunId: F10C2_UUIDS.clientRun,
+      session,
+      taskContext,
+    })
+    expect(manifest.started_at_device).toBe('2026-08-25T21:47:17.783Z')
+    expect(manifest.ended_at_device).toBe('2026-08-25T21:47:35.617Z')
+    expect(validateServerSubmissionManifest(manifest).ok).toBe(true)
   })
 })

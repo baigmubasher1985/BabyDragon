@@ -354,6 +354,7 @@ export async function processResultPackagePayload(payload, {
     await transport.finalizeResult({
       clientRunId: pkg.client_run_id,
       fieldTestRunId: pkg.field_test_run_id,
+      payload: pkg,
     });
 
     pkg = {

@@ -36,6 +36,12 @@ The SQL marker is not sufficient by itself.
 5. **Phase 4A-R1:** `201–206`
 5b. **Phase 4B-E-R1:** `208` (fresh install after 206; existing 4B-E disposable applies 208 only)
 5c. **Phase 4B-U-R1:** `209` (fresh install after 208; existing 4B-E/4B-U disposable applies 209 only). Production execution is not authorized.
+5d. **CR1-B:** `210`–`213` (`CR1B_APPLY`). Existing disposable: apply 210–213 only after 209.
+5e. **Skip 214.** Quarantined at `supabase/drafts/f10c2/never-run/214/`. **Never execute.** Not draft-in-forward.
+5f. **CR1-D:** `215` only (`CR1D_APPLY`). Do not reapply 215.
+5g. **CR1-E:** `216` (`CR1E_APPLY` one-shot) — **applied on disposable 2026-08-28; do not reapply.** Permanent staging cutover remains **prepare-only**. See `docs/f10c2/permanent-staging/CUTOVER_PACKAGE.md`. Do not contact a permanent database until the owner authorizes a named staging project.
+
+Canonical CR1 SQL order: **210 → 211 → 212 → 213 → skip 214 → 215 → 216**.
 
 ## Synthetic data sequence (steps 6–8)
 
@@ -61,6 +67,8 @@ Cleanup of synthetic rows or bootstrap objects is a separate later approval. Boo
 | `013_rls_task_issue_reports` | Skipped |
 | `112_result_artifacts_storage_contract` | Documentation-only |
 | **`207_rls_tenant_storage_assumptions`** | **NEVER EXECUTE** |
+| `214_cr1b_acceptance_applicability` | **NEVER RUN.** Quarantined at `supabase/drafts/f10c2/never-run/214/`. Not in apply path. 215 supersedes. |
+| `216_cr1e_acceptance_profile_status` | **CR1E_APPLY** one-shot; applied on disposable 2026-08-28; do not reapply |
 
 Phase 4 `listApplyPlan()` remains free of `201–207`.
 

@@ -10,6 +10,7 @@ const DEFAULT_PAGE_SIZE = 10;
 export function emptyListFilters() {
   return {
     project: '',
+    vendor: '',
     market: '',
     grid: '',
     fe: '',
@@ -19,9 +20,11 @@ export function emptyListFilters() {
     upload_state: '',
     processing_state: '',
     qc_decision: '',
+    acceptance_verdict: '',
     failures_present: '',
     redrive_required: '',
     search: '',
+    task: '',
     sortBy: 'started_at',
     sortDir: 'desc',
   };
@@ -51,19 +54,32 @@ function inDateRange(iso, from, to) {
   return true;
 }
 
-/**
- * Project a run into list-safe row (no raw RF samples).
- */
+function looksLikeUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || '').trim());
+}
+
+function taskGridLabel(run) {
+  const task = looksLikeUuid(run.task_name) ? null : (run.task_name || null);
+  const grid = looksLikeUuid(run.grid_name) ? null : (run.grid_name || null);
+  if (task && grid) return `${task} · ${grid}`;
+  return task || grid || '—';
+}
+
 export function toListRow(run) {
   const counts = run.attempt_counts || {};
   return {
     id: run.id,
     client_run_id: run.client_run_id,
+    canonical_package_id: run.canonical_package_id || run.package_identity || null,
+    package_identity: run.package_identity || run.canonical_package_id || null,
+    labeled_synthetic: run.labeled_synthetic === true,
     report_name: run.report_name,
     task_id: run.task_id,
     task_name: run.task_name,
+    task_grid_label: taskGridLabel(run),
     project_id: run.project_id,
     project_name: run.project_name,
+    vendor_name: run.vendor_name || run.customer || run.project_customer || '—',
     grid_id: run.grid_id,
     grid_name: run.grid_name,
     market: run.market,
@@ -72,12 +88,14 @@ export function toListRow(run) {
     scenario_type: run.scenario_type,
     scenario_label: scenarioLabel(run.scenario_type),
     started_at: run.started_at,
+    ended_at: run.ended_at,
     duration_ms: run.duration_ms,
     duration_label: formatDurationMs(run.duration_ms),
     completion_status: run.completion_status,
     attempted: counts.attempted ?? null,
     completed: counts.completed ?? null,
     failed: counts.failed ?? null,
+    requested: counts.requested ?? null,
     upload_state: run.upload_state,
     processing_state: run.processing_state,
     latest_qc_status: run.latest_qc_status,
@@ -86,6 +104,10 @@ export function toListRow(run) {
     rf_summary_concise: run.rf_summary_concise || '—',
     data_summary_concise: run.data_summary_concise || '—',
     has_failures: !!run.has_failures,
+    acceptance_verdict: run.acceptance_verdict || run.acceptance?.overall_verdict || null,
+    acceptance_profile_version: run.acceptance?.profile_version || null,
+    superseded: run.superseded === true || run.is_superseded === true,
+    run_status: run.run_status || null,
     // Explicitly omit raw traces
     has_raw_rf_samples: false,
   };
@@ -97,6 +119,7 @@ export function filterRuns(runs, filters = {}) {
     if (f.project && run.project_id !== f.project && run.project_name !== f.project) {
       if (!matchesText(run.project_name, f.project) && run.project_id !== f.project) return false;
     }
+    if (f.vendor && !matchesText(run.vendor_name || run.customer, f.vendor) && run.vendor_name !== f.vendor) return false;
     if (f.market && !matchesText(run.market, f.market)) return false;
     if (f.grid && run.grid_id !== f.grid && !matchesText(run.grid_name, f.grid)) return false;
     if (f.fe) {
@@ -104,11 +127,16 @@ export function filterRuns(runs, filters = {}) {
       const feName = run.field_engineer?.name;
       if (feId !== f.fe && !matchesText(feName, f.fe)) return false;
     }
+    if (f.task && run.task_id !== f.task && !matchesText(run.task_name, f.task)) return false;
     if (f.scenario && run.scenario_type !== f.scenario) return false;
     if (!inDateRange(run.started_at, f.dateFrom, f.dateTo)) return false;
     if (f.upload_state && run.upload_state !== f.upload_state) return false;
     if (f.processing_state && run.processing_state !== f.processing_state) return false;
     if (f.qc_decision && run.latest_qc_status !== f.qc_decision) return false;
+    if (f.acceptance_verdict) {
+      const verdict = run.acceptance_verdict || run.acceptance?.overall_verdict;
+      if (verdict !== f.acceptance_verdict) return false;
+    }
     if (f.failures_present === 'yes' && !run.has_failures) return false;
     if (f.failures_present === 'no' && run.has_failures) return false;
     if (f.redrive_required === 'yes' && !run.redrive_needed) return false;
@@ -119,7 +147,12 @@ export function filterRuns(runs, filters = {}) {
         run.task_name,
         run.grid_name,
         run.project_name,
+        run.vendor_name,
         run.market,
+        run.client_run_id,
+        run.canonical_package_id,
+        run.package_identity,
+        run.id,
       ].join(' ');
       if (!matchesText(blob, f.search)) return false;
     }
@@ -190,11 +223,16 @@ export function buildDetailViewModel(run) {
       report_name: run.report_name,
       result_id: run.id,
       client_run_id: run.client_run_id,
+      canonical_package_id: run.canonical_package_id || run.package_identity || null,
+      package_identity: run.package_identity || run.canonical_package_id || null,
+      labeled_synthetic: run.labeled_synthetic === true,
+      source_kind: run.source_kind || (run.labeled_synthetic ? 'synthetic' : null),
       scenario_type: run.scenario_type,
       scenario_label: scenarioLabel(run.scenario_type),
       task_name: run.task_name,
       task_id: run.task_id,
       project_name: run.project_name,
+      vendor_name: run.vendor_name || run.customer || null,
       project_id: run.project_id,
       grid_name: run.grid_name,
       grid_id: run.grid_id,
@@ -213,6 +251,11 @@ export function buildDetailViewModel(run) {
     test_summary: run.test_summary || {},
     attempt_counts: run.attempt_counts || {},
     completion_status: run.completion_status,
+    acceptance: run.acceptance || null,
+    iteration_evaluations: run.iteration_evaluations || [],
+    call_summary: run.call_summary || null,
+    acceptance_override: run.acceptance_override || null,
+    acceptance_verdict: run.acceptance_verdict || run.acceptance?.overall_verdict || null,
     rf_summary: rf
       ? {
           ...rf,
@@ -221,8 +264,10 @@ export function buildDetailViewModel(run) {
         }
       : null,
     gps_summary: run.gps_summary,
+    gps_trace_points: run.gps_trace_points || null,
     events_summary: run.events_summary,
     scenario_details: run.scenario_details,
+    scenario_dashboard: run.scenario_details?.dashboard || null,
     artifacts: (run.artifacts || []).map((a) => ({
       ...a,
       // Never expose constructed public/signed URLs from selector
@@ -237,12 +282,15 @@ export function buildDetailViewModel(run) {
 
 export function collectFilterOptions(runs) {
   const projects = new Map();
+  const vendors = new Set();
   const markets = new Set();
   const grids = new Map();
   const fes = new Map();
   const scenarios = new Set();
   for (const r of runs) {
     projects.set(r.project_id, r.project_name);
+    const vendor = r.vendor_name || r.customer;
+    if (vendor && vendor !== '—') vendors.add(vendor);
     if (r.market) markets.add(r.market);
     grids.set(r.grid_id, r.grid_name);
     if (r.field_engineer?.id) fes.set(r.field_engineer.id, r.field_engineer.name);
@@ -250,6 +298,7 @@ export function collectFilterOptions(runs) {
   }
   return {
     projects: [...projects.entries()].map(([id, name]) => ({ id, name })),
+    vendors: [...vendors].sort(),
     markets: [...markets].sort(),
     grids: [...grids.entries()].map(([id, name]) => ({ id, name })),
     fieldEngineers: [...fes.entries()].map(([id, name]) => ({ id, name })),

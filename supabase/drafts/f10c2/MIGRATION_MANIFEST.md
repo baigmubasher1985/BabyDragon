@@ -61,3 +61,7 @@ This manifest must not be used as a runbook to mutate production.
 ## Phase 4A (separate folder, not this apply order)
 
 Tenant/storage drafts 201–207 live under `supabase/drafts/f10c2/phase4a/`. Do **not** add them to `scripts/f10c2/applyDisposableMigrations.mjs`. See `phase4a/MIGRATION_MANIFEST.md`.
+
+## Phase 4B / CR1 (separate folder)
+
+Drafts `208`–`216` live under `supabase/drafts/f10c2/phase4b/` except **214**, which is quarantined at `supabase/drafts/f10c2/never-run/214/` (`CR1_NEVER_RUN`). Apply subsets: `CR1B_APPLY` 210–213, `CR1D_APPLY` 215, `CR1D_DRAFT_ONLY` empty, `CR1E_APPLY` 216 (one-shot; never auto-apply). Canonical order: **210 → 211 → 212 → 213 → skip 214 → 215 → 216**. **214 is never executed.** Apply/discovery scripts must fail if 214 appears in an apply list or under `phase4b/{forward,verification,rollback}/`. **216 applied once on disposable 2026-08-28; do not reapply.** **207 NEVER EXECUTE.** Permanent staging cutover (prepare only): `docs/f10c2/permanent-staging/CUTOVER_PACKAGE.md`.

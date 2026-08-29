@@ -56,6 +56,56 @@ function getNumber(value) {
   return null;
 }
 
+/** Inclusive UTC bounds — fail closed outside this window. Never substitute now(). */
+const TIMESTAMP_MS_MIN = Date.UTC(2000, 0, 1);
+const TIMESTAMP_MS_MAX = Date.UTC(2100, 0, 1);
+
+function isoFromMillis(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return null;
+  if (ms < TIMESTAMP_MS_MIN || ms > TIMESTAMP_MS_MAX) return null;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+/**
+ * Serialization/ingestion-boundary conversion only.
+ * ISO-8601 unchanged (normalized to UTC). Epoch-ms → ISO UTC.
+ * Explicit 10-digit epoch-seconds detection. Invalid/NaN/Inf/negative/unreasonable → null.
+ * Never replaces invalid values with now().
+ */
+export function coerceDeviceTimestamp(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "boolean") return null;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    if (value >= 1e12 && value < 1e14) return isoFromMillis(value);
+    if (value >= 1e9 && value < 1e12) return isoFromMillis(value * 1000);
+    return null;
+  }
+  if (value instanceof Date) {
+    return isoFromMillis(value.getTime());
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^[+-]?(?:nan|infinity|inf)$/i.test(text)) return null;
+  if (/^-/.test(text)) return null;
+  if (/^\d{13}$/.test(text)) {
+    return isoFromMillis(Number(text));
+  }
+  if (/^\d{10}$/.test(text)) {
+    return isoFromMillis(Number(text) * 1000);
+  }
+  if (/^\d+$/.test(text)) {
+    return null;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}(?:[tT ]|$)/.test(text)) {
+    return null;
+  }
+  const parsed = new Date(text);
+  return isoFromMillis(parsed.getTime());
+}
+
 /**
  * Build private object_key (bucket stored separately).
  * {project_id}/{task_id}/{verified_user_id}/{field_test_run_id}/{artifact_id}.{ext}
@@ -108,8 +158,8 @@ function summarizeScenarioEntry(entry = {}) {
     scenario_label: entry.scenarioLabel || scenarioDisplayName(scenarioKey),
     source_family: entry.sourceFamily || null,
     run_mode_label: entry.runModeLabel || null,
-    started_at: entry.startedAt || session.startedAt || null,
-    ended_at: entry.endedAt || session.endedAt || null,
+    started_at: coerceDeviceTimestamp(entry.startedAt || session.startedAt || null),
+    ended_at: coerceDeviceTimestamp(entry.endedAt || session.endedAt || null),
     duration_ms: getNumber(entry.durationMs),
     status: cleanText(entry.status) || null,
     attempt_counts: {
@@ -119,25 +169,83 @@ function summarizeScenarioEntry(entry = {}) {
     },
     failure_truth: summarizeOutcome(outcome),
     report_log_name: cleanText(entry.reportLogName) || cleanText(session.reportLogName),
-    rf_sample_count: Array.isArray(entry.rfRows) ? entry.rfRows.length : 0,
+    rf_sample_count: Array.isArray(entry.rfRows) ? entry.rfRows.length : null,
     event_count: Array.isArray(entry.events) ? entry.events.length : 0,
+    iterations: Array.isArray(session.appIterationResults)
+      ? session.appIterationResults.map((row, index) => ({
+        iteration_number: getNumber(row.iteration) ?? getNumber(row.iterationNumber) ?? index + 1,
+        status: cleanText(row.status) || null,
+        dl_mbps: getNumber(row.dlMbps ?? row.dl_mbps),
+        ul_mbps: getNumber(row.ulMbps ?? row.ul_mbps),
+        http_latency_ms: getNumber(row.latencyMs ?? row.http_latency_ms),
+        started_at: coerceDeviceTimestamp(row.startedAt || row.started_at || null),
+        ended_at: coerceDeviceTimestamp(row.endedAt || row.ended_at || null),
+        failure_reason: cleanText(row.failureReason || row.conciseReason || row.error),
+      }))
+      : [],
   };
 }
 
 function summarizeRf(unified = {}) {
-  const rf = unified.rf || unified.rfSummary || {};
+  const rf = unified.rf || unified.rf_summary || unified.rfSummary || {};
+  const session = unified.session || {};
+  const trace = unified.trace || {};
+  const lte = rf.lte || {};
+  const nr = rf.nr || {};
   return {
-    sample_count: getNumber(rf.sampleCount) ?? getNumber(rf.uniqueSampleCount) ?? null,
-    serving_rsrp_avg: getNumber(rf.servingRsrpAvg) ?? getNumber(rf.rsrpAvg) ?? null,
-    serving_rsrq_avg: getNumber(rf.servingRsrqAvg) ?? getNumber(rf.rsrqAvg) ?? null,
-    notes: cleanText(rf.notes),
+    sample_count: getNumber(rf.sample_count)
+      ?? getNumber(rf.sampleCount)
+      ?? getNumber(rf.uniqueSampleCount)
+      ?? getNumber(session.sample_count)
+      ?? getNumber(session.sampleCount)
+      ?? getNumber(trace.sample_count)
+      ?? getNumber(trace.sampleCount)
+      ?? null,
+    rat: cleanText(rf.rat) || cleanText(session.rat) || null,
+    serving_rsrp_avg: getNumber(rf.serving_rsrp_avg)
+      ?? getNumber(rf.servingRsrpAvg)
+      ?? getNumber(rf.rsrpAvg)
+      ?? getNumber(lte.rsrp?.avg)
+      ?? getNumber(lte.avg_rsrp_dbm)
+      ?? getNumber(nr.ss_rsrp?.avg)
+      ?? getNumber(nr.avg_ss_rsrp_dbm)
+      ?? null,
+    serving_rsrq_avg: getNumber(rf.serving_rsrq_avg)
+      ?? getNumber(rf.servingRsrqAvg)
+      ?? getNumber(rf.rsrqAvg)
+      ?? getNumber(lte.rsrq?.avg)
+      ?? getNumber(lte.avg_rsrq_db)
+      ?? getNumber(nr.ss_rsrq?.avg)
+      ?? getNumber(nr.avg_ss_rsrq_db)
+      ?? null,
+    serving_sinr_avg: getNumber(rf.serving_sinr_avg)
+      ?? getNumber(rf.servingSinrAvg)
+      ?? getNumber(rf.sinrAvg)
+      ?? getNumber(lte.sinr?.avg)
+      ?? getNumber(lte.avg_sinr_db)
+      ?? getNumber(nr.ss_sinr?.avg)
+      ?? getNumber(nr.avg_ss_sinr_db)
+      ?? null,
+    serving_rsrp_min: getNumber(lte.rsrp?.min) ?? getNumber(lte.min_rsrp_dbm) ?? getNumber(nr.min_ss_rsrp_dbm) ?? null,
+    serving_rsrp_max: getNumber(lte.rsrp?.max) ?? getNumber(lte.max_rsrp_dbm) ?? getNumber(nr.max_ss_rsrp_dbm) ?? null,
+    notes: cleanText(rf.notes) || cleanText(trace.note),
   };
 }
 
 function summarizeGps(unified = {}) {
-  const gps = unified.gps || unified.gpsSummary || unified.route || {};
+  const gps = unified.gps || unified.gps_summary || unified.gpsSummary || unified.route || {};
+  const session = unified.session || {};
+  const trace = unified.trace || {};
   return {
-    sample_count: getNumber(gps.sampleCount) ?? getNumber(gps.gpsSampleCount) ?? null,
+    sample_count: getNumber(gps.sample_count)
+      ?? getNumber(gps.sampleCount)
+      ?? getNumber(gps.gpsSampleCount)
+      ?? getNumber(gps.gps_sample_count)
+      ?? getNumber(session.gps_points)
+      ?? getNumber(session.gpsPoints)
+      ?? getNumber(trace.sample_count)
+      ?? getNumber(trace.sampleCount)
+      ?? null,
     route_quality: cleanText(gps.routeQuality) || cleanText(gps.route_status) || null,
     notes: cleanText(gps.notes),
   };
@@ -280,14 +388,18 @@ export function buildServerSubmissionManifest({
     scenario_type: scenarioType,
     scenario_version: UNIFIED_FIELD_REPORT_VERSION,
     config: config && typeof config === "object" ? { ...config } : {},
-    started_at_device: startedAtDevice
+    started_at_device: coerceDeviceTimestamp(
+      startedAtDevice
       || unifiedReport?.startedAt
       || session?.startedAt
       || null,
-    ended_at_device: endedAtDevice
+    ),
+    ended_at_device: coerceDeviceTimestamp(
+      endedAtDevice
       || unifiedReport?.endedAt
       || session?.endedAt
       || null,
+    ),
     report_name: cleanText(reportName)
       || cleanText(unifiedReport?.reportName)
       || cleanText(session?.reportLogName)
@@ -387,4 +499,5 @@ export default {
   buildServerSubmissionManifest,
   validateServerSubmissionManifest,
   sanitizeArtifactFileName,
+  coerceDeviceTimestamp,
 };

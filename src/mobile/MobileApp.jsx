@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseConfigStatus, probeSupabaseLoginServer, supabase } from "../lib/supabaseClient";
+import { sanitizeLoginError } from "../auth/sanitizeLoginError";
 import "./mobile.css";
 import { CHECKLIST_ITEMS, MOBILE_GPS_INTERVAL_MS, getDefaultIssueInput } from "./mobileConstants";
 import {
@@ -54,6 +55,7 @@ import {
   cancelQueuedFieldTestResult,
   listFieldTestResultQueueItems,
   processResultPackagePayload,
+  processSelectedFieldTestResultQueue,
   getResultTransport,
 } from "./rf/submission/index.js";
 import MobileProfile from "./MobileProfile";
@@ -145,6 +147,7 @@ export default function MobileApp() {
   const [activeTab, setActiveTab] = useState("tasks");
   const [lastSuccessfulSyncAt, setLastSuccessfulSyncAt] = useState(null);
   const [resultLocalMessage, setResultLocalMessage] = useState("");
+  const selectiveRetryRef = useRef(null);
 
   const user = session?.user || null;
 
@@ -255,6 +258,18 @@ export default function MobileApp() {
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.__bdSelectiveFieldResultRetry = (canonicalIds) => {
+      if (typeof selectiveRetryRef.current !== "function") {
+        return Promise.resolve({ ok: false, code: "selective_retry_not_ready" });
+      }
+      return selectiveRetryRef.current(canonicalIds);
+    };
+    return () => {
+      delete window.__bdSelectiveFieldResultRetry;
     };
   }, []);
 
@@ -410,7 +425,7 @@ export default function MobileApp() {
       );
 
       if (loginError) {
-        setError(isLoginNetworkError(loginError) ? LOGIN_SERVER_UNREACHABLE_MESSAGE : loginError.message);
+        setError(isLoginNetworkError(loginError) ? LOGIN_SERVER_UNREACHABLE_MESSAGE : sanitizeLoginError(loginError));
       } else {
         setSession(data?.session || null);
         setLoginForm({ email: "", password: "" });
@@ -419,8 +434,7 @@ export default function MobileApp() {
       if (isLoginNetworkError(loginError)) {
         setError(LOGIN_SERVER_UNREACHABLE_MESSAGE);
       } else {
-        const message = String(loginError?.message || loginError || "").trim();
-        setError(message || LOGIN_SERVER_UNREACHABLE_MESSAGE);
+        setError(sanitizeLoginError(loginError));
       }
     } finally {
       setLoginLoading(false);
@@ -624,6 +638,37 @@ export default function MobileApp() {
       refreshOfflineQueueState();
     }
   }
+
+  async function syncSelectedFieldTestResults(canonicalIds) {
+    const ids = Array.isArray(canonicalIds) ? canonicalIds : [];
+    if (ids.length === 0) {
+      return { ok: false, code: "selective_targets_required" };
+    }
+    const result = await processSelectedFieldTestResultQueue({
+      canonicalIds: ids,
+      processItem: async (item) => processResultPackagePayload(item.payload || {}, {
+        transport: getResultTransport({
+          supabase,
+          readArtifactBody: async (artifact) => {
+            const ref = artifact?.local_file_ref;
+            if (!ref) return artifact?.body || null;
+            try {
+              const record = await readQueuedFile(ref);
+              return record?.blob || null;
+            } catch {
+              return null;
+            }
+          },
+        }),
+        currentUser: user,
+        sessionValid: Boolean(user?.id),
+        manualRetry: true,
+      }),
+    });
+    refreshOfflineQueueState();
+    return result;
+  }
+  selectiveRetryRef.current = syncSelectedFieldTestResults;
 
   async function handleSyncNow() {
     const pendingBeforeSync = getMobileQueueCount();

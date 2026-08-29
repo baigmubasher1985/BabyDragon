@@ -16,5 +16,5 @@
 
 301 is **not** in the 000–206 schema apply list. It is fixture step 8 after bootstrap, security/result/tenant drafts, Auth user creation, and synthetic operational rows.
 
-Migration **207 is NEVER EXECUTE**.
+Migration **207 is NEVER EXECUTE**. SQL **214** is quarantined at `supabase/drafts/f10c2/never-run/214/` (`CR1_NEVER_RUN`). It is **not** draft-in-forward. Apply/discovery scripts must fail if 214 appears in an apply list. Canonical CR1 order: **210 → 211 → 212 → 213 → skip 214 → 215 → 216**. SQL **216** is `CR1E_APPLY` one-shot (applied on disposable 2026-08-28; never auto-apply; do not reapply).
 

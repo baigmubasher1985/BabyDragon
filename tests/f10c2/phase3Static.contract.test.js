@@ -33,11 +33,20 @@ describe('f10c2 phase3 — static contracts', () => {
     }
   })
 
-  it('AdminDashboard wires Field Results nav for admin only surface', () => {
+  it('AdminDashboard wires Field Results nav for admin only surface under Field Operations', () => {
     const text = read('src/AdminDashboard.jsx')
     expect(text).toContain('fieldResults')
     expect(text).toContain('Field Results')
     expect(text).toContain('FieldResultsPage')
+    const opsIdx = text.indexOf('title: "Field Operations"')
+    const qcIdx = text.indexOf('title: "QC & Reports"')
+    const fieldIdx = text.indexOf('{ id: "fieldResults"')
+    expect(opsIdx).toBeGreaterThan(-1)
+    expect(qcIdx).toBeGreaterThan(-1)
+    expect(fieldIdx).toBeGreaterThan(opsIdx)
+    expect(fieldIdx).toBeLessThan(qcIdx)
+    expect(text).toContain('{ id: "qc", label: "QC Review"')
+    expect(text).toContain('{ id: "reports", label: "Reports"')
   })
 
   it('FE dashboard does not expose Field Results admin nav', () => {

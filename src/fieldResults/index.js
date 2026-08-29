@@ -15,8 +15,20 @@ export {
   scenarioLabel,
   canAccessFieldResultsNav,
   canPerformFieldResultQc,
+  resolveFieldResultsDashboardRole,
   F10C2_DASHBOARD_MOCK_ENABLED,
+  artifactDownloadLabel,
+  buildReportDownloadSlots,
+  formatCountOrNA,
+  fieldSectionEmptyCopy,
 } from './models/fieldResultTypes.js';
+export {
+  computeTaskLevelQcOutcome,
+  resolveRequiredScenarios,
+  pickLatestValidRunPerScenario,
+  TASK_FAIL_REASONS,
+  F10C2_P4BU_E2E_REQUIRED_SCENARIOS,
+} from './qc/taskLevelQcOutcome.js';
 export {
   validateFieldResultQcDecision,
   buildAppendQcHistoryEntry,

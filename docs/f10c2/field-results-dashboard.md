@@ -1,7 +1,9 @@
 # Field Results Dashboard (F10C2 Phase 3)
 
-**Status:** Local / **mock** dashboard implementation.  
-**Not** live server integration. No Supabase connection from this UI path.
+**Operator manual (login, roles, Field Results, GPS, Acceptance Criteria, QC, theme, density, deployment):** [OPERATOR_ADMIN_MANUAL.md](./OPERATOR_ADMIN_MANUAL.md). This file remains the Field Results information-architecture note.
+
+**Status:** Live disposable dashboard exists under Field Operations when `VITE_F10C2_FIELD_RESULTS_PROVIDER=supabase`. Mock remains the source default.
+**Production is not a valid target.**
 
 ## Information architecture
 

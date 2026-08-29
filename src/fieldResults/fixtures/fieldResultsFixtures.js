@@ -33,6 +33,7 @@ function baseRun(partial) {
     task_name: partial.task_name || 'Synthetic Task JOS-001',
     project_id: partial.project_id || 'proj-syn-0001',
     project_name: partial.project_name || 'Synthetic Demo Project',
+    vendor_name: partial.vendor_name || 'Synthetic Vendor',
     grid_id: partial.grid_id || 'grid-syn-0001',
     grid_name: partial.grid_name || 'Grid SYN-A1',
     market: partial.market || 'Synthetic Market',
@@ -62,10 +63,15 @@ function baseRun(partial) {
       model: 'Synthetic Device X',
       os: 'Android 14 (mock)',
     },
-    overview: partial.overview || {},
+    labeled_synthetic: partial.labeled_synthetic !== false,
+    source_kind: partial.source_kind || 'synthetic',
+    package_identity: partial.package_identity || null,
+    canonical_package_id: partial.canonical_package_id || partial.package_identity || null,
+    superseded: partial.superseded === true,
     test_summary: partial.test_summary || {},
     rf_summary: partial.rf_summary || null,
     gps_summary: partial.gps_summary || null,
+    gps_trace_points: partial.gps_trace_points || null,
     events_summary: partial.events_summary || null,
     scenario_details: partial.scenario_details || {},
     artifacts: partial.artifacts || [],
@@ -110,6 +116,7 @@ function qcEntry(partial) {
 }
 
 const rfLte = {
+  sample_count: 380,
   rat_distribution: { LTE: 82, NR: 12, WCDMA: 4, GSM: 2 },
   lte: {
     rsrp: { min: -118, avg: -98, max: -82 },
@@ -117,6 +124,7 @@ const rfLte = {
     sinr: { min: -2, avg: 8, max: 18 },
     pci: 101,
     earfcn: 1850,
+    tac: 51001,
     band: 'B2',
     bandwidth_mhz: 20,
     ca: 'unavailable',
@@ -173,9 +181,9 @@ const gpsOk = {
 };
 
 const gpsMissing = {
-  sample_count: 0,
-  valid_count: 0,
-  invalid_count: 0,
+  sample_count: null,
+  valid_count: null,
+  invalid_count: null,
   start: null,
   end: null,
   distance_m: null,
@@ -223,6 +231,12 @@ export function buildFieldResultsFixtures() {
       },
       rf_summary: rfLte,
       gps_summary: gpsOk,
+      gps_trace_points: [
+        { latitude: 32.75, longitude: -96.80, timestamp_iso: "2026-08-10T14:00:00.000Z", accuracy_m: 4.2, sample_index: 1, gps_status: "fresh" },
+        { latitude: 32.76, longitude: -96.79, timestamp_iso: "2026-08-10T14:08:00.000Z", accuracy_m: 3.8, sample_index: 2, gps_status: "fresh" },
+        { latitude: 32.78, longitude: -96.75, timestamp_iso: "2026-08-10T14:20:00.000Z", accuracy_m: 5.1, sample_index: 3, gps_status: "fresh" },
+        { latitude: 0, longitude: 0, timestamp_iso: "2026-08-10T14:21:00.000Z", sample_index: 4 },
+      ],
       events_summary: eventsVoice,
       scenario_details: {
         kind: 'native_http',
@@ -243,10 +257,20 @@ export function buildFieldResultsFixtures() {
           mime_type: 'application/json',
         }),
         artifact({
-          artifact_id: 'art-http-rf',
-          artifact_type: 'rf_csv',
-          filename: 'Synthetic_NativeHTTP_Success_RF.csv',
-          mime_type: 'text/csv',
+          artifact_id: 'art-http-xlsx',
+          artifact_type: 'excel_plot',
+          filename: 'Synthetic_NativeHTTP_Success_Plots.xlsx',
+          mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        }),
+        artifact({
+          artifact_id: 'art-http-zip',
+          artifact_type: 'package_zip',
+          filename: 'Synthetic_NativeHTTP_Success.zip',
+          mime_type: 'application/zip',
+          available: false,
+          missing: true,
+          required: false,
+          upload_status: 'pending',
         }),
       ],
     }),
@@ -527,6 +551,7 @@ export function buildFieldResultsFixtures() {
       rf_summary_concise: 'RF metrics unavailable',
       data_summary_concise: 'HTTP ok · RF unavailable',
       rf_summary: {
+        sample_count: null,
         rat_distribution: null,
         lte: {
           rsrp: null,
@@ -819,6 +844,148 @@ export function buildFieldResultsFixtures() {
           notes: 'Linked to future re-drive task',
           redrive_reason: 'Coverage hole on north sector',
           redrive_task_id: 'task-redrive-syn-0009',
+        }),
+      ],
+    }),
+
+    baseRun({
+      id: 'run-voice-mo-synthetic',
+      report_name: 'Synthetic_Voice_MO_Disposable',
+      scenario_type: 'voice_mo',
+      data_summary_concise: 'Labeled synthetic MO — disposable',
+      test_summary: {
+        truth: 'success',
+        metrics: { mo_success: 2, mo_attempted: 2 },
+        labeled_synthetic: true,
+      },
+      rf_summary: rfLte,
+      gps_summary: gpsOk,
+      events_summary: {
+        counts: { voice_mo: 2, voice_mt: 0 },
+        timeline: [
+          { t: '2026-08-24T16:01:00.000Z', kind: 'voice_mo', label: 'MO success (labeled synthetic)' },
+        ],
+      },
+      scenario_details: {
+        kind: 'voice_mo',
+        labeled_synthetic: true,
+        calls: [{ direction: 'MO', outcome: 'success' }, { direction: 'MO', outcome: 'success' }],
+      },
+      extra: {
+        acceptance: {
+          overall_verdict: 'PASS',
+          dl_verdict: 'N/A',
+          ul_verdict: 'N/A',
+          mo_verdict: 'PASS',
+          mt_verdict: 'N/A',
+          profile_id: 'profile-syn-voice',
+          profile_version: 1,
+        },
+        acceptance_verdict: 'PASS',
+        call_summary: {
+          labeled_synthetic: true,
+          mo: { required: 1, actual: 2, verdict: 'PASS' },
+          mt: { required: null, actual: 0, verdict: 'N/A' },
+        },
+      },
+      artifacts: [
+        artifact({
+          artifact_id: 'art-mo-json',
+          artifact_type: 'unified_json',
+          filename: 'Synthetic_Voice_MO.json',
+          mime_type: 'application/json',
+        }),
+      ],
+    }),
+
+    baseRun({
+      id: 'run-voice-mt-synthetic',
+      report_name: 'Synthetic_Voice_MT_Disposable',
+      scenario_type: 'voice_mt',
+      data_summary_concise: 'Labeled synthetic MT — disposable',
+      test_summary: {
+        truth: 'success',
+        metrics: { mt_success: 1, mt_attempted: 2 },
+        labeled_synthetic: true,
+      },
+      rf_summary: rfLte,
+      gps_summary: gpsOk,
+      events_summary: {
+        counts: { voice_mo: 0, voice_mt: 2 },
+        timeline: [
+          { t: '2026-08-24T16:11:00.000Z', kind: 'voice_mt', label: 'MT success (labeled synthetic)' },
+        ],
+      },
+      scenario_details: {
+        kind: 'voice_mt',
+        labeled_synthetic: true,
+        calls: [{ direction: 'MT', outcome: 'success' }, { direction: 'MT', outcome: 'incomplete' }],
+      },
+      extra: {
+        acceptance: {
+          overall_verdict: 'FAIL',
+          dl_verdict: 'N/A',
+          ul_verdict: 'N/A',
+          mo_verdict: 'N/A',
+          mt_verdict: 'FAIL',
+          profile_id: 'profile-syn-voice',
+          profile_version: 1,
+        },
+        acceptance_verdict: 'FAIL',
+        call_summary: {
+          labeled_synthetic: true,
+          mo: { required: null, actual: 0, verdict: 'N/A' },
+          mt: { required: 2, actual: 1, verdict: 'FAIL' },
+        },
+      },
+      artifacts: [
+        artifact({
+          artifact_id: 'art-mt-json',
+          artifact_type: 'unified_json',
+          filename: 'Synthetic_Voice_MT.json',
+          mime_type: 'application/json',
+        }),
+      ],
+    }),
+
+    baseRun({
+      id: 'run-combined-contract',
+      report_name: 'Synthetic_Combined_Data_Voice',
+      scenario_type: 'combined',
+      data_summary_concise: 'Contract fixture — combined data + voice',
+      test_summary: {
+        truth: 'success',
+        metrics: { dl_mbps_avg: 120, ul_mbps_avg: 18, mo_success: 1 },
+      },
+      rf_summary: rfLte,
+      gps_summary: gpsOk,
+      events_summary: eventsVoice,
+      scenario_details: {
+        kind: 'combined',
+        data_family: true,
+        voice_family: true,
+        iterations: [{ n: 1, status: 'ok', dl_mbps: 120, ul_mbps: 18 }],
+        calls: [{ direction: 'MO', outcome: 'success' }],
+      },
+      extra: {
+        acceptance: {
+          overall_verdict: 'PASS',
+          dl_verdict: 'PASS',
+          ul_verdict: 'PASS',
+          mo_verdict: 'PASS',
+          mt_verdict: 'N/A',
+          profile_id: 'profile-syn-combined',
+          profile_version: 1,
+          resolved_rules: { excluded_rules: [], applicability: { combined: true } },
+        },
+        acceptance_verdict: 'PASS',
+      },
+      artifacts: [
+        artifact({
+          artifact_id: 'art-comb-json',
+          artifact_type: 'unified_json',
+          filename: 'Synthetic_Combined.json',
+          mime_type: 'application/json',
         }),
       ],
     }),

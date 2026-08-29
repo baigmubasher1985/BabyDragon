@@ -1,5 +1,7 @@
 # Field Results QC Workflow (F10C2 Phase 3)
 
+Operational QC language for admins lives in [OPERATOR_ADMIN_MANUAL.md](./OPERATOR_ADMIN_MANUAL.md) §8. This file remains the decision-contract note.
+
 ## Decisions (field-result level, additive)
 
 | Decision | Notes |

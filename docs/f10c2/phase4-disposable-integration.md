@@ -45,3 +45,7 @@ npm run f10c2:validate-disposable
 ```
 
 These commands print redacted project refs only. They refuse to run against the app `VITE_SUPABASE_URL` hostname.
+
+## Permanent staging (CR1-E)
+
+Disposable remains evidence only. Continued development belongs on a **permanent staging** project after owner authorization. Prepare-only package: [permanent-staging/CUTOVER_PACKAGE.md](./permanent-staging/CUTOVER_PACKAGE.md). Copy `.env.permanent-staging.example` → `.env.permanent-staging` (gitignored). Canonical variable names: `BABYDRAGON_STAGING_*` (compatible `F10C2_PERMANENT_STAGING_*` aliases). If no target is authorized, stop with **PERMANENT STAGING TARGET REQUIRED — CUTOVER PACKAGE READY — NO DATABASE CONTACTED**. Do not copy disposable data. SQL **216** was applied once on disposable; do not reapply. Permanent staging is still not contacted.

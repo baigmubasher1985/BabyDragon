@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { getFieldResultsRepository } from "../fieldResults";
+import { isFieldResultsSupabaseProviderEnabled } from "../lib/f10c2FeatureFlags.js";
+import { computeTaskLevelQcOutcome } from "../fieldResults/qc/taskLevelQcOutcome.js";
 
 const QC_DECISIONS = [
   "QC Passed",
@@ -288,7 +291,12 @@ function CheckRow({ label, checked, onChange, helper }) {
   );
 }
 
-export default function QCReview({ onOpenFieldResults } = {}) {
+export default function QCReview({
+  onOpenFieldResults,
+  focusTaskId = null,
+  focusGridName = null,
+  focusReportName = null,
+} = {}) {
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState("");
   const [creatingRedriveKey, setCreatingRedriveKey] = useState("");
@@ -301,9 +309,10 @@ export default function QCReview({ onOpenFieldResults } = {}) {
   const [issues, setIssues] = useState({});
   const [updates, setUpdates] = useState({});
   const [drafts, setDrafts] = useState({});
-  const [searchText, setSearchText] = useState("");
+  const [searchText, setSearchText] = useState(() => String(focusGridName || focusReportName || focusTaskId || "").trim());
   const [decisionFilter, setDecisionFilter] = useState("All");
   const [expandedCards, setExpandedCards] = useState({});
+  const [fieldResultRuns, setFieldResultRuns] = useState([]);
 
   useEffect(() => {
     loadQCData();
@@ -374,7 +383,29 @@ export default function QCReview({ onOpenFieldResults } = {}) {
         .order("created_at", { ascending: false })
     );
 
-    const taskIds = completedTasks.map((task) => task.id).filter(Boolean);
+    let fieldRuns = [];
+    try {
+      const repo = isFieldResultsSupabaseProviderEnabled()
+        ? getFieldResultsRepository({ kind: "supabase", supabase, forceNew: true })
+        : getFieldResultsRepository({ forceNew: true });
+      const listed = await repo.listFieldResults({}, { page: 1, pageSize: 500 });
+      fieldRuns = listed?.ok ? listed.rows || [] : [];
+    } catch (error) {
+      console.warn("QC Review field-result overlay skipped:", error?.message || error);
+      fieldRuns = [];
+    }
+    setFieldResultRuns(fieldRuns);
+
+    const fieldTaskIds = [...new Set(fieldRuns.map((run) => run.task_id).filter(Boolean))];
+    const extraTasks = fieldTaskIds.length
+      ? await safeSelect(() => supabase.from("tasks").select("*").in("id", fieldTaskIds))
+      : [];
+    const byId = new Map();
+    for (const task of [...completedTasks, ...extraTasks]) {
+      if (task?.id) byId.set(task.id, task);
+    }
+    const qcTasks = [...byId.values()];
+    const taskIds = qcTasks.map((task) => task.id).filter(Boolean);
 
     if (taskIds.length === 0) {
       setTasks([]);
@@ -391,22 +422,14 @@ export default function QCReview({ onOpenFieldResults } = {}) {
     }
 
     const projectIds = [
-      ...new Set(completedTasks.map((task) => task.project_id).filter(Boolean)),
+      ...new Set(qcTasks.map((task) => task.project_id).filter(Boolean)),
     ];
 
     const feIds = [
-      ...new Set(completedTasks.map((task) => getTaskFEId(task)).filter(Boolean)),
+      ...new Set(qcTasks.map((task) => getTaskFEId(task)).filter(Boolean)),
     ];
 
-    const [
-      projectRows,
-      profileRows,
-      qcRows,
-      taskGridRows,
-      checklistRows,
-      issueRows,
-      updateRows,
-    ] = await Promise.all([
+    const [projectRows, profileRows, qcRows, taskGridRows, checklistRows, issueRows, updateRows] = await Promise.all([
       projectIds.length
         ? safeSelect(() => supabase.from("projects").select("*").in("id", projectIds))
         : [],
@@ -497,7 +520,7 @@ export default function QCReview({ onOpenFieldResults } = {}) {
     });
 
     const draftMap = {};
-    completedTasks.forEach((task) => {
+    qcTasks.forEach((task) => {
       const grids = taskGridMap[task.id]?.length
         ? taskGridMap[task.id]
         : [
@@ -522,7 +545,7 @@ export default function QCReview({ onOpenFieldResults } = {}) {
       });
     });
 
-    setTasks(completedTasks);
+    setTasks(qcTasks);
     setProjects(projectMap);
     setProfiles(profileMap);
     setTaskGrids(taskGridMap);
@@ -558,12 +581,19 @@ export default function QCReview({ onOpenFieldResults } = {}) {
           checklistRows: checklists[task.id] || [],
           issueRows: issues[task.id] || [],
           updateRows: updates[task.id] || [],
+          runs: fieldResultRuns.filter((run) => String(run.task_id) === String(task.id)),
+          taskOutcome: computeTaskLevelQcOutcome({
+            task,
+            project,
+            runs: fieldResultRuns,
+            qcDecision: qc.qc_decision,
+          }),
         });
       });
     });
 
     return items;
-  }, [tasks, taskGrids, drafts, projects, profiles, checklists, issues, updates]);
+  }, [tasks, taskGrids, drafts, projects, profiles, checklists, issues, updates, fieldResultRuns]);
 
   const filteredItems = useMemo(() => {
     const text = searchText.trim().toLowerCase();
@@ -580,13 +610,20 @@ export default function QCReview({ onOpenFieldResults } = {}) {
         ""
       ).toLowerCase();
 
+      const taskId = String(item.task?.id || "").toLowerCase();
+      const reportNames = (item.runs || [])
+        .map((run) => String(run.report_name || "").toLowerCase())
+        .join(" ");
+
       const matchesSearch =
         !text ||
         title.includes(text) ||
         gridName.includes(text) ||
         projectName.includes(text) ||
         feName.includes(text) ||
-        market.includes(text);
+        market.includes(text) ||
+        taskId.includes(text) ||
+        reportNames.includes(text);
 
       const matchesDecision =
         decisionFilter === "All" || item.qc.qc_decision === decisionFilter;
@@ -615,7 +652,7 @@ export default function QCReview({ onOpenFieldResults } = {}) {
   async function saveQC(item) {
     setSavingKey(item.key);
 
-    const { task, grid, qc } = item;
+    const { task, grid, qc, taskOutcome } = item;
     const { data: userData, error: userError } = await supabase.auth.getUser();
 
     if (userError) {
@@ -626,6 +663,15 @@ export default function QCReview({ onOpenFieldResults } = {}) {
 
     const reviewerId = userData?.user?.id || null;
     const isRedrive = qc.qc_decision === "Needs Re-drive" || !!qc.redrive_needed;
+    if (
+      taskOutcome?.computed === "FAIL"
+      && qc.qc_decision === "QC Passed"
+      && !String(qc.qc_notes || "").trim()
+    ) {
+      alert("Override reason is required when QC Passed differs from the computed task FAIL. Computed acceptance is not rewritten.");
+      setSavingKey("");
+      return;
+    }
 
     const payload = {
       task_id: task.id,
@@ -841,8 +887,7 @@ export default function QCReview({ onOpenFieldResults } = {}) {
           }}
         >
           <span style={{ fontSize: 13 }}>
-            Unified Field Results (F10C2 mock) are available in a separate QC workspace.
-            Task-level QC Review V1 below is unchanged.
+            Technical Field Results live under Field Operations. Task-level QC Review below is unchanged and now shows a computed task PASS/FAIL beside the existing QC decision.
           </span>
           <button type="button" className="bdqc-refresh-btn" onClick={onOpenFieldResults}>
             Open Field Results
@@ -903,6 +948,7 @@ export default function QCReview({ onOpenFieldResults } = {}) {
               checklistRows,
               issueRows,
               updateRows,
+              taskOutcome,
             } = item;
 
             const progress = checklistProgress(checklistRows);
@@ -912,7 +958,7 @@ export default function QCReview({ onOpenFieldResults } = {}) {
             const recentIssues = issueRows.slice(0, 4);
             const market = grid?.market || project.market || task.market || "N/A";
             const feLabel = fe.full_name || fe.email || getTaskFEId(task) || "N/A";
-            const detailsHidden = !expandedCards[key];
+            const detailsHidden = !(expandedCards[key] || (focusTaskId && String(task.id) === String(focusTaskId)));
             const existingQc = qcReviews[key];
             const isRedriveMarked =
               qc.qc_decision === "Needs Re-drive" || !!qc.redrive_needed;
@@ -946,6 +992,30 @@ export default function QCReview({ onOpenFieldResults } = {}) {
                       <span><b>Status:</b> {task.status || "Completed"}</span>
                       <span><b>Reviewed:</b> {formatDate(qc.reviewed_at)}</span>
                     </div>
+                    {taskOutcome && (
+                      <div className="bdqc-task-outcome" data-computed={taskOutcome.computed}>
+                        <div>
+                          <span>Computed task result</span>
+                          <strong className={taskOutcome.computed === "PASS" ? "bdqc-badge bdqc-badge-pass" : "bdqc-badge bdqc-badge-fail"}>
+                            {taskOutcome.computed}{taskOutcome.reason ? ` · ${taskOutcome.reason}` : ""}
+                          </strong>
+                        </div>
+                        <div>
+                          <span>QC decision</span>
+                          <strong>{displayDecision}</strong>
+                        </div>
+                        <div>
+                          <span>Required / passed / failed / missing</span>
+                          <strong>
+                            {taskOutcome.required_count} / {taskOutcome.passed} / {taskOutcome.failed} / {taskOutcome.missing_incomplete}
+                          </strong>
+                        </div>
+                        <div>
+                          <span>Re-drive</span>
+                          <strong>{taskOutcome.redrive_status}</strong>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -971,6 +1041,12 @@ export default function QCReview({ onOpenFieldResults } = {}) {
                       <strong>{evidenceFound ? "Yes" : "No"}</strong>
                       <span>Evidence Found</span>
                     </div>
+                    {taskOutcome && (
+                      <div>
+                        <strong>{taskOutcome.computed}</strong>
+                        <span>Computed task result</span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -1056,6 +1132,27 @@ export default function QCReview({ onOpenFieldResults } = {}) {
                     <div className="bdqc-panel-heading">
                       <h4>QC Decision</h4>
                     </div>
+
+                    {taskOutcome && (
+                      <div className="bdqc-computed-box">
+                        <p>
+                          Computed task result: <b>{taskOutcome.computed}</b>
+                          {taskOutcome.reason ? ` (${taskOutcome.reason})` : ""}
+                        </p>
+                        <p>
+                          Existing QC decision is independent. Saving QC does not rewrite computed acceptance.
+                        </p>
+                        {taskOutcome.override?.override_verdict && (
+                          <p>
+                            Override retains computed {taskOutcome.override.computed_verdict}.
+                            Override {taskOutcome.override.override_verdict}
+                            {taskOutcome.override.reviewer ? ` by ${taskOutcome.override.reviewer}` : ""}
+                            {taskOutcome.override.timestamp ? ` at ${taskOutcome.override.timestamp}` : ""}.
+                            {taskOutcome.override.reason ? ` Reason: ${taskOutcome.override.reason}` : " Reason required when QC Passed vs computed FAIL."}
+                          </p>
+                        )}
+                      </div>
+                    )}
 
                     <select
                       className="bdqc-input"
@@ -1216,23 +1313,23 @@ function QCReviewStyles() {
     <style>{`
       .bdqc-page {
         --qc-bg: transparent;
-        --qc-surface: #081426;
-        --qc-surface-2: #0d1b31;
-        --qc-surface-3: #102340;
-        --qc-card: #0b1830;
-        --qc-card-2: #0e203c;
-        --qc-border: rgba(96, 165, 250, 0.16);
-        --qc-border-strong: rgba(96, 165, 250, 0.28);
-        --qc-text: #e8f1ff;
-        --qc-text-strong: #ffffff;
-        --qc-muted: #98abc9;
-        --qc-muted-2: #c9d7ee;
-        --qc-accent: #55a3ff;
+        --qc-surface: var(--bd-card-bg, #081426);
+        --qc-surface-2: var(--bd-card-bg-2, #0d1b31);
+        --qc-surface-3: var(--bd-card-bg-2, #102340);
+        --qc-card: var(--bd-card-bg, #0b1830);
+        --qc-card-2: var(--bd-card-bg-2, #0e203c);
+        --qc-border: var(--bd-border, rgba(96, 165, 250, 0.16));
+        --qc-border-strong: var(--bd-border, rgba(96, 165, 250, 0.28));
+        --qc-text: var(--bd-text, #e8f1ff);
+        --qc-text-strong: var(--bd-text-strong, #ffffff);
+        --qc-muted: var(--bd-muted, #98abc9);
+        --qc-muted-2: var(--bd-muted, #c9d7ee);
+        --qc-accent: var(--bd-link, #55a3ff);
         --qc-accent-soft: rgba(85, 163, 255, 0.14);
-        --qc-input-bg: rgba(8, 20, 38, 0.86);
-        --qc-summary-bg: #0d1d37;
+        --qc-input-bg: var(--bd-input-bg, rgba(8, 20, 38, 0.86));
+        --qc-summary-bg: var(--bd-card-bg-2, #0d1d37);
         --qc-progress-track: rgba(148, 163, 184, 0.18);
-        --qc-shadow: 0 16px 34px rgba(0, 0, 0, 0.28);
+        --qc-shadow: var(--bd-shadow, 0 16px 34px rgba(0, 0, 0, 0.28));
         width: 100%;
         box-sizing: border-box;
         padding: 18px 20px 28px;
@@ -1550,6 +1647,42 @@ function QCReviewStyles() {
 
       .bdqc-meta-grid b {
         color: var(--qc-muted-2);
+      }
+
+      .bdqc-task-outcome {
+        margin-top: 12px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid var(--qc-border-strong);
+        background: var(--qc-surface-2);
+      }
+
+      .bdqc-task-outcome span {
+        display: block;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        color: var(--qc-muted);
+      }
+
+      .bdqc-task-outcome strong {
+        color: var(--qc-text-strong);
+      }
+
+      .bdqc-computed-box {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--qc-border);
+        background: var(--qc-summary-bg);
+        font-size: 13px;
+      }
+
+      .bdqc-computed-box p {
+        margin: 0 0 6px;
       }
 
       .bdqc-main-grid {

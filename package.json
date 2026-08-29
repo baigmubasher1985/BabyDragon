@@ -19,6 +19,12 @@
     "f10c2:assert-phase4b-target": "node scripts/f10c2/assertPhase4bTarget.mjs",
     "f10c2:scan-phase4b-migrations": "node scripts/f10c2/scanPhase4bMigrations.mjs",
     "f10c2:apply-phase4b": "node scripts/f10c2/applyPhase4bMigrations.mjs",
+    "f10c2:apply-cr1b": "node scripts/f10c2/applyCr1bMigrations.mjs",
+    "f10c2:apply-cr1d": "node scripts/f10c2/applyCr1dMigrations.mjs",
+    "f10c2:apply-cr1e": "node scripts/f10c2/applyCr1eMigrations.mjs",
+    "f10c2:validate-cr1e": "node scripts/f10c2/validateCr1eLive.mjs",
+    "f10c2:scan-cr1b-secrets": "node scripts/f10c2/scanCr1bSecrets.mjs",
+    "f10c2:validate-cr1b": "node scripts/f10c2/validateCr1bLive.mjs",
     "f10c2:cleanup-phase4b": "node scripts/f10c2/cleanupPhase4bSynthetic.mjs",
     "f10c2:validate-operational-bootstrap": "node scripts/f10c2/validateOperationalBootstrap.mjs",
     "f10c2:bootstrap-phase4b": "node scripts/f10c2/bootstrapDisposableOperationalSchema.mjs"

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabaseClient";
+import { sanitizeLoginError } from "./auth/sanitizeLoginError";
 import AdminDashboard from "./AdminDashboard";
 import FEDashboard from "./FEDashboard";
 import "leaflet/dist/leaflet.css";
@@ -74,11 +75,18 @@ export default function App() {
 	  return <MobileApp />;
 	}
 
+  return <AppAuthenticated />;
+}
+
+function AppAuthenticated() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState("");
   const [offlineMode, setOfflineMode] = useState(() => !navigator.onLine);
   const [bootMessage, setBootMessage] = useState("Loading BabyDragon...");
 
@@ -133,7 +141,7 @@ export default function App() {
         return cached.role;
       }
 
-      if (!quiet) alert("Failed to fetch role");
+      if (!quiet) setLoginError(sanitizeLoginError(error.message || "No role found for this user."));
       setLoading(false);
       return null;
     }
@@ -185,10 +193,34 @@ export default function App() {
 
     bootBabyDragon();
 
+    function rejectStaleAuthenticatedView() {
+      supabase.auth
+        .getSession()
+        .then(({ data }) => {
+          if (!mounted) return;
+          if (data?.session?.user) return;
+          clearCachedAuth();
+          setUser(null);
+          setRole(null);
+          setLoginBusy(false);
+        })
+        .catch(() => {
+          if (!mounted) return;
+          clearCachedAuth();
+          setUser(null);
+          setRole(null);
+          setLoginBusy(false);
+        });
+    }
+
+    window.addEventListener("popstate", rejectStaleAuthenticatedView);
+    window.addEventListener("pageshow", rejectStaleAuthenticatedView);
+
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       if (!mounted) return;
 
       if (session?.user) {
+        setLoginBusy(false);
         setUser(session.user);
         fetchRole(session.user.id, {
           userForCache: session.user,
@@ -214,6 +246,8 @@ export default function App() {
       mounted = false;
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("popstate", rejectStaleAuthenticatedView);
+      window.removeEventListener("pageshow", rejectStaleAuthenticatedView);
       sub?.subscription?.unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -221,6 +255,8 @@ export default function App() {
 
   async function handleLogin(e) {
     e.preventDefault();
+    setLoginError("");
+    setLoginBusy(true);
     setLoading(true);
 
     try {
@@ -234,17 +270,24 @@ export default function App() {
       );
 
       if (error) {
-        alert(error.message);
+        setLoginError(sanitizeLoginError(error));
         setLoading(false);
+        setLoginBusy(false);
       }
     } catch (error) {
-      alert(error.message || "Login failed.");
+      setLoginError(sanitizeLoginError(error));
       setLoading(false);
+      setLoginBusy(false);
     }
   }
 
   async function handleLogout() {
     clearCachedAuth();
+    setLoginError("");
+    setLoginBusy(false);
+    setEmail("");
+    setPassword("");
+    setShowPassword(false);
 
     try {
       await supabase.auth.signOut();
@@ -255,37 +298,78 @@ export default function App() {
     setUser(null);
     setRole(null);
     setOfflineMode(!navigator.onLine);
+
+    try {
+      window.history.replaceState({ babydragonAuth: "signed_out" }, "", window.location.pathname || "/");
+    } catch (error) {
+      console.warn("Unable to replace login history after logout:", error);
+    }
   }
 
   if (!user) {
     return (
       <div className="login-page">
         <form className="login-card" onSubmit={handleLogin}>
-          <div className="login-logo">🐉</div>
+          <div className="login-logo" aria-hidden="true">🐉</div>
           <h1>BabyDragon</h1>
-          <p>RF Drive Test Management Platform</p>
+          <p className="login-subtitle">RF Drive Test Management Platform</p>
 
           {!navigator.onLine && (
-            <p style={{ color: "#f59e0b", fontWeight: 800 }}>
+            <p className="login-offline">
               Offline. Login needs internet unless a saved session is available.
             </p>
           )}
 
-          <input
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          {loginError ? (
+            <p className="login-error" role="alert">
+              {loginError}
+            </p>
+          ) : null}
 
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <div className="login-field">
+            <label htmlFor="bd-login-email">Email</label>
+            <input
+              id="bd-login-email"
+              type="email"
+              autoComplete="username"
+              placeholder="Email"
+              value={email}
+              disabled={loginBusy}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (loginError) setLoginError("");
+              }}
+            />
+          </div>
 
-          <button type="submit" disabled={loading && !!email && !!password}>
-            {loading ? "Loading..." : "Login"}
+          <div className="login-field">
+            <label htmlFor="bd-login-password">Password</label>
+            <div className="login-password-row">
+              <input
+                id="bd-login-password"
+                type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
+                placeholder="Password"
+                value={password}
+                disabled={loginBusy}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (loginError) setLoginError("");
+                }}
+              />
+              <button
+                type="button"
+                className="login-password-toggle"
+                onClick={() => setShowPassword((current) => !current)}
+                disabled={loginBusy}
+              >
+                {showPassword ? "Hide" : "Show"}
+              </button>
+            </div>
+          </div>
+
+          <button type="submit" className="login-submit" disabled={loginBusy}>
+            {loginBusy ? "Signing in..." : "Login"}
           </button>
         </form>
       </div>

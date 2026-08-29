@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadDisposableEnv, parseEnvFile } from './loadDisposableEnv.mjs'
 import { buildDisposableSqlSessionPreamble } from '../../src/lib/phase4bSqlSessionGuard.js'
-import { listPhase4bApplyPlan, PHASE4A_NEVER_EXECUTE } from './phase4bApplyPlan.mjs'
+import { listPhase4bApplyPlan, PHASE4A_NEVER_EXECUTE, CR1_NEVER_RUN, assertNo214InApplyList } from './phase4bApplyPlan.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const ROOT = path.resolve(path.dirname(__filename), '../..')
@@ -15,8 +15,9 @@ const wantExecute = process.argv.includes('--execute')
 
 function main() {
   const plan = listPhase4bApplyPlan()
-  if (plan.stages.some((s) => PHASE4A_NEVER_EXECUTE.includes(s.slug) || s.slug.startsWith('207_'))) {
-    console.error('BLOCKED: 207 must never be executable')
+  assertNo214InApplyList(plan.stages.map((s) => s.slug), 'applyPhase4bMigrations')
+  if (plan.stages.some((s) => PHASE4A_NEVER_EXECUTE.includes(s.slug) || CR1_NEVER_RUN.includes(s.slug) || s.slug.startsWith('207_') || s.slug.startsWith('214_'))) {
+    console.error('BLOCKED: 207/214 must never be executable')
     process.exit(2)
   }
 

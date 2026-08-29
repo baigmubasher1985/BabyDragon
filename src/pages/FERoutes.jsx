@@ -11,6 +11,14 @@ import "leaflet/dist/leaflet.css";
 
 import { supabase } from "../lib/supabaseClient";
 import CellSectorLayer from "../components/maps/CellSectorLayer";
+import { MapInvalidateSize, TileLoadGuard } from "../components/maps/BasemapTileGuard";
+import {
+  FE_MAP_NO_ROUTE_COPY,
+  FE_MAP_TILES_UNAVAILABLE,
+  hasValidGridGeometry,
+  hasValidRouteGeometry,
+  resolveFeMapRenderState,
+} from "../components/maps/feMapRenderState";
 import {
   exportRouteKml,
   exportRouteHtml,
@@ -34,6 +42,9 @@ export default function FERoutes() {
 
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [showGridBoundary, setShowGridBoundary] = useState(false);
+  const [tilesFailed, setTilesFailed] = useState(false);
+  const [tileRetryKey, setTileRetryKey] = useState(0);
 
   useEffect(() => {
     loadFeRoutes();
@@ -296,6 +307,30 @@ export default function FERoutes() {
     return parseRouteGeojson(selectedRow?.route?.route_geojson);
   }, [selectedRow]);
 
+  const hasSelectedRouteGeometry = hasValidRouteGeometry(selectedRouteGeojson);
+  const hasSelectedGridGeometry = hasValidGridGeometry(selectedGridFeature?.geometry || selectedRow?.grid?.geometry);
+
+  const mapRenderState = useMemo(() => {
+    return resolveFeMapRenderState({
+      selected: Boolean(selectedRow),
+      hasRouteGeometry: hasSelectedRouteGeometry,
+      hasGridGeometry: hasSelectedGridGeometry,
+      hasNavigationDestination: Boolean(selectedRow && getNavigationDestination(selectedRow)),
+      tilesFailed,
+      viewGridBoundary: showGridBoundary,
+      gridLabel: selectedRow ? getGridLabel(selectedRow.grid) : "",
+      gridId: selectedRow?.grid
+        ? String(selectedRow.grid.grid_id || selectedRow.grid.id || "")
+        : "",
+    });
+  }, [
+    hasSelectedGridGeometry,
+    hasSelectedRouteGeometry,
+    selectedRow,
+    showGridBoundary,
+    tilesFailed,
+  ]);
+
   const selectedRouteSummary = useMemo(() => {
     if (!selectedRow) return "Click View Map from your assigned route list.";
 
@@ -326,6 +361,8 @@ export default function FERoutes() {
   }
 
   function viewGrid(row) {
+    setShowGridBoundary(false);
+    setTilesFailed(false);
     setSelectedGridId(row.grid.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -391,13 +428,21 @@ export default function FERoutes() {
 
             <p style={styles.smallText}>
               {selectedRow
-                ? `${selectedRow.route?.route_name || "No saved route"}`
+                ? hasSelectedRouteGeometry
+                  ? selectedRow.route?.route_name || "Saved route"
+                  : FE_MAP_NO_ROUTE_COPY
                 : "Click View Map from your assigned route list."}
             </p>
+            {selectedRow ? (
+              <p style={styles.smallText}>
+                Grid: {mapRenderState.gridLabel || "Unknown"}
+                {mapRenderState.gridId ? ` • ID ${mapRenderState.gridId}` : ""}
+              </p>
+            ) : null}
           </div>
 
           <div style={styles.mapHeaderActions}>
-            {selectedRow && (
+            {mapRenderState.showNavigate && (
               <button
                 type="button"
                 onClick={() => navigateToGrid(selectedRow)}
@@ -408,74 +453,132 @@ export default function FERoutes() {
             )}
 
             <span style={styles.mapBadge}>
-              {selectedRow ? "1 grid on map" : "0 grids"}
+              {mapRenderState.showMap
+                ? `${mapRenderState.drawGrid ? 1 : 0} grid on map`
+                : "Map hidden"}
             </span>
           </div>
         </div>
 
-        <div style={styles.mapBox}>
-          <MapContainer
-            center={DEFAULT_CENTER}
-            zoom={DEFAULT_ZOOM}
-            style={styles.map}
-            scrollWheelZoom
-          >
-            <TileLayer
-              attribution="&copy; OpenStreetMap contributors"
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
+        {mapRenderState.showMap ? (
+          <div style={styles.mapBox} className="bd-fe-basemap">
+            <MapContainer
+              key={`fe-basemap-${selectedGridId || "none"}-${tileRetryKey}`}
+              center={DEFAULT_CENTER}
+              zoom={DEFAULT_ZOOM}
+              style={styles.map}
+              className="bd-fe-basemap"
+              scrollWheelZoom
+            >
+              <TileLayer
+                attribution="&copy; OpenStreetMap contributors"
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
 
-            <MapBoundsController
-              gridFeature={selectedGridFeature}
-              routeGeojson={selectedRouteGeojson}
-            />
+              <MapInvalidateSize extraKey={`${selectedGridId}-${tileRetryKey}`} />
+              <TileLoadGuard
+                onStatus={(status) => {
+                  if (status?.failed) setTilesFailed(true);
+                  if (status && status.failed === false) setTilesFailed(false);
+                }}
+              />
 
-            <CellSectorLayer
-              market={selectedRow?.grid ? getGridMarket(selectedRow.grid) : ""}
-              showSites
-              showSectors
-              maxRecords={1200}
-              sectorRadiusM={550}
-            />
+              <MapBoundsController
+                gridFeature={mapRenderState.drawGrid ? selectedGridFeature : null}
+                routeGeojson={mapRenderState.drawRoute ? selectedRouteGeojson : null}
+              />
 
-            {selectedGridFeature && (
-              <GeoJSON
-                key={`fe-grid-${selectedGridId}`}
-                data={selectedGridFeature}
-                style={() => ({
-                  color: "#2563EB",
-                  weight: 4,
-                  fillColor: "#60A5FA",
-                  fillOpacity: 0.22,
-                })}
-              >
-                <Popup>
-                  <div style={{ minWidth: 160 }}>
-                    <strong>{getGridLabel(selectedRow.grid)}</strong>
-                    <br />
-                    <span>Market: {getGridMarket(selectedRow.grid)}</span>
-                    <br />
-                    <span>Status: {selectedRow.grid.status || "Available"}</span>
-                  </div>
-                </Popup>
-              </GeoJSON>
+              <CellSectorLayer
+                market={selectedRow?.grid ? getGridMarket(selectedRow.grid) : ""}
+                showSites
+                showSectors
+                maxRecords={1200}
+                sectorRadiusM={550}
+              />
+
+              {mapRenderState.drawGrid && selectedGridFeature && (
+                <GeoJSON
+                  key={`fe-grid-${selectedGridId}`}
+                  data={selectedGridFeature}
+                  style={() => ({
+                    color: "#2563EB",
+                    weight: 4,
+                    fillColor: "#60A5FA",
+                    fillOpacity: 0.22,
+                  })}
+                >
+                  <Popup>
+                    <div style={{ minWidth: 160 }}>
+                      <strong>{getGridLabel(selectedRow.grid)}</strong>
+                      <br />
+                      <span>Market: {getGridMarket(selectedRow.grid)}</span>
+                      <br />
+                      <span>Status: {selectedRow.grid.status || "Available"}</span>
+                    </div>
+                  </Popup>
+                </GeoJSON>
+              )}
+
+              {mapRenderState.drawRoute && selectedRouteGeojson && (
+                <RouteLineLayer geojson={selectedRouteGeojson} />
+              )}
+            </MapContainer>
+          </div>
+        ) : (
+          <div className="bd-fe-map-empty" style={styles.emptyMapPanel}>
+            <h4>
+              {mapRenderState.mode === "tile_failure"
+                ? FE_MAP_TILES_UNAVAILABLE
+                : mapRenderState.emptyMessage}
+            </h4>
+            {selectedRow ? (
+              <p>
+                Grid: {mapRenderState.gridLabel || "Unknown"}
+                {mapRenderState.gridId ? ` • ID ${mapRenderState.gridId}` : ""}
+              </p>
+            ) : (
+              <p>{mapRenderState.emptyMessage}</p>
             )}
-
-            {selectedRouteGeojson && (
-              <RouteLineLayer geojson={selectedRouteGeojson} />
-            )}
-          </MapContainer>
-        </div>
+            <div className="bd-fe-map-empty-actions">
+              {mapRenderState.showNavigate ? (
+                <button type="button" onClick={() => navigateToGrid(selectedRow)} style={styles.navigateButton}>
+                  Navigate to Grid
+                </button>
+              ) : null}
+              {mapRenderState.showViewGridBoundary ? (
+                <button
+                  type="button"
+                  onClick={() => setShowGridBoundary(true)}
+                  style={styles.viewButton}
+                >
+                  View Grid Boundary
+                </button>
+              ) : null}
+              {mapRenderState.showRetry ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTilesFailed(false);
+                    setTileRetryKey((value) => value + 1);
+                  }}
+                  style={styles.viewButton}
+                >
+                  Retry Map
+                </button>
+              ) : null}
+            </div>
+          </div>
+        )}
 
         {selectedRow && (
           <div
             style={{
               ...styles.routeSummaryBox,
-              ...(selectedRow.route ? styles.routeSummaryGood : styles.routeSummaryWarning),
+              ...(hasSelectedRouteGeometry ? styles.routeSummaryGood : styles.routeSummaryWarning),
             }}
           >
-            <b>{selectedRow.route ? "Route Ready" : "Missing Route"}</b>
-            <span>{selectedRouteSummary}</span>
+            <b>{hasSelectedRouteGeometry ? "Route Ready" : "Missing Route"}</b>
+            <span>{hasSelectedRouteGeometry ? selectedRouteSummary : FE_MAP_NO_ROUTE_COPY}</span>
           </div>
         )}
       </div>
@@ -635,6 +738,7 @@ function MapBoundsController({ gridFeature, routeGeojson }) {
     const bounds = group.getBounds();
 
     if (bounds.isValid()) {
+      map.invalidateSize(true);
       map.fitBounds(bounds, {
         padding: [28, 28],
         maxZoom: 17,
@@ -1136,10 +1240,17 @@ const styles = {
 
   mapBox: {
     height: "420px",
+    minHeight: "320px",
     borderRadius: "12px",
     overflow: "hidden",
     border: "1px solid rgba(255,255,255,0.12)",
-    background: "#0b1220",
+    background: "#e8f1f7",
+  },
+
+  emptyMapPanel: {
+    minHeight: "180px",
+    borderRadius: "12px",
+    padding: "16px",
   },
 
   map: {

@@ -36,6 +36,9 @@ function createFakeSupabase({
     if (name === 'finalize_field_test_run') {
       return { data: { id: RUN_ID, run_status: 'ready' }, error: null }
     }
+    if (name === 'ingest_field_test_canonical_result') {
+      return { data: { id: RUN_ID, client_run_id: CLIENT_RUN, run_status: 'ready' }, error: null }
+    }
     return { data: null, error: { message: `unexpected rpc ${name}` } }
   })
 
@@ -129,6 +132,23 @@ describe('f10c2 phase4 — supabase result transport', () => {
     const finalized = await transport.finalizeResult({ fieldTestRunId: RUN_ID })
     expect(finalized.run.finalized).toBe(true)
     expect(finalized.run.status).toBe('uploaded')
+  })
+
+  it('coerces epoch-millis started_at_device to ISO before submit_field_test_run', async () => {
+    const supabase = createFakeSupabase()
+    const transport = createSupabaseResultTransport({ supabase, readArtifactBody: async () => 'x' })
+    await transport.registerResult({
+      client_run_id: CLIENT_RUN,
+      task_id: 'task-1',
+      project_id: 'proj-1',
+      scenario_type: 'native_http',
+      started_at_device: 1787694437783,
+      ended_at_device: 1787694455617,
+    })
+    const args = supabase.__rpc.mock.calls.find((call) => call[0] === 'submit_field_test_run')[1]
+    expect(args.p_started_at_device).toBe('2026-08-25T21:47:17.783Z')
+    expect(args.p_ended_at_device).toBe('2026-08-25T21:47:35.617Z')
+    expect(String(args.p_started_at_device)).not.toMatch(/^\d{13}$/)
   })
 
   it('treats storage already-exists as idempotent success', async () => {

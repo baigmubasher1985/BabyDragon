@@ -4,7 +4,7 @@
  * Mock transport remains the default; this module is selected only by explicit flag.
  */
 
-import { RESULT_ARTIFACTS_BUCKET } from "../reports/serverSubmissionManifest.js";
+import { RESULT_ARTIFACTS_BUCKET, coerceDeviceTimestamp } from "../reports/serverSubmissionManifest.js";
 import { createSupabaseArtifactStorageProvider } from "../../../storage/providers/supabaseArtifactStorageProvider.js";
 
 export const SUPABASE_TRANSPORT_KIND = "supabase_f10c2_phase4";
@@ -105,8 +105,8 @@ export function createSupabaseResultTransport(options = {}) {
       p_scenario_type: manifest.scenario_type,
       p_scenario_version: manifest.scenario_version || null,
       p_run_status: "submitted",
-      p_started_at_device: manifest.started_at_device || null,
-      p_ended_at_device: manifest.ended_at_device || null,
+      p_started_at_device: coerceDeviceTimestamp(manifest.started_at_device),
+      p_ended_at_device: coerceDeviceTimestamp(manifest.ended_at_device),
       p_device_model: manifest.device?.model || null,
       p_app_version: manifest.device?.app_version || null,
       p_build_number: manifest.device?.build_number || null,
@@ -235,7 +235,7 @@ export function createSupabaseResultTransport(options = {}) {
     return { ok: true, reason: row?.upload_status === "complete" ? "completed" : "ok", artifact: row };
   }
 
-  async function finalizeResult({ fieldTestRunId } = {}) {
+  async function finalizeResult({ fieldTestRunId, payload = null } = {}) {
     await requireSession();
     if (!fieldTestRunId) throw err("invalid_manifest", "run_not_found");
     const { data, error } = await supabase.rpc("finalize_field_test_run", {
@@ -243,6 +243,33 @@ export function createSupabaseResultTransport(options = {}) {
     });
     if (error) throw rpcError(error, "finalize_temporary");
     const row = Array.isArray(data) ? data[0] : data;
+
+    if (payload) {
+      const { extractCanonicalMeasurements } = await import("../../../acceptance/canonicalIngest.js");
+      const extracted = extractCanonicalMeasurements(payload);
+      const ingestPayload = {
+        package_identity: extracted.identity.package_identity,
+        client_package_identity: {
+          client_run_id: extracted.identity.client_run_id,
+          package_identity: extracted.identity.package_identity,
+        },
+        iterations: extracted.iterations,
+        call_events: extracted.call_events,
+        requested_iterations: payload.manifest?.data_summary?.scenarios?.[0]?.attempt_counts?.planned ?? extracted.iterations.length,
+        attempted_iterations: extracted.iterations.length,
+        completed_iterations: extracted.iterations.filter((i) => i.status === "completed").length,
+        failed_iterations: extracted.iterations.filter((i) => i.status === "failed").length,
+        upload_state: "uploaded",
+        synthetic_call_events: Boolean(payload.synthetic_call_events),
+      };
+      const ingest = await supabase.rpc("ingest_field_test_canonical_result", {
+        p_run_id: fieldTestRunId,
+        p_idempotency_key: extracted.identity.idempotency_key,
+        p_payload: ingestPayload,
+      });
+      if (ingest.error) throw rpcError(ingest.error, "invalid_manifest");
+    }
+
     return { ok: true, reason: "finalized", run: mapRun(row) };
   }
 

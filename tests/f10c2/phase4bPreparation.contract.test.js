@@ -26,10 +26,10 @@ function read(rel) {
 }
 
 describe('f10c2 phase4b-p — preparation package', () => {
-  it('lists 39 executable drafts starting with bootstrap 000, ending with 209, and never includes 207, 009, 010, 012, 013, or 112', () => {
+  it('lists 43 executable drafts starting with bootstrap 000, including 209 then CR1-B 210-213, and never includes 207, 009, 010, 012, 013, or 112', () => {
     const plan = listPhase4bApplyPlan()
     const slugs = plan.stages.map((s) => s.slug)
-    expect(plan.stages).toHaveLength(39)
+    expect(plan.stages).toHaveLength(43)
     expect(slugs[0]).toBe('000_disposable_operational_schema')
     expect(plan.stages[0].stage).toBe('operational-bootstrap')
     expect(slugs).not.toContain('207_rls_tenant_storage_assumptions')
@@ -49,13 +49,18 @@ describe('f10c2 phase4b-p — preparation package', () => {
     expect(PHASE4A_NEVER_EXECUTE).toEqual(['207_rls_tenant_storage_assumptions'])
     expect(PHASE4B_R1_APPLY).toEqual(['208_phase4b_validation_remediation'])
     expect(PHASE4B_U_R1_APPLY).toEqual(['209_disposable_operational_profile_task_rls_remediation'])
-    expect(slugs.at(-2)).toBe('208_phase4b_validation_remediation')
-    expect(slugs.at(-1)).toBe('209_disposable_operational_profile_task_rls_remediation')
+    expect(slugs).toContain('209_disposable_operational_profile_task_rls_remediation')
+    expect(slugs.at(-4)).toBe('210_cr1b_canonical_ingestion_schema')
+    expect(slugs.at(-1)).toBe('213_cr1b_rls_grants')
     expect(F10C1I_SKIP.join(',')).toContain('009_rls_profiles')
     expect(F10C2_SKIP).toEqual(['112_result_artifacts_storage_contract'])
     const files = assertPhase4bPlanFilesExist()
     expect(files.missing).toEqual([])
     expect(files.leaked207).toEqual([])
+    expect(files.leaked214).toEqual([])
+    expect(files.archiveMissing).toBe(false)
+    expect(slugs).not.toContain('214_cr1b_acceptance_applicability')
+    expect(listPhase4bApplyPlan().neverExecute).toContain('214_cr1b_acceptance_applicability')
   })
 
   it('keeps the Phase 4 apply plan free of 201–207', () => {

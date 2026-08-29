@@ -7,6 +7,18 @@
     <title>babydragon</title>
   </head>
   <body>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('babyDragonTheme') || 'night';
+          var day = t === 'day';
+          document.documentElement.classList.toggle('bd-theme-day', day);
+          document.documentElement.classList.toggle('bd-theme-night', !day);
+          document.body.classList.toggle('bd-theme-day', day);
+          document.body.classList.toggle('bd-theme-night', !day);
+        } catch (e) {}
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
