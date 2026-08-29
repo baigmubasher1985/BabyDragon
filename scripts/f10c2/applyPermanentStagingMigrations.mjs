@@ -7,7 +7,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   AUTHORIZED_STAGING_API_HOST,
   AUTHORIZED_STAGING_POOLER_USER,
@@ -51,6 +51,10 @@ const STAGING_CONFIRMED_SET_RE = /\bSET\s+LOCAL\s+app\.f10c2_staging_confirmed\b
 export const SQL_SENT = false
 export const SQL_REWRITE_FORBIDDEN = true
 export const APPLY_LEDGER_REL = '.permanent-staging-apply-ledger.json'
+export const FORTY_FIVE_EXECUTION_PACKAGE_FILES = Object.freeze([
+  ...PERMANENT_STAGING_FORWARD_PATHS,
+  HASH_MANIFEST_REL,
+])
 
 function stripSqlComments(text) {
   return String(text || '').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/--[^\n]*/g, ' ')
@@ -75,10 +79,81 @@ export function loadApplyLedger(cwd = ROOT) {
       exists: true,
       applied,
       targetRef: parsed.targetRef || null,
+      targetName: parsed.targetName || null,
       path: APPLY_LEDGER_REL,
     }
   } catch {
     return { exists: true, corrupt: true, applied: [], path: APPLY_LEDGER_REL }
+  }
+}
+
+export function isCompleteVerifiedAllowlist(ledger, numbers) {
+  const applied = Array.isArray(ledger?.applied) ? ledger.applied : []
+  if (!Array.isArray(numbers) || numbers.length === 0) return false
+  if (applied.length !== numbers.length) return false
+  return numbers.every((n) => {
+    const row = applied.find((a) => String(a.number) === String(n))
+    return Boolean(row && row.verified === true)
+  })
+}
+
+const LEDGER_SECRET_RE = [
+  /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+  /postgres(?:ql)?:\/\/[^\s:]+:[^\s@]+@/i,
+  /sb_(?:secret|publishable)_[A-Za-z0-9]+/,
+]
+
+export function validateApplyLedgerSnapshot(ledger, options = {}) {
+  const numbers = options.numbers || [...EXPECTED_ALLOWLIST_NUMBERS]
+  const hashesByPath = options.hashesByPath || {}
+  const reasons = []
+  if (!ledger || ledger.exists !== true) {
+    return { ok: false, state: 'absent', reasons: ['apply ledger is absent'] }
+  }
+  if (ledger.corrupt) {
+    return { ok: false, state: 'corrupt', reasons: ['apply ledger is corrupt'] }
+  }
+  const blob = JSON.stringify(ledger)
+  if (ledger.targetRef && ledger.targetRef !== AUTHORIZED_STAGING_PROJECT_REF) {
+    reasons.push('ledger targetRef is not the authorized staging ref')
+  }
+  if (ledger.targetName && ledger.targetName !== AUTHORIZED_STAGING_PROJECT_NAME) {
+    reasons.push('ledger targetName is not babydragon-permanent-staging')
+  }
+  if (blob.toLowerCase().includes(DENIED_PRODUCTION_REF_PREFIX)) {
+    reasons.push('ledger contains production prefix')
+  }
+  if (blob.includes(DENIED_DISPOSABLE_PROJECT_REF)) {
+    reasons.push('ledger contains disposable identity')
+  }
+  for (const re of LEDGER_SECRET_RE) {
+    if (re.test(blob)) reasons.push('ledger contains a credential-shaped value')
+  }
+  const applied = Array.isArray(ledger.applied) ? ledger.applied : []
+  if (applied.length !== numbers.length) {
+    reasons.push(`ledger applied count is ${applied.length}, expected ${numbers.length}`)
+  }
+  const appliedNumbers = applied.map((row) => String(row.number))
+  if (JSON.stringify(appliedNumbers) !== JSON.stringify(numbers)) {
+    reasons.push('ledger applied numbers are not the exact 45-path allowlist')
+  }
+  for (const row of applied) {
+    if (row.verified !== true) reasons.push(`ledger entry ${row.number} is not verified`)
+    if (typeof row.sha256 !== 'string' || row.sha256.length !== 64) {
+      reasons.push(`ledger entry ${row.number} is missing a reviewed sha256`)
+    }
+    const expectedHash = hashesByPath[row.path]
+    if (expectedHash && row.sha256 !== expectedHash) {
+      reasons.push(`ledger entry ${row.number} sha256 does not match the reviewed allowlist hash`)
+    }
+  }
+  const complete = isCompleteVerifiedAllowlist(ledger, numbers)
+  return {
+    ok: reasons.length === 0 && complete,
+    state: complete ? 'complete' : 'partial',
+    reasons,
+    appliedCount: applied.length,
+    verifiedCount: applied.filter((row) => row.verified === true).length,
   }
 }
 
@@ -91,8 +166,19 @@ export function evaluateResumePolicy({ ledger, resumeFrom, numbers }) {
     const i = numbers.indexOf(n)
     return i >= 0 ? numbers.slice(i + 1) : []
   }
+  const complete = isCompleteVerifiedAllowlist(ledger, numbers)
 
   if (!resumeFrom) {
+    if (complete) {
+      reasons.push(`apply ledger already has all ${numbers.length} verified migrations — refuse re-apply`)
+      return {
+        ok: false,
+        reasons,
+        startNumber: null,
+        requireEmptyProof: false,
+        complete: true,
+      }
+    }
     if (appliedNumbers.length) {
       reasons.push('partial apply ledger exists — pass --resume-from <next pending number>')
     }
@@ -101,6 +187,7 @@ export function evaluateResumePolicy({ ledger, resumeFrom, numbers }) {
       reasons,
       startNumber: numbers[0] || null,
       requireEmptyProof: true,
+      complete: false,
     }
   }
 
@@ -129,6 +216,7 @@ export function evaluateResumePolicy({ ledger, resumeFrom, numbers }) {
     reasons,
     startNumber: resumeFrom,
     requireEmptyProof: startIdx === 0,
+    complete: false,
   }
 }
 
@@ -189,12 +277,15 @@ export function runPermanentStagingDryRun(options = {}) {
     cwd,
     git: options.git,
     requireSqlApprovalNo,
+    packageFiles: options.packageFiles || FORTY_FIVE_EXECUTION_PACKAGE_FILES,
+    requirePackageClean: options.requirePackageClean === true,
+    approvedGitSha: options.approvedGitSha,
   })
 
   const plan = listPermanentStagingAllowlist()
   const files = assertPermanentStagingPlanFilesExist(cwd)
   const hashCheck = assertAllowlistHashesMatch(cwd)
-  const applyLedger = loadApplyLedger(cwd)
+  const applyLedger = options.applyLedger || loadApplyLedger(cwd)
   const resumePolicy = evaluateResumePolicy({
     ledger: applyLedger,
     resumeFrom: flags.resumeFrom,
@@ -469,6 +560,7 @@ export async function runPermanentStagingExecute(options = {}) {
     ...options,
     argv: flags.resumeFrom ? ['--resume-from', flags.resumeFrom] : [],
     requireSqlApprovalNo: false,
+    requirePackageClean: options.requirePackageClean !== false,
     writeLedger: false,
   })
   const blockers = []
@@ -478,7 +570,7 @@ export async function runPermanentStagingExecute(options = {}) {
   if (!prepared.gates.ok) blockers.push(...prepared.gates.reasons.map((r) => `gate: ${r}`))
   if (!prepared.plan.ok) blockers.push(...prepared.plan.reasons.map((r) => `allowlist: ${r}`))
 
-  const applyLedger = loadApplyLedger(cwd)
+  const applyLedger = options.applyLedger || loadApplyLedger(cwd)
   const numbers = prepared.plan.entries.map((e) => e.number)
   const resume = evaluateResumePolicy({
     ledger: applyLedger,
@@ -594,8 +686,7 @@ export async function runPermanentStagingExecute(options = {}) {
   }
 }
 
-function main() {
-  const result = runPermanentStagingDryRun({ cwd: ROOT, argv: process.argv.slice(2) })
+function printDryRun(result) {
   const { ledger } = result
   console.log('CR1-E permanent-staging wrapper (fail-closed; no secrets printed)')
   console.log(`- project name expected: ${AUTHORIZED_STAGING_PROJECT_NAME}`)
@@ -606,6 +697,7 @@ function main() {
   console.log(`- connection method: ${ledger.gates.flags.connectionMethod}`)
   console.log(`- SQL execution approved: ${ledger.gates.flags.sqlExecutionApproved}`)
   console.log(`- git branch match: ${ledger.gates.git.ok ? 'yes' : 'NO'}`)
+  console.log(`- git remote-tracking in sync: ${ledger.gates.git.inSyncWithRemote ? 'yes' : 'NO'}`)
   console.log(`- allowlist count: ${ledger.allowlist.count}`)
   console.log(`- allowlist numbers: ${ledger.allowlist.numbers.join(', ')}`)
   console.log(`- never-run excluded: ${ledger.allowlist.neverExecuteNumbers.join(', ')}`)
@@ -634,11 +726,29 @@ function main() {
   process.exitCode = 0
 }
 
+async function main() {
+  const argv = process.argv.slice(2)
+  const flags = parseCliFlags(argv)
+  if (flags.wantExecute) {
+    const attachRel = 'permanentStagingExecuteAttach.local.mjs'
+    const attachAbs = path.join(path.dirname(__filename), attachRel)
+    if (!fs.existsSync(attachAbs)) {
+      console.error('STOPPED SAFELY: execute attach is missing — SQL not sent')
+      process.exitCode = 2
+      return
+    }
+    const attach = await import(pathToFileURL(attachAbs).href)
+    const report = await attach.runAttachedPermanentStagingExecute({ cwd: ROOT, argv })
+    await attach.printExecuteSummary(report)
+    process.exitCode = report.ok ? 0 : 2
+    return
+  }
+  printDryRun(runPermanentStagingDryRun({ cwd: ROOT, argv }))
+}
+
 if (process.argv[1] && path.normalize(process.argv[1]) === path.normalize(__filename)) {
-  try {
-    main()
-  } catch (error) {
+  main().catch(() => {
     console.error('STOPPED SAFELY: wrapper failed before SQL (message redacted)')
     process.exitCode = 2
-  }
+  })
 }

@@ -1,0 +1,32 @@
+{
+  "algorithm": "sha256",
+  "count": 3,
+  "expectedCount": 3,
+  "slug": "217_cr1e_staging_grant_hardening",
+  "number": "217",
+  "notIn45PathAllowlist": true,
+  "neverAutoRollback": true,
+  "files": [
+    {
+      "role": "forward",
+      "number": "217",
+      "slug": "217_cr1e_staging_grant_hardening",
+      "path": "supabase/drafts/f10c2/phase4b/forward/217_cr1e_staging_grant_hardening.sql",
+      "sha256": "792422e0e34fd86f94d2eaf9eee74e6ee5a7a798c052f48775eb8f726b332f71"
+    },
+    {
+      "role": "verification",
+      "number": "217",
+      "slug": "217_cr1e_staging_grant_hardening",
+      "path": "supabase/drafts/f10c2/phase4b/verification/217_cr1e_staging_grant_hardening.sql",
+      "sha256": "d444876a4fd2877f242c6bbb99bb4e81b0d90eaa733320c5393520db22e5b95a"
+    },
+    {
+      "role": "rollback",
+      "number": "217",
+      "slug": "217_cr1e_staging_grant_hardening",
+      "path": "supabase/drafts/f10c2/phase4b/rollback/217_cr1e_staging_grant_hardening.sql",
+      "sha256": "ced34d0511f3add8c261507ede6de19d6d02c245e7f12701e24c6dc877df08b9"
+    }
+  ]
+}

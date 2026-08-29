@@ -31,12 +31,12 @@ The SQL marker is not sufficient by itself.
 
 2. **Operational schema bootstrap 000**  
    `supabase/drafts/f10c2/phase4b/bootstrap/000_disposable_operational_schema.sql`
-3. **F10C1I:** `001–008`, `011`, `014–020`
-4. **F10C2:** `101–111`, `113–115`
-5. **Phase 4A-R1:** `201–206`
+3. **F10C1I:** `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`
+4. **F10C2:** `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`
+5. **Phase 4A-R1:** `201`, `202`, `203`, `204`, `205`, `206`
 5b. **Phase 4B-E-R1:** `208` (fresh install after 206; existing 4B-E disposable applies 208 only)
 5c. **Phase 4B-U-R1:** `209` (fresh install after 208; existing 4B-E/4B-U disposable applies 209 only). Production execution is not authorized.
-5d. **CR1-B:** `210`–`213` (`CR1B_APPLY`). Existing disposable: apply 210–213 only after 209.
+5d. **CR1-B:** `210`, `211`, `212`, `213` (`CR1B_APPLY`). Existing disposable: apply `210`, `211`, `212`, `213` only after 209.
 5e. **Skip 214.** Quarantined at `supabase/drafts/f10c2/never-run/214/`. **Never execute.** Not draft-in-forward.
 5f. **CR1-D:** `215` only (`CR1D_APPLY`). Do not reapply 215.
 5g. **CR1-E:** `216` (`CR1E_APPLY` one-shot) — **applied on disposable 2026-08-28; do not reapply.** Permanent staging cutover remains **prepare-only**. See `docs/f10c2/permanent-staging/CUTOVER_PACKAGE.md`. Do not contact a permanent database until the owner authorizes a named staging project.
@@ -69,6 +69,7 @@ Cleanup of synthetic rows or bootstrap objects is a separate later approval. Boo
 | **`207_rls_tenant_storage_assumptions`** | **NEVER EXECUTE** |
 | `214_cr1b_acceptance_applicability` | **NEVER RUN.** Quarantined at `supabase/drafts/f10c2/never-run/214/`. Not in apply path. 215 supersedes. |
 | `216_cr1e_acceptance_profile_status` | **CR1E_APPLY** one-shot; applied on disposable 2026-08-28; do not reapply |
+| `217_cr1e_staging_grant_hardening` | **CR1E_DRAFT_ONLY.** Current + future default-grant hardening. Not in any apply list. Do not execute until later SQL approval. Recovery is manual emergency only and reopens client writes; prefer a forward-fix |
 
 Phase 4 `listApplyPlan()` remains free of `201–207`.
 

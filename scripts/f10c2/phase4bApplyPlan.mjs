@@ -120,10 +120,14 @@ export const CR1E_APPLY = [
 ]
 
 /**
- * No remaining CR1-E draft-only slugs after 216 was authorized as CR1E_APPLY.
- * Keep this empty so 216 never auto-applies. 214 is CR1_NEVER_RUN, not draft-in-forward.
+ * CR1-E-R1 grant hardening is draft-only. Do not add 217 to CR1E_APPLY,
+ * listPhase4bApplyPlan(), or the permanent-staging 45-path allowlist until
+ * the owner authorizes a later SQL pass. 216 stays CR1E_APPLY one-shot.
+ * 214 is CR1_NEVER_RUN, not draft-in-forward.
  */
-export const CR1E_DRAFT_ONLY = []
+export const CR1E_DRAFT_ONLY = [
+  '217_cr1e_staging_grant_hardening',
+]
 
 /** Fresh-chain CR1 SQL after 209: 210 → 211 → 212 → 213 → skip 214 → 215 → 216 */
 export const CR1_CANONICAL_APPLY_AFTER_209 = [

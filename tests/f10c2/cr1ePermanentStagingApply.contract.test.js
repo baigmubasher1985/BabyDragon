@@ -18,20 +18,39 @@ import {
   assertPermanentStagingPlanFilesExist,
 } from '../../scripts/f10c2/permanentStagingApplyPlan.mjs'
 import {
+  APPLY_LEDGER_REL,
   evaluateResumePolicy,
+  isCompleteVerifiedAllowlist,
+  loadApplyLedger,
   parseCliFlags,
   runPermanentStagingDryRun,
   runPermanentStagingExecute,
+  validateApplyLedgerSnapshot,
 } from '../../scripts/f10c2/applyPermanentStagingMigrations.mjs'
 import {
   AUTHORIZED_STAGING_PROJECT_NAME,
   AUTHORIZED_STAGING_PROJECT_REF,
   REQUIRED_GIT_BRANCH,
-  REQUIRED_GIT_HEAD,
+  evaluatePermanentStagingGitGate,
 } from '../../scripts/f10c2/assertPermanentStagingTarget.mjs'
 
 const ROOT = process.cwd()
 const EXCLUDED = ['009', '010', '012', '013', '112', '207', '214']
+const PRE_APPLY_LEDGER = { exists: false, applied: [] }
+const FIXTURE_HEAD = 'a'.repeat(40)
+
+function fixtureGit(overrides = {}) {
+  return {
+    ok: true,
+    branch: REQUIRED_GIT_BRANCH,
+    head: FIXTURE_HEAD,
+    remoteHead: FIXTURE_HEAD,
+    staged: false,
+    packageDirty: [],
+    packageUntracked: [],
+    ...overrides,
+  }
+}
 
 function fixtureEnv(overrides = {}) {
   return {
@@ -108,7 +127,7 @@ describe('f10c2 cr1-e — permanent staging apply allowlist', () => {
       env: fixtureEnv(),
       argv: [],
       writeLedger: false,
-      git: { ok: true, branch: REQUIRED_GIT_BRANCH, head: REQUIRED_GIT_HEAD },
+      git: fixtureGit(),
     })
     expect(result.ok).toBe(true)
     expect(result.sqlSent).toBe(false)
@@ -129,7 +148,7 @@ describe('f10c2 cr1-e — permanent staging apply allowlist', () => {
       env: fixtureEnv(),
       argv: ['--execute'],
       writeLedger: false,
-      git: { ok: true, branch: REQUIRED_GIT_BRANCH, head: REQUIRED_GIT_HEAD },
+      git: fixtureGit(),
     })
     expect(executeDenied.sqlSent).toBe(false)
     expect(executeDenied.ok).toBe(false)
@@ -182,12 +201,25 @@ describe('f10c2 cr1-e — permanent staging apply allowlist', () => {
     const fresh = evaluateResumePolicy({ ledger: { applied: [] }, resumeFrom: null, numbers })
     expect(fresh.ok).toBe(true)
     expect(fresh.requireEmptyProof).toBe(true)
+    expect(fresh.complete).toBe(false)
     const partialNoFlag = evaluateResumePolicy({
       ledger: { applied: [{ number: '000', verified: true }] },
       resumeFrom: null,
       numbers,
     })
     expect(partialNoFlag.ok).toBe(false)
+    expect(partialNoFlag.reasons.some((r) => r.includes('partial apply ledger'))).toBe(true)
+    const completeRows = numbers.map((n) => ({ number: n, path: `${n}.sql`, sha256: 'a'.repeat(64), verified: true }))
+    const complete = evaluateResumePolicy({
+      ledger: { exists: true, applied: completeRows },
+      resumeFrom: null,
+      numbers,
+    })
+    expect(isCompleteVerifiedAllowlist({ applied: completeRows }, numbers)).toBe(true)
+    expect(complete.ok).toBe(false)
+    expect(complete.requireEmptyProof).toBe(false)
+    expect(complete.complete).toBe(true)
+    expect(complete.reasons.some((r) => r.includes('all 45 verified'))).toBe(true)
   })
 
   it('execute path refuses SQL without approval, empty proof, or a sender', async () => {
@@ -196,7 +228,8 @@ describe('f10c2 cr1-e — permanent staging apply allowlist', () => {
       env: fixtureEnv(),
       argv: ['--execute'],
       writeLedger: false,
-      git: { ok: true, branch: REQUIRED_GIT_BRANCH, head: REQUIRED_GIT_HEAD },
+      applyLedger: PRE_APPLY_LEDGER,
+      git: fixtureGit(),
     })
     expect(denied.sqlSent).toBe(false)
     expect(denied.ok).toBe(false)
@@ -207,7 +240,8 @@ describe('f10c2 cr1-e — permanent staging apply allowlist', () => {
       env: fixtureEnv({ F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED: 'yes' }),
       argv: ['--execute'],
       writeLedger: false,
-      git: { ok: true, branch: REQUIRED_GIT_BRANCH, head: REQUIRED_GIT_HEAD },
+      applyLedger: PRE_APPLY_LEDGER,
+      git: fixtureGit(),
       emptyDbProof: async () => ({ ok: false, performed: true, presentTables: ['profiles'] }),
       sqlSender: async () => {
         throw new Error('sql sender must not run')
@@ -222,7 +256,8 @@ describe('f10c2 cr1-e — permanent staging apply allowlist', () => {
       env: fixtureEnv({ F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED: 'yes' }),
       argv: ['--execute'],
       writeLedger: false,
-      git: { ok: true, branch: REQUIRED_GIT_BRANCH, head: REQUIRED_GIT_HEAD },
+      applyLedger: PRE_APPLY_LEDGER,
+      git: fixtureGit(),
       emptyDbProof: async () => ({ ok: true, performed: true, presentTables: [] }),
     })
     expect(noSender.sqlSent).toBe(false)
@@ -242,5 +277,111 @@ describe('f10c2 cr1-e — permanent staging apply allowlist', () => {
     expect(spawned.stdout).toContain('WAITING FOR EXPLICIT SQL EXECUTION APPROVAL')
     expect(spawned.stdout).not.toMatch(/postgres(?:ql)?:\/\/[^\s:]+:[^\s@]+@/)
     expect(spawned.stdout).not.toMatch(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
+  })
+
+  it('uses a SHA-free git-gate: branch, remote-tracking, staged, and package files', () => {
+    const assertSrc = fs.readFileSync(path.join(ROOT, 'scripts/f10c2/assertPermanentStagingTarget.mjs'), 'utf8')
+    const wrapperSrc = fs.readFileSync(path.join(ROOT, 'scripts/f10c2/applyPermanentStagingMigrations.mjs'), 'utf8')
+    expect(assertSrc).not.toMatch(/REQUIRED_GIT_HEAD/)
+    expect(assertSrc).not.toMatch(/cd0f623e/)
+    expect(assertSrc).not.toMatch(/00fbce27/)
+    expect(wrapperSrc).not.toMatch(/REQUIRED_GIT_HEAD/)
+    expect(wrapperSrc).not.toMatch(/cd0f623e/)
+    expect(wrapperSrc).not.toMatch(/00fbce27/)
+
+    const diverged = evaluatePermanentStagingGitGate({
+      git: fixtureGit({ remoteHead: 'b'.repeat(40) }),
+    })
+    expect(diverged.ok).toBe(false)
+    expect(diverged.reasons.some((r) => r.includes('remote-tracking'))).toBe(true)
+
+    const staged = evaluatePermanentStagingGitGate({ git: fixtureGit({ staged: true }) })
+    expect(staged.ok).toBe(false)
+    expect(staged.reasons.some((r) => r.includes('staged'))).toBe(true)
+
+    const dirtyPackage = evaluatePermanentStagingGitGate({
+      git: fixtureGit({ packageDirty: ['scripts/f10c2/permanentStagingAllowlist.hashes.json'] }),
+      requirePackageClean: true,
+    })
+    expect(dirtyPackage.ok).toBe(false)
+    expect(dirtyPackage.reasons.some((r) => r.includes('dirty'))).toBe(true)
+
+    const unrelatedOk = evaluatePermanentStagingGitGate({
+      git: fixtureGit(),
+      requirePackageClean: true,
+    })
+    expect(unrelatedOk.ok).toBe(true)
+
+    const shaMismatch = evaluatePermanentStagingGitGate({
+      git: fixtureGit(),
+      approvedGitSha: 'c'.repeat(40),
+    })
+    expect(shaMismatch.ok).toBe(false)
+    expect(shaMismatch.reasons.some((r) => r.includes('APPROVED_GIT_SHA'))).toBe(true)
+
+    const shaMatch = evaluatePermanentStagingGitGate({
+      git: fixtureGit(),
+      approvedGitSha: FIXTURE_HEAD,
+    })
+    expect(shaMatch.ok).toBe(true)
+
+    const stale = runPermanentStagingDryRun({
+      cwd: ROOT,
+      env: fixtureEnv(),
+      argv: [],
+      writeLedger: false,
+      applyLedger: PRE_APPLY_LEDGER,
+      git: fixtureGit({ remoteHead: 'b'.repeat(40) }),
+    })
+    expect(stale.ok).toBe(false)
+    expect(stale.sqlSent).toBe(false)
+    expect(stale.ledger.blockers.some((b) => b.includes('remote-tracking'))).toBe(true)
+    expect(stale.ledger.gates.git.requiredHead).toBeUndefined()
+  })
+
+  it('accepts both pre-apply (ledger absent) and post-apply (45 verified) ledger states without deleting the gitignored file', () => {
+    const numbers = [...EXPECTED_ALLOWLIST_NUMBERS]
+    const hashes = assertAllowlistHashesMatch(ROOT)
+    expect(hashes.ok).toBe(true)
+    const hashesByPath = Object.fromEntries((hashes.actual || []).map((h) => [h.path, h.sha256]))
+    const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8')
+    expect(gitignore).toMatch(/^\.permanent-staging-apply-ledger\.json\s*$/m)
+
+    const pre = evaluateResumePolicy({ ledger: PRE_APPLY_LEDGER, resumeFrom: null, numbers })
+    expect(pre.ok).toBe(true)
+    expect(pre.requireEmptyProof).toBe(true)
+    expect(validateApplyLedgerSnapshot(PRE_APPLY_LEDGER).ok).toBe(false)
+    expect(validateApplyLedgerSnapshot(PRE_APPLY_LEDGER).state).toBe('absent')
+
+    const syntheticComplete = {
+      exists: true,
+      targetRef: AUTHORIZED_STAGING_PROJECT_REF,
+      targetName: AUTHORIZED_STAGING_PROJECT_NAME,
+      applied: (hashes.actual || []).map((h) => ({
+        number: h.number,
+        path: h.path,
+        sha256: h.sha256,
+        verified: true,
+      })),
+    }
+    const post = evaluateResumePolicy({ ledger: syntheticComplete, resumeFrom: null, numbers })
+    expect(post.ok).toBe(false)
+    expect(post.complete).toBe(true)
+    expect(post.requireEmptyProof).toBe(false)
+    const validated = validateApplyLedgerSnapshot(syntheticComplete, { numbers, hashesByPath })
+    expect(validated.ok).toBe(true)
+    expect(validated.state).toBe('complete')
+    expect(validated.appliedCount).toBe(45)
+    expect(validated.verifiedCount).toBe(45)
+
+    const local = loadApplyLedger(ROOT)
+    if (local.exists) {
+      const live = validateApplyLedgerSnapshot(local, { numbers, hashesByPath })
+      expect(live.ok).toBe(true)
+      expect(live.state).toBe('complete')
+      expect(local.targetRef).toBe(AUTHORIZED_STAGING_PROJECT_REF)
+      expect(local.targetName).toBe(AUTHORIZED_STAGING_PROJECT_NAME)
+      expect(fs.existsSync(path.join(ROOT, APPLY_LEDGER_REL))).toBe(true)
+    }
   })
 })

@@ -1,7 +1,7 @@
 # Permanent staging cutover package (prepare only)
 
-**Status:** CR1-E permanent-staging **identity authorized**; SQL execution approval remains **no**. Disposable SQL **216** was applied once on disposable evidence only (2026-08-28). Do not apply SQL to staging until a later explicit approval.
-**Gate:** WAITING FOR EXPLICIT SQL EXECUTION APPROVAL — PRODUCTION UNTOUCHED
+**Status:** CR1-E-R1 — permanent-staging **45/45 applied and verified**. Revised **217** privilege contract is **approved** (current sixteen tables + future default grants). 217-only hashed runner is ready and **not executed**. 45-path SQL execution approval remains **no**. Dedicated 217 flag remains **no**. Auth users and baseline seed are **still blocked**. Draft **218** is not required. Disposable SQL **216** remains disposable-only evidence (2026-08-28). Do not re-apply the 45-path set. Do not apply 217 until a later explicit 217-only approval. Do not run 217 recovery automatically.
+**Gate:** CR1-E-R1 217-ONLY EXECUTION PACKAGE READY — HASHED SINGLE-MIGRATION RUNNER VERIFIED — EXACT CHECKPOINT READY — SQL UNAUTHORIZED — PRODUCTION UNTOUCHED
 **Owner:** MobbiTech Global LLC · Product: BabyDragon / NetField-360
 **Dated:** 2026-08-29
 
@@ -12,9 +12,13 @@ Authorized staging identity (not production):
 - API host: `qxtnoxkyyancndgswjnu.supabase.co`
 - Session Pooler user: `postgres.qxtnoxkyyancndgswjnu`
 - Connection method: session-pooler
-- Wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs` (explicit allowlist; dry-run while `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED` is no)
+- 45-path wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs` (explicit 45-path allowlist; execute refused while `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED` is no; do not re-apply)
+- 217-only runner: `scripts/f10c2/applyPermanentStaging217.mjs` (dry-run by default; execute requires `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` **and** `--execute`; never reuses the 45-path flag)
+- 217 hash manifest: `scripts/f10c2/permanentStaging217.hashes.json` (forward, verification, rollback SHA-256)
+- Git-gate (both runners): approved branch `step-1j2-f10c1i-security-baseline`; local HEAD equals remote-tracking; no staged changes; execution-package files match committed Git content on execute; reviewed hashes match the dedicated manifest; optional `F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA` must equal current HEAD if supplied. No commit SHA is hardcoded.
+- Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 records a separate gitignored ledger `.permanent-staging-217-apply-ledger.json` after a later authorized apply.
 
-Do not send SQL, create Auth users, create buckets, or seed until the owner sets SQL execution approval to yes in a later pass. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
+The 45-path chain is already applied. Do not create Auth users, seed, upload packages, or click Sync Now until draft **217** is reviewed and a later SQL approval is yes. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
 
 Do not copy the disposable database. Classify data A / B / C below.
 
@@ -103,15 +107,15 @@ Source of truth for existing-disposable apply subsets: `scripts/f10c2/phase4bApp
 - `CR1D_APPLY` = `215`
 - `CR1D_DRAFT_ONLY` = empty
 - `CR1E_APPLY` = `216` (one-shot; never auto-apply)
-- `CR1E_DRAFT_ONLY` = empty
+- `CR1E_DRAFT_ONLY` = `217_cr1e_staging_grant_hardening` (revised current + future defaults **approved**; not in the 45-path allowlist; apply only via the 217-only hashed runner after dedicated approval). Rollback partner is **manual emergency recovery**, not a bit-identical inverse.
 
 Canonical CR1 order: **210 → 211 → 212 → 213 → skip 214 → 215 → 216**.
 
-Next-apply adapter: **implemented.** Historical `000_disposable_operational_schema.sql` asserts `app.f10c2_disposable_confirmed = yes` (it does not SET that GUC; the disposable JS wrapper does `SET LOCAL`). That GUC is inappropriate on staging. The staging adapter copies the same schema DDL, omits the assert-yes / SET LOCAL / any invented `app.f10c2_staging_confirmed`, and aborts if the disposable GUC is already yes or if `public.profiles` is labeled DISPOSABLE ONLY. Empty-DB proof is a REST-only live gate on the **execute** path (before first migration). This package does not send SQL.
+Next-apply adapter: **implemented.** Historical `000_disposable_operational_schema.sql` asserts `app.f10c2_disposable_confirmed = yes` (it does not SET that GUC; the disposable JS wrapper does `SET LOCAL`). That GUC is inappropriate on staging. The staging adapter copies the same schema DDL, omits the assert-yes / SET LOCAL / any invented `app.f10c2_staging_confirmed`, and aborts if the disposable GUC is already yes or if `public.profiles` is labeled DISPOSABLE ONLY. Empty-DB proof is a REST-only live gate on the **execute** path (before first migration). The 45-path execute already ran. This pass does not send SQL.
 
 ## 2. Migrations to apply (permanent staging, fresh)
 
-The 45 numbered rows in the table above (`000`, `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`, `201`, `202`, `203`, `204`, `205`, `206`, `208`, `209`, `210`, `211`, `212`, `213`, `215`, `216`). Do not apply `009`, `010`, `012`, `013`, `112`, `207`, or `214`. SQL execution approval remains **no** in this pass.
+**Applied and verified on permanent staging (45/45).** Exact executed ledger ids: `000, 001, 002, 003, 004, 005, 006, 007, 008, 011, 014, 015, 016, 017, 018, 019, 020, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115, 201, 202, 203, 204, 205, 206, 208, 209, 210, 211, 212, 213, 215, 216`. Do not re-apply. Do not apply `009`, `010`, `012`, `013`, `112`, `207`, or `214`. Draft `217` is ready for a later **217-only** hashed apply. 45-path SQL execution approval is **no**. Dedicated 217 approval is **no**.
 
 ## 3. Retired / never-run drafts
 
@@ -124,6 +128,8 @@ The 45 numbered rows in the table above (`000`, `001`, `002`, `003`, `004`, `005
 | `112_result_artifacts_storage_contract` | Documentation-only; bucket DDL is `114` |
 | `207_rls_tenant_storage_assumptions` | **NEVER EXECUTE** |
 | `214_cr1b_acceptance_applicability` | **NEVER RUN.** Quarantined at `supabase/drafts/f10c2/never-run/214/`. 215 supersedes. Not silently required. Do not execute |
+| `217_cr1e_staging_grant_hardening` | **CR1E_DRAFT_ONLY.** Privilege contract approved. Apply only via `scripts/f10c2/applyPermanentStaging217.mjs` after `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` and `--execute`. Not in the 45-path allowlist. Recovery is manual emergency only and reopens client writes; prefer a forward-fix, especially on production |
+| `218_cr1e_vendor_contract` | **Not required.** Vendor is persisted `projects.customer` text. No `vendors` table |
 
 Disposable-only synthetic fixture **301** is **not** part of permanent staging by default.
 
@@ -159,6 +165,14 @@ Follow `000_permanent_staging_operational_schema.sql` (same operational tables a
 - **216** `set_acceptance_profile_active` — include on authorized staging; already applied on disposable
 
 REVOKE anon/PUBLIC. GRANT authenticated only where intended. No public table grants.
+
+**STG-GRANT-001 (open — revised draft 217):** sixteen post-000 tables still inherit default anon and authenticated write privileges (`tenants`, `storage_connections`, `tenant_storage_policies`, `artifact_transfer_jobs`, `field_test_runs`, `field_test_artifacts`, `field_test_metrics`, `field_test_qc_reviews`, `field_test_iterations`, `field_test_call_events`, `field_test_run_acceptance_snapshots`, `field_test_iteration_evaluations`, `field_test_call_summaries`, `qc_verdict_overrides`, `acceptance_profiles`, `acceptance_rules`). Bootstrap 000 tables already revoke anon. RLS on field-test/acceptance tables does not dismiss the finding. Tenant/storage tables have no RLS (207 never-run).
+
+Draft 217 current-table effect (approved plan): revoke anon/PUBLIC on the sixteen; authenticated SELECT only on the twelve RLS workflow tables; no client table access on the four RLS-less tenant/storage tables; service_role retains required access; mutations stay on secured RPCs; `storage.objects` policies untouched.
+
+Draft 217 future-object effect (catalog-inspected 2026-08-29): `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public` revokes automatic PUBLIC/anon/authenticated privileges on future tables, sequences, and functions. The creating migration must GRANT explicitly. No convenience authenticated default. `postgres` is the owner of all current public tables/functions. `supabase_admin` also has public client default ACLs, but the staging session is not a member of that role, so those platform defaults remain as a documented residual. 217 does not change storage/auth/realtime/extension defaults.
+
+217 recovery (kept under `rollback/`): **manual emergency recovery**, not a bit-identical inverse. It reopens direct client writes. It does not restore table-wipe (TRUNCATE) or MAINTAIN. It restores captured postgres public client defaults minus those broader privileges. Never run automatically. Production documentation: prefer a forward-fix over reopening unsafe grants. Do not apply 217 in this pass.
 
 ## 8. Storage bucket definitions and policies
 
@@ -197,7 +211,7 @@ Canonical names (Decision 5):
 - `BABYDRAGON_STAGING_FE_EMAIL`
 - `BABYDRAGON_STAGING_FE_PASSWORD`
 
-Compatible cutover-gate aliases: `F10C2_PERMANENT_STAGING_*` (including `CONFIRMED`, `NOT_PRODUCTION`, `SQL_EXECUTION_APPROVED`, `CONNECTION_METHOD`). Never print values.
+Compatible cutover-gate aliases: `F10C2_PERMANENT_STAGING_*` (including `CONFIRMED`, `NOT_PRODUCTION`, `SQL_EXECUTION_APPROVED`, `217_EXECUTION_APPROVED`, `APPROVED_GIT_SHA`, `CONNECTION_METHOD`). Never print values. The 45-path flag does not authorize 217.
 
 ## 11. Controlled seed plan
 
@@ -242,12 +256,12 @@ Explicitly **excluded** from any seed: CR1 synthetic names, disposable-only vers
 
 ## 12. Verification SQL
 
-Run the `verification/` partner for every applied slug individually. For slot 000 use `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.verify.sql` (not the historical disposable verify file). Then: `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`, `201`, `202`, `203`, `204`, `205`, `206`, `208`, `209`, `210`, `211`, `212`, `213`, `215`, `216`. SELECT-only. Stop on mismatch. Do not run verification for `009`, `010`, `012`, `013`, `112`, `207`, or `214`.
+Run the `verification/` partner for every applied slug individually. For slot 000 use `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.verify.sql` (not the historical disposable verify file). Then: `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`, `201`, `202`, `203`, `204`, `205`, `206`, `208`, `209`, `210`, `211`, `212`, `213`, `215`, `216`. SELECT-only. Stop on mismatch. Do not run verification for `009`, `010`, `012`, `013`, `112`, `207`, or `214`. Draft `217` verification exists (current-table grants, postgres public default ACL, broadening/table-wipe detection, documented `supabase_admin` residual, storage defaults untouched) but must not run until that slug is authorized.
 
 ## 13. Automated contract tests
 
 - `npm run test:f10c2`
-- Focused: `tests/f10c2/cr1bMigrations.contract.test.js`, `cr1dMigrations.contract.test.js`, `cr1eMigrations.contract.test.js`, `cr1ePermanentStagingApply.contract.test.js`, `cr1eProfileStatus.behavior.test.js`, `phase4bPreparation.contract.test.js`, `phase4bSBootstrap.contract.test.js`, `cr1dR2HeaderAssign.behavior.test.js`
+- Focused: `tests/f10c2/cr1bMigrations.contract.test.js`, `cr1dMigrations.contract.test.js`, `cr1eMigrations.contract.test.js`, `cr1eDefaultPrivileges.contract.test.js`, `cr1ePermanentStagingApply.contract.test.js`, `cr1ePermanentStaging217.contract.test.js`, `cr1eProfileStatus.behavior.test.js`, `phase4bPreparation.contract.test.js`, `phase4bSBootstrap.contract.test.js`, `cr1dR2HeaderAssign.behavior.test.js`
 - `npm run f10c2:scan-phase4b-migrations`
 - `npm run f10c2:scan-cr1b-secrets`
 
@@ -299,6 +313,7 @@ Physical package: 44 valid / 0 invalid GPS; RF missing as N/A not zero. Map from
 - Staging reset only with written authorization
 - Do not DROP DATABASE
 - Snapshots remain immutable; rollback of 215 must not rewrite historical evaluations
+- **217 recovery is not an automatic inverse.** It reopens direct client writes. Prefer a forward-fix, especially on production. Never restore table-wipe. Never run automatically.
 
 ## 24. Disposable-to-permanent comparison checklist
 
@@ -396,9 +411,42 @@ Protected queue `bd-rf-1787606300946` is never uploaded.
 
 ---
 
-## What CR1-E did not do (still true)
+## CR1-E-R1 test-contract correction
 
-- SQL 216 newly applied once on disposable; 215 not reapplied; 214 not executed
-- No permanent database contacted or created
-- No physical package uploaded
+Two local failures in `tests/f10c2/cr1ePermanentStagingApply.contract.test.js` were stale contracts:
+
+1. Wrapper Git gate used to hardcode a commit SHA (`REQUIRED_GIT_HEAD`). That stale-SHA cycle is removed. Both the 45-path wrapper and the 217-only runner use the SHA-free git-gate (approved branch, HEAD == remote-tracking, no staged changes, clean execution-package files on execute, reviewed hashes, optional locally supplied approved SHA).
+2. Execute tests assumed `.permanent-staging-apply-ledger.json` did not exist. After 45/45 apply the gitignored ledger has 45 verified entries. Tests now cover pre-apply (absent) and post-apply (exactly 45 verified, reviewed hashes, authorized staging ref, no secrets, no production/disposable identity). Wrapper resume policy treats a complete ledger as already applied — refuse re-apply. The ledger was not deleted. The 217-only runner refuses unless that 45-entry ledger is complete and verified.
+
+## Vendor contract (no 218)
+
+Permanent staging has **no `vendors` table**. That is not a missing dependency before Auth/seed.
+
+Current persistence model: **project text field** `projects.customer`.
+
+| Surface | Behavior |
+|---------|----------|
+| Admin Create Project | Writes `projects.customer` |
+| Vendor-management UI | None. Customer field is the vendor identity |
+| Assign Task | Displays `selectedProject.customer`; task insert has no vendor column |
+| Task records | No `vendor` / `vendor_id` column |
+| Project records | `customer text` from 000 |
+| Field Results mapper | `vendor_name` ← `project.customer` (provider now selects `customer`) |
+| QC Review | `projects.select("*")` includes `customer` |
+| Mobile task payload | FE/mobile join `projects (… customer …)` |
+| Migrations / Master Plan | No vendors table. Plan wording “projects, vendors, tasks” means the customer/vendor label on the project |
+
+Gap/loss point: Field Results previously selected `projects.id,name,market` and dropped `customer`, so the Vendor column could not show the persisted name. That is a provider mapping gap, now corrected. Do not create a normalized vendors table merely because the UI has a Vendor column.
+
+## What CR1-E / CR1-E-R1 did not do (still true)
+
+- Permanent staging 45/45 applied in the authorized earlier execute pass; 45-path SQL approval is now **no** again
+- Draft **217** privilege contract approved; 217-only hashed runner ready; 217 not executed. Dedicated 217 approval is **no**. Recovery is manual emergency only.
+- Draft **218** not created (not required)
+- 216 newly applied once on disposable only; 215 not reapplied; 214 not executed
+- No Auth users created
+- No baseline seed
+- No packages uploaded
+- Sync Now not clicked
+- Disposable not contacted in this pass
 - Production untouched

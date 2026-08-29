@@ -14,6 +14,7 @@ import {
   listExistingDisposableCr1eApply,
   listPhase4bApplyPlan,
 } from '../../scripts/f10c2/phase4bApplyPlan.mjs'
+import { PERMANENT_STAGING_FORWARD_PATHS } from '../../scripts/f10c2/permanentStagingApplyPlan.mjs'
 
 const ROOT = process.cwd()
 const FORBIDDEN = /\b(DROP\s+DATABASE|TRUNCATE|DROP\s+TABLE)\b/i
@@ -29,7 +30,8 @@ function readForward() {
 describe('f10c2 cr1-e — migration 216 contracts', () => {
   it('registers 216 as CR1E_APPLY one-shot and never auto-applies it', () => {
     expect(CR1E_APPLY).toEqual([SLUG])
-    expect(CR1E_DRAFT_ONLY).toEqual([])
+    expect(CR1E_DRAFT_ONLY).toEqual(['217_cr1e_staging_grant_hardening'])
+    expect(CR1E_APPLY).not.toContain('217_cr1e_staging_grant_hardening')
     expect(listExistingDisposableCr1eApply().map((s) => s.slug)).toEqual(CR1E_APPLY)
     expect(CR1D_DRAFT_ONLY).toEqual([])
     expect(CR1_NEVER_RUN).toEqual(['214_cr1b_acceptance_applicability'])
@@ -42,6 +44,7 @@ describe('f10c2 cr1-e — migration 216 contracts', () => {
     expect(slugs).not.toContain(SLUG)
     expect(slugs).not.toContain('214_cr1b_acceptance_applicability')
     expect(slugs).not.toContain('215_cr1d_acceptance_profile_management')
+    expect(slugs).not.toContain('217_cr1e_staging_grant_hardening')
     expect(slugs.at(-1)).toBe('213_cr1b_rls_grants')
     expect(fs.existsSync(path.join(ROOT, 'supabase/drafts/f10c2/phase4b/forward/214_cr1b_acceptance_applicability.sql'))).toBe(false)
     expect(fs.existsSync(path.join(ROOT, 'supabase/drafts/f10c2/never-run/214/README.md'))).toBe(true)
@@ -85,5 +88,59 @@ describe('f10c2 cr1-e — migration 216 contracts', () => {
     )
     expect(rollback).toContain('DROP FUNCTION IF EXISTS public.set_acceptance_profile_active')
     expect(rollback).not.toMatch(/UPDATE\s+public\.field_test_run_acceptance_snapshots/i)
+  })
+
+  it('keeps 217 as CR1E_DRAFT_ONLY grant hardening and out of the 45-path allowlist', () => {
+    const slug = '217_cr1e_staging_grant_hardening'
+    const forward = fs.readFileSync(
+      path.join(ROOT, 'supabase/drafts/f10c2/phase4b/forward', `${slug}.sql`),
+      'utf8',
+    )
+    expect(FORBIDDEN.test(forward)).toBe(false)
+    expect(forward).toContain('CR1E_DRAFT_ONLY')
+    expect(forward).toContain('STG-GRANT-001')
+    expect(forward).toContain('REVOKE ALL ON TABLE')
+    expect(forward).toContain('FROM anon')
+    expect(forward).toContain('GRANT SELECT ON TABLE')
+    expect(forward).toContain('acceptance_profiles')
+    expect(forward).not.toMatch(/\bnsne[a-z0-9]{4,}\b/i)
+    expect(forward).not.toMatch(/service_role\s*=\s*['"][^'"]+/)
+    expect(forward).not.toMatch(/CREATE POLICY[\s\S]{0,80}FOR UPDATE[\s\S]{0,80}acceptance_profiles/i)
+    expect(PERMANENT_STAGING_FORWARD_PATHS).toHaveLength(45)
+    expect(PERMANENT_STAGING_FORWARD_PATHS.some((p) => p.includes('217_'))).toBe(false)
+    expect(fs.existsSync(path.join(ROOT, 'supabase/drafts/f10c2/phase4b/verification', `${slug}.sql`))).toBe(true)
+    expect(fs.existsSync(path.join(ROOT, 'supabase/drafts/f10c2/phase4b/rollback', `${slug}.sql`))).toBe(true)
+    const verify = fs.readFileSync(
+      path.join(ROOT, 'supabase/drafts/f10c2/phase4b/verification', `${slug}.sql`),
+      'utf8',
+    )
+    expect(verify).toContain('anon_denied_on_stg_grant_001')
+    expect(verify).toContain('authenticated_select_only_on_workflow')
+    expect(verify).toContain('fe_cannot_write_acceptance_profiles')
+    expect(verify).toContain('postgres_public_no_client_defaults')
+    expect(verify).toContain('no_client_table_wipe_or_maintain')
+    const recovery = fs.readFileSync(
+      path.join(ROOT, 'supabase/drafts/f10c2/phase4b/rollback', `${slug}.sql`),
+      'utf8',
+    )
+    expect(recovery).toContain('MANUAL EMERGENCY RECOVERY')
+    expect(recovery).toContain('NEVER RUN AUTOMATICALLY')
+    expect(recovery.replace(/--[^\n]*/g, '')).not.toMatch(/GRANT[^;]+TRUNCATE/i)
+    expect(forward).toContain('ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public')
+    expect(forward).toContain('REVOKE ALL ON TABLES FROM authenticated')
+    expect(forward).toContain('REVOKE ALL ON FUNCTIONS FROM PUBLIC')
+  })
+
+  it('keeps Field Results vendor mapping on persisted projects.customer', () => {
+    const provider = fs.readFileSync(
+      path.join(ROOT, 'src/fieldResults/repository/supabaseFieldResultsProvider.js'),
+      'utf8',
+    )
+    expect(provider).toContain('select("id,name,market,customer")')
+    const mapper = fs.readFileSync(
+      path.join(ROOT, 'src/fieldResults/repository/mapFieldTestRunRow.js'),
+      'utf8',
+    )
+    expect(mapper).toContain('project?.customer')
   })
 })

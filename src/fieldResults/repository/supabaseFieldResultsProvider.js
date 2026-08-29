@@ -74,7 +74,7 @@ export function createSupabaseFieldResultsProvider(options = {}) {
         ? supabase.from("tasks").select("id,title,name,market,project_id,assigned_to,status,grid_id").in("id", taskIds)
         : Promise.resolve({ data: [] }),
       projectIds.length
-        ? supabase.from("projects").select("id,name,market").in("id", projectIds)
+        ? supabase.from("projects").select("id,name,market,customer").in("id", projectIds)
         : Promise.resolve({ data: [] }),
       gridIds.length
         ? supabase.from("grids").select("id,name,market").in("id", gridIds)

@@ -19,7 +19,8 @@ export const AUTHORIZED_STAGING_POOLER_USER = `postgres.${AUTHORIZED_STAGING_PRO
 export const DENIED_PRODUCTION_REF_PREFIX = 'nsne'
 export const DENIED_DISPOSABLE_PROJECT_REF = 'cxyqqgmepiphyejvceum'
 export const REQUIRED_GIT_BRANCH = 'step-1j2-f10c1i-security-baseline'
-export const REQUIRED_GIT_HEAD = '00fbce27fd38526888129a4bd2dbca6937088836'
+export const APPROVED_GIT_SHA_ENV = 'F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA'
+export const SQL_217_EXECUTION_APPROVED_ENV = 'F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED'
 export const REQUIRED_CONNECTION_METHOD = 'session-pooler'
 
 const REQUIRED_NAMES = [
@@ -104,13 +105,118 @@ export function sqlExecutionApprovedIsYes(value) {
   return normalizeYesNo(value) === 'yes'
 }
 
-export function readGitCheckpoint(cwd = ROOT) {
+export function sql217ExecutionApprovedIsYes(value) {
+  return normalizeYesNo(value) === 'yes'
+}
+
+export function inspectExecutionPackageGit(cwd = ROOT, packageFiles = []) {
+  const dirty = []
+  const untracked = []
+  if (!packageFiles.length) return { dirty, untracked }
+  const status = spawnSync('git', ['status', '--porcelain', '-z', '--', ...packageFiles], {
+    cwd,
+    encoding: 'utf8',
+  })
+  const chunks = String(status.stdout || '').split('\0').filter(Boolean)
+  for (const chunk of chunks) {
+    if (chunk.length < 4) continue
+    const code = chunk.slice(0, 2)
+    const rel = chunk.slice(3).replace(/\\/g, '/')
+    if (code === '??') untracked.push(rel)
+    else dirty.push(rel)
+  }
+  return { dirty, untracked }
+}
+
+export function readGitCheckpoint(cwd = ROOT, packageFiles = []) {
   const branch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, encoding: 'utf8' })
   const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' })
+  const remote = spawnSync('git', ['rev-parse', '@{u}'], { cwd, encoding: 'utf8' })
+  const staged = spawnSync('git', ['diff', '--cached', '--quiet'], { cwd, encoding: 'utf8' })
+  const pkg = inspectExecutionPackageGit(cwd, packageFiles)
   return {
     branch: trimStr(branch.stdout),
     head: trimStr(head.stdout),
+    remoteHead: trimStr(remote.stdout),
+    remoteOk: remote.status === 0 && Boolean(trimStr(remote.stdout)),
+    staged: staged.status !== 0,
+    packageDirty: pkg.dirty,
+    packageUntracked: pkg.untracked,
     ok: branch.status === 0 && head.status === 0,
+  }
+}
+
+/**
+ * Safe git-gate: approved branch, HEAD == remote-tracking, no staged changes,
+ * optional locally supplied SHA, and (when requested) clean execution-package files.
+ * Never hardcodes a commit SHA. Unrelated dirty files outside packageFiles are ignored.
+ */
+export function evaluatePermanentStagingGitGate(input = {}) {
+  const reasons = []
+  const cwd = input.cwd || ROOT
+  const packageFiles = Array.isArray(input.packageFiles) ? input.packageFiles : []
+  const requirePackageClean = input.requirePackageClean === true
+  const env = input.env || {}
+  const approvedSha = trimStr(
+    input.approvedGitSha ?? firstNonEmpty(env, [APPROVED_GIT_SHA_ENV]),
+  )
+
+  let snapshot
+  if (input.git && (input.git.branch || input.git.head || input.git.ok)) {
+    const head = trimStr(input.git.head)
+    const remoteHead = trimStr(input.git.remoteHead || input.git.head)
+    snapshot = {
+      branch: trimStr(input.git.branch),
+      head,
+      remoteHead,
+      remoteOk: input.git.remoteOk !== false && Boolean(remoteHead),
+      staged: input.git.staged === true,
+      packageDirty: Array.isArray(input.git.packageDirty) ? input.git.packageDirty : [],
+      packageUntracked: Array.isArray(input.git.packageUntracked) ? input.git.packageUntracked : [],
+      ok: true,
+    }
+  } else {
+    snapshot = readGitCheckpoint(cwd, packageFiles)
+  }
+
+  if (snapshot.branch !== REQUIRED_GIT_BRANCH) {
+    reasons.push('working branch is not the approved branch')
+  }
+  if (!snapshot.remoteOk || !snapshot.remoteHead) {
+    reasons.push('remote-tracking branch is missing')
+  } else if (snapshot.head !== snapshot.remoteHead) {
+    reasons.push('local HEAD does not equal its remote-tracking branch')
+  }
+  if (snapshot.staged) {
+    reasons.push('staged changes are present')
+  }
+  if (requirePackageClean) {
+    for (const rel of snapshot.packageDirty) {
+      reasons.push(`execution-package file is dirty: ${rel}`)
+    }
+    for (const rel of snapshot.packageUntracked) {
+      reasons.push(`execution-package file is untracked: ${rel}`)
+    }
+  }
+  if (approvedSha && approvedSha.toLowerCase() !== String(snapshot.head).toLowerCase()) {
+    reasons.push('F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA does not equal current HEAD')
+  }
+
+  const uniqueReasons = [...new Set(reasons)]
+  return {
+    ok: uniqueReasons.length === 0,
+    reasons: uniqueReasons,
+    branch: snapshot.branch || null,
+    head: snapshot.head || null,
+    remoteHead: snapshot.remoteHead || null,
+    requiredBranch: REQUIRED_GIT_BRANCH,
+    inSyncWithRemote: Boolean(snapshot.head && snapshot.remoteHead && snapshot.head === snapshot.remoteHead),
+    staged: Boolean(snapshot.staged),
+    packageDirty: snapshot.packageDirty || [],
+    packageUntracked: snapshot.packageUntracked || [],
+    requirePackageClean,
+    approvedShaSupplied: Boolean(approvedSha),
+    approvedShaMatches: !approvedSha || approvedSha.toLowerCase() === String(snapshot.head).toLowerCase(),
   }
 }
 
@@ -243,12 +349,16 @@ export function evaluatePermanentStagingApplyGates(input = {}) {
     reasons.push('F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED must remain no during this dry-run pass')
   }
 
-  const git = input.git && input.git.ok
-    ? input.git
-    : readGitCheckpoint(input.cwd || ROOT)
-  const gitOk = git.branch === REQUIRED_GIT_BRANCH && git.head === REQUIRED_GIT_HEAD
-  if (!gitOk) {
-    reasons.push('working branch or HEAD does not match required checkpoint')
+  const git = evaluatePermanentStagingGitGate({
+    cwd: input.cwd || ROOT,
+    env,
+    git: input.git,
+    packageFiles: input.packageFiles || [],
+    requirePackageClean: input.requirePackageClean === true,
+    approvedGitSha: input.approvedGitSha,
+  })
+  if (!git.ok) {
+    reasons.push(...git.reasons)
   }
 
   const uniqueReasons = [...new Set(reasons)]
@@ -267,13 +377,7 @@ export function evaluatePermanentStagingApplyGates(input = {}) {
       userMatches: poolerUserMatches,
       expectedUser: AUTHORIZED_STAGING_POOLER_USER,
     },
-    git: {
-      branch: git.branch || null,
-      head: git.head || null,
-      requiredBranch: REQUIRED_GIT_BRANCH,
-      requiredHead: REQUIRED_GIT_HEAD,
-      ok: gitOk,
-    },
+    git,
     emptyDbCheck: {
       performed: false,
       deferred: !sqlApproved,
