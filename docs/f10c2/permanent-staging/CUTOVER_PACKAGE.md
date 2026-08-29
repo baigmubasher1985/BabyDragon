@@ -1,7 +1,7 @@
 # Permanent staging cutover package (prepare only)
 
-**Status:** CR1-E-R1 — permanent-staging **45/45 applied and verified**. Revised **217** privilege contract is **approved** (current sixteen tables + future default grants). 217-only hashed runner has the authorized Session Pooler SQL sender **attached** and remains a **dedicated 217 runner** (does not re-run the 45-path wrapper). 217 is **not executed** until dedicated approval is yes **and** `--execute`. 45-path SQL execution approval remains **no**. Dedicated 217 flag remains **no**. Auth users and baseline seed are **still blocked**. Draft **218** is not required. Disposable SQL **216** remains disposable-only evidence (2026-08-28). Do not re-apply the 45-path set. Do not run 217 recovery automatically.
-**Gate:** CR1-E-R1 217-ONLY EXECUTION PACKAGE READY — HASHED SINGLE-MIGRATION RUNNER VERIFIED — EXACT CHECKPOINT READY — SQL UNAUTHORIZED — PRODUCTION UNTOUCHED
+**Status:** CR1-E-R1 — permanent-staging **45/45 applied and verified**. SQL **217** privilege hardening **applied and verified** 2026-08-29 via the dedicated 217-only runner (Session Pooler sender attached at `384c3aa`). 217 remains a **dedicated runner** (does not re-run the 45-path wrapper). Do not reapply 217. 45-path SQL execution approval remains **no**. Dedicated 217 flag is **reset to no**. Auth users and baseline seed were **not started**. Draft **218** is not required. Disposable SQL **216** remains disposable-only evidence (2026-08-28). Do not re-apply the 45-path set. Do not run 217 recovery automatically.
+**Gate:** CR1-E-R1 SQL SENDER CHECKPOINT PUSHED — SQL 217 APPLIED AND VERIFIED — PERMANENT STAGING READY FOR AUTH AND BASELINE SEED — PRODUCTION UNTOUCHED
 **Owner:** MobbiTech Global LLC · Product: BabyDragon / NetField-360
 **Dated:** 2026-08-29
 
@@ -16,9 +16,9 @@ Authorized staging identity (not production):
 - 217-only runner: `scripts/f10c2/applyPermanentStaging217.mjs` (Session Pooler SQL sender attached; still dedicated — not the 45-path wrapper; dry-run by default; execute requires `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` **and** `--execute`; never reuses the 45-path flag)
 - 217 hash manifest: `scripts/f10c2/permanentStaging217.hashes.json` (forward, verification, rollback SHA-256)
 - Git-gate (both runners): approved branch `step-1j2-f10c1i-security-baseline`; local HEAD equals remote-tracking; no staged changes; execution-package files match committed Git content on execute; reviewed hashes match the dedicated manifest; optional `F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA` must equal current HEAD if supplied. No commit SHA is hardcoded.
-- Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 records a separate gitignored ledger `.permanent-staging-217-apply-ledger.json` after a later authorized apply.
+- Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 gitignored ledger `.permanent-staging-217-apply-ledger.json` records 217 once (verified).
 
-The 45-path chain is already applied. Do not create Auth users, seed, upload packages, or click Sync Now until draft **217** is reviewed and a later SQL approval is yes. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
+The 45-path chain and SQL **217** are already applied. Auth users, baseline seed, package upload, and Sync Now were not started. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
 
 Do not copy the disposable database. Classify data A / B / C below.
 
@@ -166,7 +166,7 @@ Follow `000_permanent_staging_operational_schema.sql` (same operational tables a
 
 REVOKE anon/PUBLIC. GRANT authenticated only where intended. No public table grants.
 
-**STG-GRANT-001 (open — revised draft 217):** sixteen post-000 tables still inherit default anon and authenticated write privileges (`tenants`, `storage_connections`, `tenant_storage_policies`, `artifact_transfer_jobs`, `field_test_runs`, `field_test_artifacts`, `field_test_metrics`, `field_test_qc_reviews`, `field_test_iterations`, `field_test_call_events`, `field_test_run_acceptance_snapshots`, `field_test_iteration_evaluations`, `field_test_call_summaries`, `qc_verdict_overrides`, `acceptance_profiles`, `acceptance_rules`). Bootstrap 000 tables already revoke anon. RLS on field-test/acceptance tables does not dismiss the finding. Tenant/storage tables have no RLS (207 never-run).
+**STG-GRANT-001 (closed on permanent staging after authorized 217):** sixteen post-000 tables no longer inherit default anon/PUBLIC privileges. Authenticated SELECT only on the twelve RLS workflow tables; no client table privileges on the four RLS-less tenant/storage tables. Bootstrap 000 tables already revoke anon. Tenant/storage tables have no RLS (207 never-run).
 
 Draft 217 current-table effect (approved plan): revoke anon/PUBLIC on the sixteen; authenticated SELECT only on the twelve RLS workflow tables; no client table access on the four RLS-less tenant/storage tables; service_role retains required access; mutations stay on secured RPCs; `storage.objects` policies untouched.
 
@@ -441,7 +441,7 @@ Gap/loss point: Field Results previously selected `projects.id,name,market` and 
 ## What CR1-E / CR1-E-R1 did not do (still true)
 
 - Permanent staging 45/45 applied in the authorized earlier execute pass; 45-path SQL approval is now **no** again
-- Draft **217** privilege contract approved; 217-only hashed runner has Session Pooler sender attached and remains dedicated; 217 not executed. Dedicated 217 approval is **no**. Recovery is manual emergency only.
+- Draft **217** privilege contract approved and applied once on permanent staging; 217-only hashed runner has Session Pooler sender attached and remains dedicated. Dedicated 217 approval is **no** again. Recovery is manual emergency only.
 - Draft **218** not created (not required)
 - 216 newly applied once on disposable only; 215 not reapplied; 214 not executed
 - No Auth users created

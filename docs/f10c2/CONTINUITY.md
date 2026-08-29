@@ -3,7 +3,7 @@
 **Read this before touching F10C2 / CR1 work.**
 **Never discard, reset, clean, stash, or revert the dirty working tree** that holds CR1-B through CR1-E. Do not stage, commit, push, PR, merge, or deploy unless the owner explicitly asks.
 
-Last updated: 2026-08-29 (CR1-E-R1 217-only hashed runner — Session Pooler SQL sender attached; still a dedicated 217 runner; Auth/seed still blocked; 217 not executed until dedicated flag + --execute)
+Last updated: 2026-08-29 (CR1-E-R1 SQL 217 applied and verified on permanent staging — sender checkpoint 384c3aa; dedicated 217 flag reset to no; Auth/seed not started)
 
 ## Branch and git-gate
 
@@ -18,7 +18,7 @@ Last updated: 2026-08-29 (CR1-E-R1 217-only hashed runner — Session Pooler SQL
 - SQL **215** applied on disposable only. Do not reapply 215.
 - SQL **216** (`set_acceptance_profile_active`) **newly applied once** on disposable 2026-08-28 (`CR1E_APPLY` one-shot). Do not reapply 216.
 - SQL **214** never executed; quarantined at `supabase/drafts/f10c2/never-run/214/` (`CR1_NEVER_RUN`). Not draft-in-forward. Not silently required. Canonical order: **210 → 211 → 212 → 213 → skip 214 → 215 → 216**.
-- SQL **217** is **CR1E_DRAFT_ONLY** (`217_cr1e_staging_grant_hardening`). Revised privilege contract is **approved** (current sixteen tables + future default grants). Prepared, not executed, not in the 45-path allowlist. Next apply must use the **217-only hashed runner** (`scripts/f10c2/applyPermanentStaging217.mjs`) with `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` **and** `--execute`. Do not reuse `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED`. Hash manifest: `scripts/f10c2/permanentStaging217.hashes.json`. Recovery lives under `rollback/` and is a **manual emergency recovery**, not a bit-identical inverse. Never auto-run.
+- SQL **217** (`217_cr1e_staging_grant_hardening`) **applied and verified once** on permanent staging 2026-08-29 via the dedicated 217-only hashed runner (Session Pooler sender attached in `384c3aa`). Not in the 45-path allowlist. Do not reapply. Dedicated 217 flag is **reset to no**. Do not reuse `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED`. Hash manifest: `scripts/f10c2/permanentStaging217.hashes.json`. Local gitignored ledger: `.permanent-staging-217-apply-ledger.json` (217 recorded once). Recovery lives under `rollback/` and is a **manual emergency recovery**, not a bit-identical inverse. Never auto-run.
 - SQL **218** is **not required**. Vendor is `projects.customer` text, not a missing `vendors` table.
 - Never execute **009, 010, 012, 013, 112, 207**.
 - Production prefix **nsne** is denied. Do not contact production.
@@ -43,16 +43,16 @@ Two local wrapper-test failures were contract bugs, not database failures:
 1. Git gate used to hardcode a commit SHA, which created a stale-SHA cycle. The gate no longer pins a SHA. It requires the approved branch, HEAD == remote-tracking, no staged changes, clean execution-package files on execute, reviewed hashes, and an optional locally supplied approved SHA.
 2. Execute tests assumed the gitignored apply ledger was absent. After the authorized 45/45 apply it exists with 45 verified entries. Tests now cover **pre-apply (absent)** and **post-apply (exactly 45 verified)**. Wrapper resume policy treats a complete ledger as “already applied — refuse re-apply”, not as a partial ledger. The file was not deleted.
 
-**217-only runner** is ready with the authorized Session Pooler SQL sender attached (same proven connection/execution pattern as the 45-path wrapper, copied into the dedicated runner so 45 migrations are never re-run). Dry-run by default; refuses unless the dedicated 217 flag is yes **and** `--execute`; requires the complete verified 45-entry ledger; refuses hash mismatch and reapplication; sends only 217 forward then 217 verification; never auto-rollback, cleanup, Auth, or seed.
+**217-only runner** has the authorized Session Pooler SQL sender attached (same proven connection/execution pattern as the 45-path wrapper, copied into the dedicated runner so 45 migrations are never re-run). 217 forward + verification **already applied**. Reapplication is refused. Never auto-rollback, cleanup, Auth, or seed.
 
-**STG-GRANT-001 remains open** until 217 is authorized. Draft 217 now covers current tables **and** future objects:
+**STG-GRANT-001 is closed** on permanent staging after authorized 217. Current tables **and** future objects:
 
 - Catalog inspect (SELECT-only): all 31 public tables and 24 public functions are owned by `postgres`. Public default-ACL grantors are `postgres` and `supabase_admin`. The staging session is `postgres` and is **not** a member of `supabase_admin`, so 217 cannot `ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin`. `postgres` also has storage defaults — 217 does not touch storage, auth, realtime, or extensions.
 - Future tables/sequences/functions created by `postgres` (the migration owner): no automatic PUBLIC / anon / authenticated privileges. Explicit GRANTs must be added by the creating migration. No convenience authenticated SELECT/EXECUTE default.
 - `supabase_admin` public client defaults remain as a documented platform residual (objects created by that role, not by our migrations).
 - Recovery is **manual emergency only**. It reopens direct client writes. It does not restore table-wipe (TRUNCATE) or MAINTAIN. Forward-fix is preferred, especially on production. Never run recovery automatically.
 
-Draft **217** privilege contract is approved. The 217-only hashed runner has its Session Pooler sender attached and remains a dedicated runner (not the 45-path wrapper). Do not apply until dedicated 217 approval is yes **and** `--execute` is passed.
+Draft **217** privilege contract is approved and **applied**. The 217-only hashed runner remains dedicated (not the 45-path wrapper). Do not reapply 217.
 
 **Vendor contract:** there is no `vendors` table and none is required before Auth/seed. Product vendor display is `projects.customer` (Admin Create Project customer field). Field Results now selects `customer` so the Vendor column can show the persisted name. Do not invent 218.
 
@@ -104,7 +104,7 @@ Historical snapshots are immutable. Changing today’s Current Criteria must not
 Stop using the disposable project for normal feature development after permanent staging cutover succeeds. Package: `docs/f10c2/permanent-staging/CUTOVER_PACKAGE.md`. ADR: `docs/adr/0001-permanent-staging-before-continued-feature-development.md`.
 Do not blindly copy disposable data. Classify A/B/C in the cutover package. Authorized staging name/ref: `babydragon-permanent-staging` / `qxtnoxkyyancndgswjnu`.
 
-Schema 45/45 is applied. Auth and baseline seed are still blocked on owner review of draft **217** plus explicit SQL approval. Baseline templates remain **approved definitions only — not seeded**.
+Schema 45/45 is applied. SQL **217** is applied and verified. Auth users and the approved Class A baseline seed are the next authorized step and were **not** started. Baseline templates remain **approved definitions only — not seeded**.
 
 ## Production
 
@@ -112,10 +112,9 @@ Isolated. Unauthorized. Untouched.
 
 ## Exact next authorized action
 
-1. Owner authorizes SQL for **217 only**.
-2. If authorized: set `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` locally and run `node scripts/f10c2/applyPermanentStaging217.mjs --execute`. Do **not** set or reuse `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED` for this pass. Do not re-apply the 45-path wrapper. Do not apply 218. Do not run the recovery file.
-3. After 217 verifies: create staging Auth users and the approved Class A baseline seed. Not before.
-4. Do not restore `F10C2-P4BU-E2E`. Do not SQL-reactivate **CR1-D-R2 E2E Data Rule**. Do not reapply 216 on disposable. Do not apply 214.
+1. Create staging Auth users and the approved Class A baseline seed. Not before owner authorization of that pass.
+2. Do not reapply 217. Do not re-apply the 45-path wrapper. Do not apply 218. Do not run the 217 recovery file.
+3. Do not restore `F10C2-P4BU-E2E`. Do not SQL-reactivate **CR1-D-R2 E2E Data Rule**. Do not reapply 216 on disposable. Do not apply 214.
 
 ## Remaining cosmetic and functional issues
 
