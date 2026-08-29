@@ -25,8 +25,10 @@ import {
   MIGRATION_217_ROLLBACK,
   MIGRATION_217_VERIFY,
   assert217HashesMatch,
+  attachAuthorizedStaging217SqlSender,
   is217AlreadyVerified,
   parseCliFlags,
+  redact217Text,
   runPermanentStaging217DryRun,
   runPermanentStaging217Execute,
 } from '../../scripts/f10c2/applyPermanentStaging217.mjs'
@@ -125,6 +127,22 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
     expect(denied.ok).toBe(false)
     expect(denied.blockers.some((b) => b.includes('217_EXECUTION_APPROVED'))).toBe(true)
     expect(denied.blockers.some((b) => b.includes('45-path SQL approval does not authorize'))).toBe(true)
+  })
+
+  it('execute without a sender refuses and sends no SQL', async () => {
+    const denied = await runPermanentStaging217Execute({
+      cwd: ROOT,
+      env: fixtureEnv({ F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED: 'yes' }),
+      argv: ['--execute'],
+      writeLedger: false,
+      applyLedger: COMPLETE_45,
+      applyLedger217: { exists: false, applied: null },
+      git: fixtureGit(),
+    })
+    expect(denied.ok).toBe(false)
+    expect(denied.sqlSent).toBe(false)
+    expect(denied.executeReady).toBe(true)
+    expect(denied.blockers.some((b) => b.includes('SQL sender'))).toBe(true)
   })
 
   it('missing --execute refuses execution when 217 approval is yes', async () => {
@@ -266,6 +284,10 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
     expect(sent[1].path).toBe(MIGRATION_217_VERIFY)
     expect(sent.some((s) => s.path === MIGRATION_217_ROLLBACK)).toBe(false)
     expect(sent.every((s) => s.number === '217')).toBe(true)
+    expect(ok.recorded.applied.number).toBe('217')
+    expect(ok.recorded.applied.verified).toBe(true)
+    expect(ok.sent.filter((s) => s.role === 'forward')).toHaveLength(1)
+    expect(ok.sent.filter((s) => s.role === 'verification')).toHaveLength(1)
 
     const verifyFail = await runPermanentStaging217Execute({
       cwd: ROOT,
@@ -295,6 +317,11 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
     expect(source).not.toMatch(/from ['"]pg['"]/)
     expect(source).not.toMatch(/spawnSync\(\s*['"]psql['"]/)
     expect(source).toContain(SQL_217_FLAG_NAME())
+    expect(source).toContain('attachAuthorizedStaging217SqlSender')
+    expect(source).toContain('session pooler')
+    expect(source).toContain('sql.unsafe')
+    expect(source).not.toContain('runAttachedPermanentStagingExecute')
+    expect(source).not.toContain('runPermanentStagingExecute(')
 
     const sent = []
     const result = await runPermanentStaging217Execute({
@@ -332,6 +359,75 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
     expect(spawned.stdout).toContain('WAITING FOR EXPLICIT 217 APPROVAL')
     expect(spawned.stdout).not.toMatch(/postgres(?:ql)?:\/\/[^\s:]+:[^\s@]+@/)
     expect(spawned.stdout).not.toMatch(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
+  })
+
+  it('Session Pooler attach refuses wrong/denied targets before connecting', async () => {
+    const wrong = await attachAuthorizedStaging217SqlSender({
+      cwd: ROOT,
+      env: fixtureEnv({
+        F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED: 'yes',
+        BABYDRAGON_STAGING_PROJECT_NAME: 'not-authorized',
+      }),
+    })
+    expect(wrong.ok).toBe(false)
+    expect(wrong.connected).toBe(false)
+    expect(wrong.sqlSender).toBe(null)
+    expect(wrong.blockers.some((b) => b.includes('project name'))).toBe(true)
+
+    const production = await attachAuthorizedStaging217SqlSender({
+      cwd: ROOT,
+      env: fixtureEnv({
+        F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED: 'yes',
+        BABYDRAGON_STAGING_SUPABASE_URL: `https://${DENIED_PRODUCTION_REF_PREFIX}example.supabase.co`,
+      }),
+    })
+    expect(production.ok).toBe(false)
+    expect(production.connected).toBe(false)
+    expect(production.blockers.some((b) => b.includes('production prefix'))).toBe(true)
+
+    const disposable = await attachAuthorizedStaging217SqlSender({
+      cwd: ROOT,
+      env: fixtureEnv({
+        F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED: 'yes',
+        BABYDRAGON_STAGING_SUPABASE_URL: `https://${DENIED_DISPOSABLE_PROJECT_REF}.supabase.co`,
+      }),
+    })
+    expect(disposable.ok).toBe(false)
+    expect(disposable.connected).toBe(false)
+    expect(disposable.blockers.some((b) => b.includes('disposable'))).toBe(true)
+  })
+
+  it('attach stays disconnected until 217 approval is yes, and connect:false never opens SQL', async () => {
+    const unapproved = await attachAuthorizedStaging217SqlSender({
+      cwd: ROOT,
+      env: fixtureEnv({ F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED: 'no' }),
+    })
+    expect(unapproved.ok).toBe(false)
+    expect(unapproved.connected).toBe(false)
+    expect(unapproved.sqlSender).toBe(null)
+
+    const ready = await attachAuthorizedStaging217SqlSender({
+      cwd: ROOT,
+      env: fixtureEnv({
+        F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED: 'yes',
+        BABYDRAGON_STAGING_DATABASE_URL: `postgresql://postgres.${AUTHORIZED_STAGING_PROJECT_REF}@aws-0-us-east-1.pooler.supabase.com:5432/postgres`,
+      }),
+      connect: false,
+    })
+    expect(ready.ok).toBe(true)
+    expect(ready.connected).toBe(false)
+    expect(ready.readyToConnect).toBe(true)
+    expect(ready.sqlSender).toBe(null)
+  })
+
+  it('credentials are sanitized in attach errors and redaction helper', () => {
+    const fakeUrl = ['postgres://', 'user', ':', 'supersecret', '@', 'example.invalid:5432/postgres'].join('')
+    const fakeJwt = ['eyJ', 'hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', '.', 'aaa', '.', 'bbb'].join('')
+    const dirty = redact217Text(`failed ${fakeUrl} token=${fakeJwt}`)
+    expect(dirty).toContain('postgres://[redacted]')
+    expect(dirty).toContain('[jwt-redacted]')
+    expect(dirty).not.toContain('supersecret')
+    expect(dirty).not.toMatch(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
   })
 })
 

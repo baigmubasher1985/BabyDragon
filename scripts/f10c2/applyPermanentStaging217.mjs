@@ -6,9 +6,13 @@
  * Never auto-rollback. Never auto-cleanup. Never Auth/seed/upload.
  * Never prints credentials, connection strings, JWTs, or env values.
  */
+import { spawnSync } from 'node:child_process'
+import dns from 'node:dns'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { parseDisposableDbUri } from '../../src/lib/phase4bTargetGuard.js'
 import {
   AUTHORIZED_STAGING_API_HOST,
   AUTHORIZED_STAGING_POOLER_USER,
@@ -18,6 +22,7 @@ import {
   DENIED_PRODUCTION_REF_PREFIX,
   SQL_217_EXECUTION_APPROVED_ENV,
   evaluatePermanentStagingApplyGates,
+  firstNonEmpty,
   loadPermanentStagingEnvMerged,
   sql217ExecutionApprovedIsYes,
 } from './assertPermanentStagingTarget.mjs'
@@ -77,6 +82,297 @@ const LEDGER_SECRET_RE = [
 
 export function parseCliFlags(argv = []) {
   return { wantExecute: argv.includes('--execute') }
+}
+
+export function redact217Text(text) {
+  return String(text || '')
+    .replace(/postgres(?:ql)?:\/\/[^\s'"]+/gi, 'postgres://[redacted]')
+    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[jwt-redacted]')
+    .replace(/sb_(?:secret|publishable)_[A-Za-z0-9]+/g, '[supabase-key-redacted]')
+    .replace(/service_role['"=\s:]+[A-Za-z0-9._-]+/gi, 'service_role=[redacted]')
+    .replace(/(password|pwd|secret|apikey|api_key)[=:][^\s&]+/gi, '$1=[redacted]')
+}
+
+function classifyConnectedUser(user) {
+  const raw = String(user || '')
+  if (raw.toLowerCase().includes(DENIED_PRODUCTION_REF_PREFIX)) return 'DENIED_PRODUCTION'
+  if (raw.toLowerCase().includes(DENIED_DISPOSABLE_PROJECT_REF)) return 'DENIED_DISPOSABLE'
+  if (raw === AUTHORIZED_STAGING_POOLER_USER) return 'authorized_staging_pooler'
+  if (raw === 'postgres') return 'postgres'
+  return 'other'
+}
+
+async function ensurePostgresClient() {
+  const dest = path.join(os.tmpdir(), 'f10c2-permanent-staging-pg')
+  const entry = path.join(dest, 'node_modules/postgres/src/index.js')
+  if (!fs.existsSync(entry)) {
+    fs.mkdirSync(dest, { recursive: true })
+    const install = spawnSync('npm', ['install', '--prefix', dest, '--no-fund', '--no-audit', 'postgres@3'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      shell: true,
+    })
+    if (install.status !== 0 || !fs.existsSync(entry)) {
+      throw new Error('postgres_client_install_failed')
+    }
+  }
+  return (await import(pathToFileURL(entry).href)).default
+}
+
+/**
+ * Attach the authorized permanent-staging Session Pooler sender.
+ * Same proven connection/execution pattern as the 45-path local attach,
+ * copied here so 217 never imports that attach (which would re-run 45 migrations).
+ * Identity and pooler checks run before any SQL file is sent.
+ */
+export async function attachAuthorizedStaging217SqlSender(options = {}) {
+  const cwd = options.cwd || ROOT
+  const loaded = options.env
+    ? { env: options.env }
+    : loadPermanentStagingEnvMerged(cwd)
+  const env = loaded.env
+  const projectName = firstNonEmpty(env, ['BABYDRAGON_STAGING_PROJECT_NAME', 'F10C2_PERMANENT_STAGING_PROJECT_NAME'])
+  const projectRef = firstNonEmpty(env, ['BABYDRAGON_STAGING_PROJECT_REF', 'F10C2_PERMANENT_STAGING_PROJECT_REF'])
+  const apiUrl = firstNonEmpty(env, ['BABYDRAGON_STAGING_SUPABASE_URL', 'F10C2_PERMANENT_STAGING_SUPABASE_URL'])
+  const dbUrl = firstNonEmpty(env, ['BABYDRAGON_STAGING_DATABASE_URL', 'F10C2_PERMANENT_STAGING_DB_URL'])
+  const hay = [projectName, projectRef, apiUrl].join('\n').toLowerCase()
+
+  if (projectName !== AUTHORIZED_STAGING_PROJECT_NAME) {
+    return { ok: false, connected: false, blockers: ['project name is not authorized staging'], sqlSender: null }
+  }
+  if (String(projectRef).toLowerCase() !== AUTHORIZED_STAGING_PROJECT_REF) {
+    return { ok: false, connected: false, blockers: ['project ref is not authorized staging'], sqlSender: null }
+  }
+  if (hay.includes(DENIED_PRODUCTION_REF_PREFIX)) {
+    return { ok: false, connected: false, blockers: ['production prefix nsne denied — SQL not sent'], sqlSender: null }
+  }
+  if (hay.includes(DENIED_DISPOSABLE_PROJECT_REF)) {
+    return { ok: false, connected: false, blockers: ['disposable ref denied — SQL not sent'], sqlSender: null }
+  }
+  const dbUri = parseDisposableDbUri(dbUrl, AUTHORIZED_STAGING_PROJECT_REF)
+  if (!dbUri.ok || dbUri.mode !== 'session pooler' || dbUri.usernameRefMatches !== true) {
+    return {
+      ok: false,
+      connected: false,
+      blockers: ['session pooler identity is not postgres.qxtnoxkyyancndgswjnu — SQL not sent'],
+      sqlSender: null,
+    }
+  }
+  if (!sql217ExecutionApprovedIsYes(env[SQL_217_EXECUTION_APPROVED_ENV])) {
+    return {
+      ok: false,
+      connected: false,
+      blockers: [`${SQL_217_EXECUTION_APPROVED_ENV} is not yes — SQL not sent`],
+      sqlSender: null,
+    }
+  }
+  if (options.connect === false) {
+    return { ok: true, connected: false, blockers: [], sqlSender: null, readyToConnect: true }
+  }
+
+  dns.setDefaultResultOrder('ipv4first')
+  const postgres = await ensurePostgresClient()
+  const sql = postgres(dbUrl, {
+    ssl: { rejectUnauthorized: false },
+    max: 1,
+    prepare: false,
+    connect_timeout: 30,
+    idle_timeout: 20,
+    onnotice: () => {},
+  })
+
+  const close = async () => {
+    try {
+      await sql.end({ timeout: 2 })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  try {
+    const ident = await sql.unsafe(`
+      SELECT current_database() AS db,
+             current_user AS db_user,
+             current_setting('app.f10c2_disposable_confirmed', true) AS disposable_guc
+    `)
+    const userClass = classifyConnectedUser(ident[0].db_user)
+    console.log(`current_database: ${ident[0].db}`)
+    console.log(`current_user_class: ${userClass}`)
+    console.log(`disposable_guc_is_yes: ${ident[0].disposable_guc === 'yes' ? 'YES' : 'no'}`)
+    if (userClass === 'DENIED_PRODUCTION' || userClass === 'DENIED_DISPOSABLE') {
+      await close()
+      return { ok: false, connected: true, blockers: ['connected identity is denied — 217 aborted before SQL'], sqlSender: null }
+    }
+    if (userClass !== 'authorized_staging_pooler' && userClass !== 'postgres') {
+      await close()
+      return { ok: false, connected: true, blockers: ['unexpected_db_user_class — SQL not sent'], sqlSender: null }
+    }
+    if (ident[0].disposable_guc === 'yes') {
+      await close()
+      return { ok: false, connected: true, blockers: ['disposable GUC is yes — refusing 217 apply'], sqlSender: null }
+    }
+
+    const sqlSender = async ({ path: relPath, bytes }) => {
+      console.log(`APPLY 217 ${relPath}`)
+      await sql.unsafe(bytes.toString('utf8'))
+    }
+
+    return {
+      ok: true,
+      connected: true,
+      blockers: [],
+      sql,
+      sqlSender,
+      close,
+      userClass,
+    }
+  } catch (error) {
+    await close()
+    return {
+      ok: false,
+      connected: true,
+      blockers: [`217 session-pooler attach failed — ${redact217Text(error?.message || error).slice(0, 200)}`],
+      sqlSender: null,
+    }
+  }
+}
+
+const WORKFLOW_TABLES_12 = Object.freeze([
+  'field_test_runs',
+  'field_test_artifacts',
+  'field_test_metrics',
+  'field_test_qc_reviews',
+  'field_test_iterations',
+  'field_test_call_events',
+  'field_test_run_acceptance_snapshots',
+  'field_test_iteration_evaluations',
+  'field_test_call_summaries',
+  'qc_verdict_overrides',
+  'acceptance_profiles',
+  'acceptance_rules',
+])
+const TENANT_STORAGE_TABLES_4 = Object.freeze([
+  'tenants',
+  'storage_connections',
+  'tenant_storage_policies',
+  'artifact_transfer_jobs',
+])
+const SIXTEEN_TABLES = Object.freeze([...WORKFLOW_TABLES_12, ...TENANT_STORAGE_TABLES_4])
+
+export async function collect217LiveProof(sql, options = {}) {
+  const tableList = SIXTEEN_TABLES.map((name) => `'${name}'`).join(', ')
+  const grants = await sql.unsafe(`
+    SELECT table_name, grantee, privilege_type
+    FROM information_schema.role_table_grants
+    WHERE table_schema = 'public'
+      AND table_name IN (${tableList})
+      AND grantee IN ('anon', 'authenticated', 'PUBLIC', 'service_role')
+    ORDER BY 1, 2, 3
+  `)
+  const defaults = await sql.unsafe(`
+    SELECT pg_get_userbyid(d.defaclrole) AS grantor,
+           n.nspname AS nsp,
+           d.defaclobjtype AS objtype,
+           e.privilege_type,
+           CASE
+             WHEN e.grantee = 0 THEN 'PUBLIC'
+             ELSE pg_get_userbyid(e.grantee)
+           END AS grantee
+    FROM pg_default_acl d
+    JOIN pg_namespace n ON n.oid = d.defaclnamespace
+    CROSS JOIN LATERAL aclexplode(d.defaclacl) e
+    WHERE n.nspname IN ('public', 'storage')
+      AND pg_get_userbyid(d.defaclrole) IN ('postgres', 'supabase_admin')
+  `)
+  const rpc = await sql.unsafe(`
+    SELECT
+      NOT has_function_privilege('anon', 'public.set_acceptance_profile_active(uuid,boolean)', 'EXECUTE')
+        AND has_function_privilege('authenticated', 'public.set_acceptance_profile_active(uuid,boolean)', 'EXECUTE')
+        AS admin_status_rpc_ok,
+      NOT has_function_privilege('anon', 'public.upsert_acceptance_profile(text,uuid,uuid,text,boolean,jsonb)', 'EXECUTE')
+        AND has_function_privilege('authenticated', 'public.upsert_acceptance_profile(text,uuid,uuid,text,boolean,jsonb)', 'EXECUTE')
+        AS admin_upsert_rpc_ok,
+      NOT has_function_privilege('anon', 'public.ingest_field_test_canonical_result(uuid,text,jsonb)', 'EXECUTE')
+        AND has_function_privilege('authenticated', 'public.ingest_field_test_canonical_result(uuid,text,jsonb)', 'EXECUTE')
+        AS ingest_rpc_ok
+  `)
+  const counts = await sql.unsafe(`
+    SELECT
+      (SELECT COUNT(*)::int FROM public.profiles) AS profiles,
+      (SELECT COUNT(*)::int FROM public.projects) AS projects,
+      (SELECT COUNT(*)::int FROM public.tasks) AS tasks,
+      (SELECT COUNT(*)::int FROM public.acceptance_profiles) AS acceptance_profiles,
+      (SELECT COUNT(*)::int FROM public.tenants) AS tenants,
+      (SELECT COUNT(*)::int FROM public.field_test_runs) AS field_test_runs
+  `)
+  const buckets = await sql.unsafe(`
+    SELECT id, public FROM storage.buckets ORDER BY id
+  `)
+  const anonPublicOnSixteen = grants.filter((g) =>
+    (g.grantee === 'anon' || g.grantee === 'PUBLIC') && SIXTEEN_TABLES.includes(g.table_name),
+  )
+  const authSelectWorkflow = WORKFLOW_TABLES_12.filter((name) =>
+    grants.some((g) => g.table_name === name && g.grantee === 'authenticated' && g.privilege_type === 'SELECT'),
+  )
+  const authWriteWorkflow = grants.filter((g) =>
+    WORKFLOW_TABLES_12.includes(g.table_name)
+      && g.grantee === 'authenticated'
+      && ['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'MAINTAIN'].includes(g.privilege_type),
+  )
+  const clientOnTenant = grants.filter((g) =>
+    TENANT_STORAGE_TABLES_4.includes(g.table_name)
+      && ['anon', 'authenticated', 'PUBLIC'].includes(g.grantee),
+  )
+  const postgresPublicClientDefaults = defaults.filter((d) =>
+    d.grantor === 'postgres'
+      && d.nsp === 'public'
+      && ['anon', 'authenticated', 'PUBLIC'].includes(d.grantee),
+  )
+
+  let authUserCount = null
+  const serviceKey = firstNonEmpty(options.env || {}, [
+    'BABYDRAGON_STAGING_SERVICE_ROLE_KEY',
+    'F10C2_PERMANENT_STAGING_SERVICE_ROLE_KEY',
+  ])
+  if (serviceKey) {
+    try {
+      const res = await fetch(`https://${AUTHORIZED_STAGING_API_HOST}/auth/v1/admin/users?page=1&per_page=1`, {
+        headers: {
+          apikey: serviceKey,
+          Authorization: `Bearer ${serviceKey}`,
+          Accept: 'application/json',
+        },
+      })
+      const totalHeader = res.headers.get('x-total-count')
+      if (totalHeader && /^\d+$/.test(totalHeader)) authUserCount = Number(totalHeader)
+      else {
+        const parsed = await res.json()
+        if (typeof parsed?.total === 'number') authUserCount = parsed.total
+        else if (Array.isArray(parsed?.users)) authUserCount = parsed.users.length
+      }
+    } catch {
+      authUserCount = null
+    }
+  }
+
+  return {
+    anonPublicOnSixteenCount: anonPublicOnSixteen.length,
+    authenticatedWorkflowSelectCount: authSelectWorkflow.length,
+    authenticatedWorkflowWriteCount: authWriteWorkflow.length,
+    clientTenantStorageGrantCount: clientOnTenant.length,
+    postgresPublicClientDefaultCount: postgresPublicClientDefaults.length,
+    supabaseAdminPublicDefaultsRemain: defaults.some((d) => d.grantor === 'supabase_admin' && d.nsp === 'public'),
+    storagePostgresDefaultsUntouched: defaults.some((d) =>
+      d.grantor === 'postgres' && d.nsp === 'storage' && d.grantee === 'authenticated' && d.privilege_type === 'SELECT',
+    ),
+    rpc: rpc[0] || {},
+    counts: counts[0] || {},
+    buckets: buckets.map((b) => ({ id: b.id, public: b.public })),
+    authUserCount,
+    tablesChecked: SIXTEEN_TABLES.length,
+    workflowTables: WORKFLOW_TABLES_12.length,
+    tenantStorageTables: TENANT_STORAGE_TABLES_4.length,
+  }
 }
 
 function scanSecrets(text) {
@@ -605,22 +901,99 @@ function printDryRun(result) {
   process.exitCode = 0
 }
 
+function printExecute(report, liveProof) {
+  console.log('CR1-E-R1 217-only EXECUTE (fail-closed; no secrets printed)')
+  console.log(`- SQL sent: ${report.sqlSent ? 'YES' : 'no'}`)
+  console.log(`- Auth/seed/upload: no`)
+  console.log(`- auto-rollback: no`)
+  console.log(`- sender: authorized staging Session Pooler`)
+  if (report.sent?.length) {
+    console.log(`- sent roles: ${report.sent.map((s) => s.role).join(', ')}`)
+  }
+  if (report.recorded?.applied?.number) {
+    console.log(`- recorded: ${report.recorded.applied.number} verified=${report.recorded.applied.verified === true}`)
+  }
+  if (liveProof) {
+    console.log(`- anon/PUBLIC grants on sixteen tables: ${liveProof.anonPublicOnSixteenCount}`)
+    console.log(`- authenticated SELECT on twelve workflow tables: ${liveProof.authenticatedWorkflowSelectCount}`)
+    console.log(`- authenticated writes on workflow tables: ${liveProof.authenticatedWorkflowWriteCount}`)
+    console.log(`- client grants on four tenant/storage tables: ${liveProof.clientTenantStorageGrantCount}`)
+    console.log(`- postgres public client defaults: ${liveProof.postgresPublicClientDefaultCount}`)
+    console.log(`- Auth users: ${liveProof.authUserCount === null ? 'not-read' : liveProof.authUserCount}`)
+    console.log(`- profiles/projects/tasks/acceptance_profiles/tenants/field_test_runs: ${[
+      liveProof.counts.profiles,
+      liveProof.counts.projects,
+      liveProof.counts.tasks,
+      liveProof.counts.acceptance_profiles,
+      liveProof.counts.tenants,
+      liveProof.counts.field_test_runs,
+    ].join('/')}`)
+  }
+  if (report.blockers?.length) {
+    console.log(`RESULT: STOPPED SAFELY: ${report.blockers[0]}`)
+    for (const blocker of report.blockers.slice(0, 8)) console.log(`  - ${blocker}`)
+    return
+  }
+  console.log(`RESULT: ${report.ok ? '217 applied and verified' : 'STOPPED SAFELY'}`)
+}
+
 async function main() {
   const argv = process.argv.slice(2)
   const flags = parseCliFlags(argv)
   if (flags.wantExecute) {
-    const report = await runPermanentStaging217Execute({ cwd: ROOT, argv })
-    console.log('CR1-E-R1 217-only EXECUTE (fail-closed; no secrets printed)')
-    console.log(`- SQL sent: ${report.sqlSent ? 'YES' : 'no'}`)
-    console.log(`- Auth/seed/upload: no`)
-    console.log(`- auto-rollback: no`)
-    if (report.blockers?.length) {
-      console.log(`RESULT: STOPPED SAFELY: ${report.blockers[0]}`)
-      for (const blocker of report.blockers.slice(0, 8)) console.log(`  - ${blocker}`)
-    } else {
-      console.log(`RESULT: ${report.ok ? '217 applied and verified' : 'STOPPED SAFELY'}`)
+    let session = null
+    try {
+      session = await attachAuthorizedStaging217SqlSender({ cwd: ROOT })
+      if (!session.ok || typeof session.sqlSender !== 'function') {
+        const report = {
+          ok: false,
+          sqlSent: false,
+          sent: [],
+          blockers: session.blockers?.length
+            ? session.blockers
+            : ['SQL sender is not attached — refusing to apply 217 (no silent SQL, no file rewrite)'],
+        }
+        printExecute(report, null)
+        process.exitCode = 2
+        return
+      }
+      const report = await runPermanentStaging217Execute({
+        cwd: ROOT,
+        argv,
+        sqlSender: session.sqlSender,
+        writeApplyLedger: true,
+      })
+      let liveProof = null
+      if (report.ok && session.sql) {
+        liveProof = await collect217LiveProof(session.sql, {
+          env: loadPermanentStagingEnvMerged(ROOT).env,
+        })
+        writeAudit('cr1e-permanent-staging-217-execute-ledger.json', {
+          dated: '2026-08-29',
+          ok: true,
+          sqlSent: true,
+          sent: report.sent,
+          recorded: report.recorded,
+          liveProof,
+          authCreated: false,
+          seedCreated: false,
+          autoRollback: false,
+          target: {
+            projectName: AUTHORIZED_STAGING_PROJECT_NAME,
+            projectRef: AUTHORIZED_STAGING_PROJECT_REF,
+            apiHost: AUTHORIZED_STAGING_API_HOST,
+            poolerUser: AUTHORIZED_STAGING_POOLER_USER,
+          },
+        })
+      }
+      printExecute(report, liveProof)
+      process.exitCode = report.ok ? 0 : 2
+    } catch (error) {
+      console.error(`STOPPED SAFELY: 217 runner failed (message redacted) ${redact217Text(error?.message || '').slice(0, 80)}`)
+      process.exitCode = 2
+    } finally {
+      if (session?.close) await session.close()
     }
-    process.exitCode = report.ok ? 0 : 2
     return
   }
   printDryRun(runPermanentStaging217DryRun({ cwd: ROOT, argv }))

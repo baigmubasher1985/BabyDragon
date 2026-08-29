@@ -1,6 +1,6 @@
 # Permanent staging cutover package (prepare only)
 
-**Status:** CR1-E-R1 — permanent-staging **45/45 applied and verified**. Revised **217** privilege contract is **approved** (current sixteen tables + future default grants). 217-only hashed runner is ready and **not executed**. 45-path SQL execution approval remains **no**. Dedicated 217 flag remains **no**. Auth users and baseline seed are **still blocked**. Draft **218** is not required. Disposable SQL **216** remains disposable-only evidence (2026-08-28). Do not re-apply the 45-path set. Do not apply 217 until a later explicit 217-only approval. Do not run 217 recovery automatically.
+**Status:** CR1-E-R1 — permanent-staging **45/45 applied and verified**. Revised **217** privilege contract is **approved** (current sixteen tables + future default grants). 217-only hashed runner has the authorized Session Pooler SQL sender **attached** and remains a **dedicated 217 runner** (does not re-run the 45-path wrapper). 217 is **not executed** until dedicated approval is yes **and** `--execute`. 45-path SQL execution approval remains **no**. Dedicated 217 flag remains **no**. Auth users and baseline seed are **still blocked**. Draft **218** is not required. Disposable SQL **216** remains disposable-only evidence (2026-08-28). Do not re-apply the 45-path set. Do not run 217 recovery automatically.
 **Gate:** CR1-E-R1 217-ONLY EXECUTION PACKAGE READY — HASHED SINGLE-MIGRATION RUNNER VERIFIED — EXACT CHECKPOINT READY — SQL UNAUTHORIZED — PRODUCTION UNTOUCHED
 **Owner:** MobbiTech Global LLC · Product: BabyDragon / NetField-360
 **Dated:** 2026-08-29
@@ -13,7 +13,7 @@ Authorized staging identity (not production):
 - Session Pooler user: `postgres.qxtnoxkyyancndgswjnu`
 - Connection method: session-pooler
 - 45-path wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs` (explicit 45-path allowlist; execute refused while `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED` is no; do not re-apply)
-- 217-only runner: `scripts/f10c2/applyPermanentStaging217.mjs` (dry-run by default; execute requires `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` **and** `--execute`; never reuses the 45-path flag)
+- 217-only runner: `scripts/f10c2/applyPermanentStaging217.mjs` (Session Pooler SQL sender attached; still dedicated — not the 45-path wrapper; dry-run by default; execute requires `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` **and** `--execute`; never reuses the 45-path flag)
 - 217 hash manifest: `scripts/f10c2/permanentStaging217.hashes.json` (forward, verification, rollback SHA-256)
 - Git-gate (both runners): approved branch `step-1j2-f10c1i-security-baseline`; local HEAD equals remote-tracking; no staged changes; execution-package files match committed Git content on execute; reviewed hashes match the dedicated manifest; optional `F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA` must equal current HEAD if supplied. No commit SHA is hardcoded.
 - Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 records a separate gitignored ledger `.permanent-staging-217-apply-ledger.json` after a later authorized apply.
@@ -441,7 +441,7 @@ Gap/loss point: Field Results previously selected `projects.id,name,market` and 
 ## What CR1-E / CR1-E-R1 did not do (still true)
 
 - Permanent staging 45/45 applied in the authorized earlier execute pass; 45-path SQL approval is now **no** again
-- Draft **217** privilege contract approved; 217-only hashed runner ready; 217 not executed. Dedicated 217 approval is **no**. Recovery is manual emergency only.
+- Draft **217** privilege contract approved; 217-only hashed runner has Session Pooler sender attached and remains dedicated; 217 not executed. Dedicated 217 approval is **no**. Recovery is manual emergency only.
 - Draft **218** not created (not required)
 - 216 newly applied once on disposable only; 215 not reapplied; 214 not executed
 - No Auth users created

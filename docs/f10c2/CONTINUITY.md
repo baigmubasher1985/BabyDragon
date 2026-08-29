@@ -3,7 +3,7 @@
 **Read this before touching F10C2 / CR1 work.**
 **Never discard, reset, clean, stash, or revert the dirty working tree** that holds CR1-B through CR1-E. Do not stage, commit, push, PR, merge, or deploy unless the owner explicitly asks.
 
-Last updated: 2026-08-29 (CR1-E-R1 217-only hashed runner — dedicated flag + hash manifest + SHA-free git-gate; Auth/seed still blocked; SQL still unauthorized)
+Last updated: 2026-08-29 (CR1-E-R1 217-only hashed runner — Session Pooler SQL sender attached; still a dedicated 217 runner; Auth/seed still blocked; 217 not executed until dedicated flag + --execute)
 
 ## Branch and git-gate
 
@@ -43,7 +43,7 @@ Two local wrapper-test failures were contract bugs, not database failures:
 1. Git gate used to hardcode a commit SHA, which created a stale-SHA cycle. The gate no longer pins a SHA. It requires the approved branch, HEAD == remote-tracking, no staged changes, clean execution-package files on execute, reviewed hashes, and an optional locally supplied approved SHA.
 2. Execute tests assumed the gitignored apply ledger was absent. After the authorized 45/45 apply it exists with 45 verified entries. Tests now cover **pre-apply (absent)** and **post-apply (exactly 45 verified)**. Wrapper resume policy treats a complete ledger as “already applied — refuse re-apply”, not as a partial ledger. The file was not deleted.
 
-**217-only runner** is ready: dry-run by default; refuses unless the dedicated 217 flag is yes **and** `--execute`; requires the complete verified 45-entry ledger; refuses hash mismatch and reapplication; sends only 217 forward then 217 verification; never auto-rollback, cleanup, Auth, or seed.
+**217-only runner** is ready with the authorized Session Pooler SQL sender attached (same proven connection/execution pattern as the 45-path wrapper, copied into the dedicated runner so 45 migrations are never re-run). Dry-run by default; refuses unless the dedicated 217 flag is yes **and** `--execute`; requires the complete verified 45-entry ledger; refuses hash mismatch and reapplication; sends only 217 forward then 217 verification; never auto-rollback, cleanup, Auth, or seed.
 
 **STG-GRANT-001 remains open** until 217 is authorized. Draft 217 now covers current tables **and** future objects:
 
@@ -52,7 +52,7 @@ Two local wrapper-test failures were contract bugs, not database failures:
 - `supabase_admin` public client defaults remain as a documented platform residual (objects created by that role, not by our migrations).
 - Recovery is **manual emergency only**. It reopens direct client writes. It does not restore table-wipe (TRUNCATE) or MAINTAIN. Forward-fix is preferred, especially on production. Never run recovery automatically.
 
-Draft **217** privilege contract is approved. The 217-only hashed runner is ready. Do not apply until dedicated 217 approval is yes **and** `--execute` is passed.
+Draft **217** privilege contract is approved. The 217-only hashed runner has its Session Pooler sender attached and remains a dedicated runner (not the 45-path wrapper). Do not apply until dedicated 217 approval is yes **and** `--execute` is passed.
 
 **Vendor contract:** there is no `vendors` table and none is required before Auth/seed. Product vendor display is `projects.customer` (Admin Create Project customer field). Field Results now selects `customer` so the Vendor column can show the persisted name. Do not invent 218.
 
@@ -82,7 +82,7 @@ Physical runs and snapshots were not modified. Sync Now was not clicked.
 
 ## Tests
 
-`npm run test:f10c2`: **50 files, 493 passed, 14 todo**.
+`npm run test:f10c2`: **50 files, 497 passed, 14 todo**.
 
 ## Physical iPerf proof (immutable)
 
