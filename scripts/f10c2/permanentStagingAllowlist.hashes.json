@@ -1,0 +1,279 @@
+{
+  "algorithm": "sha256",
+  "count": 45,
+  "expectedCount": 45,
+  "adapterReplacesDisposable000": true,
+  "historicalDisposable000NotInAllowlist": "supabase/drafts/f10c2/phase4b/bootstrap/000_disposable_operational_schema.sql",
+  "files": [
+    {
+      "number": "000",
+      "slug": "000_permanent_staging_operational_schema",
+      "path": "supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.sql",
+      "sha256": "e5156be4409b6bcfe9ae4a60c9f1e78e23f596ec3272b8ebfb8fd6b038d169f3"
+    },
+    {
+      "number": "001",
+      "slug": "001_security_audit_log",
+      "path": "supabase/drafts/forward/001_security_audit_log.sql",
+      "sha256": "b9a9e0b9ee61a1dec49c89703742682cffe237848bb2b87348afee1b5f6e9491"
+    },
+    {
+      "number": "002",
+      "slug": "002_harden_existing_functions",
+      "path": "supabase/drafts/forward/002_harden_existing_functions.sql",
+      "sha256": "a01f24b1f7b964749ee6ceb567ec48e7e6ed221f9be018d34e5482fb768c2063"
+    },
+    {
+      "number": "003",
+      "slug": "003_security_helpers",
+      "path": "supabase/drafts/forward/003_security_helpers.sql",
+      "sha256": "1ad29236585d4298777d047efd57bb8fe8f907e6f4078f1d7f262c36e8374939"
+    },
+    {
+      "number": "004",
+      "slug": "004_rpc_update_assigned_task_status",
+      "path": "supabase/drafts/forward/004_rpc_update_assigned_task_status.sql",
+      "sha256": "dc2af98b5d02e11c53c07e30ffbd1475fd2736b53f1cd8cc0a442ffc037a471f"
+    },
+    {
+      "number": "005",
+      "slug": "005_rpc_update_assigned_checklist_item",
+      "path": "supabase/drafts/forward/005_rpc_update_assigned_checklist_item.sql",
+      "sha256": "bd38754f5511c8e0894457dc7ca2d222e90047fda238abf97ef0fd4dfc92029b"
+    },
+    {
+      "number": "006",
+      "slug": "006_rpc_insert_assigned_task_issue",
+      "path": "supabase/drafts/forward/006_rpc_insert_assigned_task_issue.sql",
+      "sha256": "25676e08e58666cefdc3120e8291f6f09332141c61da63891bf7dd945adcf62d"
+    },
+    {
+      "number": "007",
+      "slug": "007_rpc_insert_assigned_task_update",
+      "path": "supabase/drafts/forward/007_rpc_insert_assigned_task_update.sql",
+      "sha256": "7c24d4110193126243ad36fed241392f07cd97f97586fd348fea0b0115c66165"
+    },
+    {
+      "number": "008",
+      "slug": "008_execute_grants",
+      "path": "supabase/drafts/forward/008_execute_grants.sql",
+      "sha256": "bc0653d8fc9c19f51792d90b5e96622d72ebd959699abc3b8d9d34896873244f"
+    },
+    {
+      "number": "011",
+      "slug": "011_rls_task_updates",
+      "path": "supabase/drafts/forward/011_rls_task_updates.sql",
+      "sha256": "5ebe43bdeb46faaa237c4c8ecc7b9341986979448c44c733b76835fe18ba3e05"
+    },
+    {
+      "number": "014",
+      "slug": "014_rls_task_grids",
+      "path": "supabase/drafts/forward/014_rls_task_grids.sql",
+      "sha256": "fd743855832298dd6df0c0a9f2eece5525f8d1a63ee93991c9afb063d91b9f89"
+    },
+    {
+      "number": "015",
+      "slug": "015_rls_projects",
+      "path": "supabase/drafts/forward/015_rls_projects.sql",
+      "sha256": "e8532d533818b074971a919e42ea1e97a22093cf9afedf8eeb0bc1e588f78868"
+    },
+    {
+      "number": "016",
+      "slug": "016_rls_grids",
+      "path": "supabase/drafts/forward/016_rls_grids.sql",
+      "sha256": "3a766384d5c3c8998ed87ef1b07df42ece34ad3d7f6399c36297121605c36ed5"
+    },
+    {
+      "number": "017",
+      "slug": "017_rls_routes",
+      "path": "supabase/drafts/forward/017_rls_routes.sql",
+      "sha256": "01506ca686bad6bcd000205f5199a3a24e293329b82af5ead135dedaf142e93e"
+    },
+    {
+      "number": "018",
+      "slug": "018_rls_route_grids",
+      "path": "supabase/drafts/forward/018_rls_route_grids.sql",
+      "sha256": "8d8498078cc90f873487cc86582a0aa42373d04368c62c4bfb077db0b1c562fb"
+    },
+    {
+      "number": "019",
+      "slug": "019_rls_cell_files_sites_sectors",
+      "path": "supabase/drafts/forward/019_rls_cell_files_sites_sectors.sql",
+      "sha256": "8aab8256ae2c285c7dfe21435fc95fe06322e663b00b488fd069f34496882b7a"
+    },
+    {
+      "number": "020",
+      "slug": "020_operational_evidence_schema_contract",
+      "path": "supabase/drafts/forward/020_operational_evidence_schema_contract.sql",
+      "sha256": "14e97ff3775fcfc3939bf6621f895a8c3b49ab23be08c304e0a471d0eaba0313"
+    },
+    {
+      "number": "101",
+      "slug": "101_field_test_runs",
+      "path": "supabase/drafts/f10c2/forward/101_field_test_runs.sql",
+      "sha256": "4d831a9bcdc2c69d9c85508cc35cdec3638c6b72c8efb7abf89278475ffc7db7"
+    },
+    {
+      "number": "102",
+      "slug": "102_field_test_artifacts",
+      "path": "supabase/drafts/f10c2/forward/102_field_test_artifacts.sql",
+      "sha256": "d6a8030bcc319ab82d2c3cded6f43998ffea79af462aeb0d7e0c2ea6c756b65d"
+    },
+    {
+      "number": "103",
+      "slug": "103_field_test_metrics",
+      "path": "supabase/drafts/f10c2/forward/103_field_test_metrics.sql",
+      "sha256": "b0686f1f2b286250a58f95a597cd0a92ef52fdd7253c72328789c248ab9692cc"
+    },
+    {
+      "number": "104",
+      "slug": "104_field_test_qc_reviews",
+      "path": "supabase/drafts/f10c2/forward/104_field_test_qc_reviews.sql",
+      "sha256": "6f7fcc99eaf651d98d888c4cb979e888358adb09370f1efec5bb205f07399211"
+    },
+    {
+      "number": "105",
+      "slug": "105_rpc_submit_field_test_run",
+      "path": "supabase/drafts/f10c2/forward/105_rpc_submit_field_test_run.sql",
+      "sha256": "cf0f3e6a7e8ec1b2ce3c45ba406a635e6bd164ca60bfb2a4d9f631f8266cff59"
+    },
+    {
+      "number": "106",
+      "slug": "106_rpc_register_field_test_artifact",
+      "path": "supabase/drafts/f10c2/forward/106_rpc_register_field_test_artifact.sql",
+      "sha256": "0f7da2f6c6036c56377ba1147168b56ca0a7052b8d6e14132e1066da1c34bda4"
+    },
+    {
+      "number": "107",
+      "slug": "107_rpc_complete_field_test_artifact_upload",
+      "path": "supabase/drafts/f10c2/forward/107_rpc_complete_field_test_artifact_upload.sql",
+      "sha256": "9eed35c0bee84274186e7a5eaf7f5826128e01c7a45e0bc013fe3d7a92cf04b5"
+    },
+    {
+      "number": "108",
+      "slug": "108_rpc_submit_field_test_qc_review",
+      "path": "supabase/drafts/f10c2/forward/108_rpc_submit_field_test_qc_review.sql",
+      "sha256": "85c780aea7906604d3604b76d6df1ba425ec5ea0893dc44887b61c02a1052749"
+    },
+    {
+      "number": "109",
+      "slug": "109_rls_field_test_runs",
+      "path": "supabase/drafts/f10c2/forward/109_rls_field_test_runs.sql",
+      "sha256": "17599aba28dfb6096499e9c851453b51f19851359f6d5584b6cdf18e77323253"
+    },
+    {
+      "number": "110",
+      "slug": "110_rls_field_test_artifacts_metrics",
+      "path": "supabase/drafts/f10c2/forward/110_rls_field_test_artifacts_metrics.sql",
+      "sha256": "8a35377b567df012d3428ecf489b2306a15331d82d6fea7a5572f8c7154e1f05"
+    },
+    {
+      "number": "111",
+      "slug": "111_rls_field_test_qc_reviews",
+      "path": "supabase/drafts/f10c2/forward/111_rls_field_test_qc_reviews.sql",
+      "sha256": "e04ca81a4034ca8d09a833e2fe482b324518c7ecac4edeee26a98ac072aa0a58"
+    },
+    {
+      "number": "113",
+      "slug": "113_rpc_finalize_field_test_run",
+      "path": "supabase/drafts/f10c2/forward/113_rpc_finalize_field_test_run.sql",
+      "sha256": "f95b1551de51481d6d58f671669d3cd02e85bb6f9d8fde09d4c349c99ee14ba7"
+    },
+    {
+      "number": "114",
+      "slug": "114_result_artifacts_private_bucket",
+      "path": "supabase/drafts/f10c2/forward/114_result_artifacts_private_bucket.sql",
+      "sha256": "c3761c7fd6d3d8c47dd41b3a4cd606542d31c3fbb5dbdacf2c9df627e04f6a5d"
+    },
+    {
+      "number": "115",
+      "slug": "115_field_test_execute_grants",
+      "path": "supabase/drafts/f10c2/forward/115_field_test_execute_grants.sql",
+      "sha256": "0559addb55c3530074cbe3474dadc935fc52cdb1781c5e37adc5a70f472d3a42"
+    },
+    {
+      "number": "201",
+      "slug": "201_tenants",
+      "path": "supabase/drafts/f10c2/phase4a/forward/201_tenants.sql",
+      "sha256": "16bcb4083be3c5c0af8a76783947545c7530b9df68b89bec8d0bb0cfdbc10011"
+    },
+    {
+      "number": "202",
+      "slug": "202_storage_connections",
+      "path": "supabase/drafts/f10c2/phase4a/forward/202_storage_connections.sql",
+      "sha256": "d3106655e58866dd33b842dc797ff7c63d864ce4daab5a07a08cc65fca9c515a"
+    },
+    {
+      "number": "203",
+      "slug": "203_tenant_storage_policies",
+      "path": "supabase/drafts/f10c2/phase4a/forward/203_tenant_storage_policies.sql",
+      "sha256": "39d8243799b5a772e42df4874012ba468a21c21cae6a484fd06209c05b8e7f8e"
+    },
+    {
+      "number": "204",
+      "slug": "204_field_test_artifacts_tenant_columns",
+      "path": "supabase/drafts/f10c2/phase4a/forward/204_field_test_artifacts_tenant_columns.sql",
+      "sha256": "dd60eba054b733d1f13bcf3968ae2c7b2e657477876f8af7b791ece652941805"
+    },
+    {
+      "number": "205",
+      "slug": "205_artifact_transfer_jobs",
+      "path": "supabase/drafts/f10c2/phase4a/forward/205_artifact_transfer_jobs.sql",
+      "sha256": "d85bfac9b57e247f5c586a2ff477bdf2d5fe63c0079ee16ff66350ecfa7e0062"
+    },
+    {
+      "number": "206",
+      "slug": "206_rpc_request_artifact_upload_plan",
+      "path": "supabase/drafts/f10c2/phase4a/forward/206_rpc_request_artifact_upload_plan.sql",
+      "sha256": "2e8045267644fe6b2d247e208592fe5faad67117c6f9cae4d348d7779bd60220"
+    },
+    {
+      "number": "208",
+      "slug": "208_phase4b_validation_remediation",
+      "path": "supabase/drafts/f10c2/phase4b/forward/208_phase4b_validation_remediation.sql",
+      "sha256": "7ff05a2e4196ebea1ef5c6483b9f4af93d2f164bf5a12e82fc4e5be2baefa7ff"
+    },
+    {
+      "number": "209",
+      "slug": "209_disposable_operational_profile_task_rls_remediation",
+      "path": "supabase/drafts/f10c2/phase4b/forward/209_disposable_operational_profile_task_rls_remediation.sql",
+      "sha256": "19886130e42441fbfd1490620fdf81864f880388003d8617016fbf43cb5a62ea"
+    },
+    {
+      "number": "210",
+      "slug": "210_cr1b_canonical_ingestion_schema",
+      "path": "supabase/drafts/f10c2/phase4b/forward/210_cr1b_canonical_ingestion_schema.sql",
+      "sha256": "1db0ae19b33e87e40b1befccf137ed032b3e9c1094598b9d961ef8068b4a50f1"
+    },
+    {
+      "number": "211",
+      "slug": "211_cr1b_acceptance_engine_schema",
+      "path": "supabase/drafts/f10c2/phase4b/forward/211_cr1b_acceptance_engine_schema.sql",
+      "sha256": "ca773bbed7fb575a8b7b675c2e82de13f97a11659c2734d5931c5a1836c7ffb7"
+    },
+    {
+      "number": "212",
+      "slug": "212_cr1b_rpc_ingest_evaluate_qc",
+      "path": "supabase/drafts/f10c2/phase4b/forward/212_cr1b_rpc_ingest_evaluate_qc.sql",
+      "sha256": "748ff90dba6f17fabdf35988436562572dbd487fce5f5433f8ea22ac82ea9d5f"
+    },
+    {
+      "number": "213",
+      "slug": "213_cr1b_rls_grants",
+      "path": "supabase/drafts/f10c2/phase4b/forward/213_cr1b_rls_grants.sql",
+      "sha256": "c4daca6e425be721dc6336501d666c584b375d56e0d70156011c4faca815095f"
+    },
+    {
+      "number": "215",
+      "slug": "215_cr1d_acceptance_profile_management",
+      "path": "supabase/drafts/f10c2/phase4b/forward/215_cr1d_acceptance_profile_management.sql",
+      "sha256": "57c45c16e9eb66cfa706f812afd5e2a4ab98189ec0bfca90694c435b0a3eaf75"
+    },
+    {
+      "number": "216",
+      "slug": "216_cr1e_acceptance_profile_status",
+      "path": "supabase/drafts/f10c2/phase4b/forward/216_cr1e_acceptance_profile_status.sql",
+      "sha256": "415f77d7e21cbf3603e40fb2077a186c86b77ab601e14c8e42e32823a51207b5"
+    }
+  ]
+}

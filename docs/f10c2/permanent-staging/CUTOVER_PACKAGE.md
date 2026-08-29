@@ -1,13 +1,20 @@
 # Permanent staging cutover package (prepare only)
 
-**Status:** PREPARE ONLY for permanent staging. Disposable SQL **216** was applied once on `cxyqqgmepiphyejvceum` (2026-08-28). Do not create or contact permanent staging until the owner supplies a generated ref.
-**Gate:** PERMANENT STAGING TARGET REQUIRED — CUTOVER PACKAGE READY — NO DATABASE CONTACTED
+**Status:** CR1-E permanent-staging **identity authorized**; SQL execution approval remains **no**. Disposable SQL **216** was applied once on disposable evidence only (2026-08-28). Do not apply SQL to staging until a later explicit approval.
+**Gate:** WAITING FOR EXPLICIT SQL EXECUTION APPROVAL — PRODUCTION UNTOUCHED
 **Owner:** MobbiTech Global LLC · Product: BabyDragon / NetField-360
-**Dated:** 2026-08-28
+**Dated:** 2026-08-29
 
-Suggested unused project name: `babydragon-permanent-staging`. No generated project ref has been supplied. Session Pooler for approved migrations; the app uses the public URL plus anon key.
+Authorized staging identity (not production):
 
-Do not create, connect to, or modify a permanent database until the owner supplies environment name, project name, project ref, confirmation it is staging not production, connection method, credential **variable names**, and explicit migration execution authorization.
+- Project name: `babydragon-permanent-staging`
+- Ref: `qxtnoxkyyancndgswjnu`
+- API host: `qxtnoxkyyancndgswjnu.supabase.co`
+- Session Pooler user: `postgres.qxtnoxkyyancndgswjnu`
+- Connection method: session-pooler
+- Wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs` (explicit allowlist; dry-run while `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED` is no)
+
+Do not send SQL, create Auth users, create buckets, or seed until the owner sets SQL execution approval to yes in a later pass. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
 
 Do not copy the disposable database. Classify data A / B / C below.
 
@@ -28,31 +35,70 @@ Owner decisions recorded:
 
 ## 1. Canonical ordered migration manifest
 
-Apply in this order on a **blank** permanent staging project. Paths are forward drafts. Each apply-candidate has matching `verification/` and `rollback/` partners.
+Apply in this exact order on a **blank** permanent staging project. Never write `000…209` as an executable range. Each number below is an individual allowlist entry. Executable source of truth: `scripts/f10c2/permanentStagingApplyPlan.mjs` (`PERMANENT_STAGING_FORWARD_PATHS`). Wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs`.
 
-| Step | Slug | Folder | Notes |
-|------|------|--------|-------|
-| 0 | Dual JS + SQL target guard | `scripts/f10c2/assertPhase4bTarget.mjs` (adapt to staging names) | Fail closed if production |
-| 1 | `000_disposable_operational_schema` | `supabase/drafts/f10c2/phase4b/bootstrap/` | Rename conceptually to operational bootstrap; same relations. Staging guard must not require the disposable project name |
-| 2 | `001`–`008`, `011`, `014`–`020` | `supabase/drafts/forward/` | F10C1I security baseline |
-| 3 | `101`–`111`, `113`–`115` | `supabase/drafts/f10c2/forward/` | Field results + private bucket `114` |
-| 4 | `201`–`206` | `supabase/drafts/f10c2/phase4a/forward/` | Tenant / storage model |
-| 5 | `208_phase4b_validation_remediation` | `supabase/drafts/f10c2/phase4b/forward/` | Fresh after 206 |
-| 6 | `209_disposable_operational_profile_task_rls_remediation` | `supabase/drafts/f10c2/phase4b/forward/` | Profile/task RLS |
-| 7 | `210`–`213` | `supabase/drafts/f10c2/phase4b/forward/` | CR1B_APPLY canonical ingest, acceptance engine, RPC, RLS/grants |
-| 7b | **skip 214** | `supabase/drafts/f10c2/never-run/214/` | **NEVER RUN.** Quarantined. 215 supersedes. |
-| 8 | `215_cr1d_acceptance_profile_management` | `supabase/drafts/f10c2/phase4b/forward/` | CR1D_APPLY only |
-| 9 | `216_cr1e_acceptance_profile_status` | `supabase/drafts/f10c2/phase4b/forward/` | **CR1E_APPLY** one-shot. Applied on disposable 2026-08-28. Include on a fresh permanent-staging chain after that project is authorized. Never auto-apply via `listPhase4bApplyPlan()`. |
+Never execute: **009, 010, 012, 013, 112, 207, 214**.
+
+| # | Forward path |
+|---|--------------|
+| 000 | `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.sql` (staging adapter; replaces disposable 000 in this allowlist only) |
+| 001 | `supabase/drafts/forward/001_security_audit_log.sql` |
+| 002 | `supabase/drafts/forward/002_harden_existing_functions.sql` |
+| 003 | `supabase/drafts/forward/003_security_helpers.sql` |
+| 004 | `supabase/drafts/forward/004_rpc_update_assigned_task_status.sql` |
+| 005 | `supabase/drafts/forward/005_rpc_update_assigned_checklist_item.sql` |
+| 006 | `supabase/drafts/forward/006_rpc_insert_assigned_task_issue.sql` |
+| 007 | `supabase/drafts/forward/007_rpc_insert_assigned_task_update.sql` |
+| 008 | `supabase/drafts/forward/008_execute_grants.sql` |
+| 011 | `supabase/drafts/forward/011_rls_task_updates.sql` |
+| 014 | `supabase/drafts/forward/014_rls_task_grids.sql` |
+| 015 | `supabase/drafts/forward/015_rls_projects.sql` |
+| 016 | `supabase/drafts/forward/016_rls_grids.sql` |
+| 017 | `supabase/drafts/forward/017_rls_routes.sql` |
+| 018 | `supabase/drafts/forward/018_rls_route_grids.sql` |
+| 019 | `supabase/drafts/forward/019_rls_cell_files_sites_sectors.sql` |
+| 020 | `supabase/drafts/forward/020_operational_evidence_schema_contract.sql` |
+| 101 | `supabase/drafts/f10c2/forward/101_field_test_runs.sql` |
+| 102 | `supabase/drafts/f10c2/forward/102_field_test_artifacts.sql` |
+| 103 | `supabase/drafts/f10c2/forward/103_field_test_metrics.sql` |
+| 104 | `supabase/drafts/f10c2/forward/104_field_test_qc_reviews.sql` |
+| 105 | `supabase/drafts/f10c2/forward/105_rpc_submit_field_test_run.sql` |
+| 106 | `supabase/drafts/f10c2/forward/106_rpc_register_field_test_artifact.sql` |
+| 107 | `supabase/drafts/f10c2/forward/107_rpc_complete_field_test_artifact_upload.sql` |
+| 108 | `supabase/drafts/f10c2/forward/108_rpc_submit_field_test_qc_review.sql` |
+| 109 | `supabase/drafts/f10c2/forward/109_rls_field_test_runs.sql` |
+| 110 | `supabase/drafts/f10c2/forward/110_rls_field_test_artifacts_metrics.sql` |
+| 111 | `supabase/drafts/f10c2/forward/111_rls_field_test_qc_reviews.sql` |
+| 113 | `supabase/drafts/f10c2/forward/113_rpc_finalize_field_test_run.sql` |
+| 114 | `supabase/drafts/f10c2/forward/114_result_artifacts_private_bucket.sql` |
+| 115 | `supabase/drafts/f10c2/forward/115_field_test_execute_grants.sql` |
+| 201 | `supabase/drafts/f10c2/phase4a/forward/201_tenants.sql` |
+| 202 | `supabase/drafts/f10c2/phase4a/forward/202_storage_connections.sql` |
+| 203 | `supabase/drafts/f10c2/phase4a/forward/203_tenant_storage_policies.sql` |
+| 204 | `supabase/drafts/f10c2/phase4a/forward/204_field_test_artifacts_tenant_columns.sql` |
+| 205 | `supabase/drafts/f10c2/phase4a/forward/205_artifact_transfer_jobs.sql` |
+| 206 | `supabase/drafts/f10c2/phase4a/forward/206_rpc_request_artifact_upload_plan.sql` |
+| 208 | `supabase/drafts/f10c2/phase4b/forward/208_phase4b_validation_remediation.sql` |
+| 209 | `supabase/drafts/f10c2/phase4b/forward/209_disposable_operational_profile_task_rls_remediation.sql` |
+| 210 | `supabase/drafts/f10c2/phase4b/forward/210_cr1b_canonical_ingestion_schema.sql` |
+| 211 | `supabase/drafts/f10c2/phase4b/forward/211_cr1b_acceptance_engine_schema.sql` |
+| 212 | `supabase/drafts/f10c2/phase4b/forward/212_cr1b_rpc_ingest_evaluate_qc.sql` |
+| 213 | `supabase/drafts/f10c2/phase4b/forward/213_cr1b_rls_grants.sql` |
+| skip 214 | `supabase/drafts/f10c2/never-run/214/` — **NEVER RUN.** Quarantined. Not in the allowlist. |
+| 215 | `supabase/drafts/f10c2/phase4b/forward/215_cr1d_acceptance_profile_management.sql` |
+| 216 | `supabase/drafts/f10c2/phase4b/forward/216_cr1e_acceptance_profile_status.sql` |
+
+Cross-check: `listPhase4bApplyPlan()` (disposable 000 through 213, 43 files) **plus** `215` **plus** `216`. `listPhase4bApplyPlan()` must never auto-apply 215/216. Staging wrapper uses the explicit 45-path array only. Slot 000 is the **permanent-staging adapter** (`000_permanent_staging_operational_schema.sql`). Historical disposable 000 stays under `phase4b/bootstrap/` for disposable apply plans and is **not** in the staging allowlist. Count stays **45** (adapter replaces 000; it is not a 46th file).
 
 Source of truth for existing-disposable apply subsets: `scripts/f10c2/phase4bApplyPlan.mjs`
 
 - `BOOTSTRAP_APPLY` → `000`
-- `F10C1I_APPLY` / `F10C1I_SKIP`
-- `F10C2_APPLY` / `F10C2_SKIP`
-- `PHASE4A_APPLY` / `PHASE4A_NEVER_EXECUTE`
+- `F10C1I_APPLY` / `F10C1I_SKIP` (`009`, `010`, `012`, `013`)
+- `F10C2_APPLY` / `F10C2_SKIP` (`112`)
+- `PHASE4A_APPLY` / `PHASE4A_NEVER_EXECUTE` (`207`)
 - `PHASE4B_R1_APPLY` = `208`
 - `PHASE4B_U_R1_APPLY` = `209`
-- `CR1B_APPLY` = `210`–`213`
+- `CR1B_APPLY` = `210`, `211`, `212`, `213`
 - `CR1_NEVER_RUN` = `214` (quarantined `supabase/drafts/f10c2/never-run/214/`; not draft-in-forward)
 - `CR1D_APPLY` = `215`
 - `CR1D_DRAFT_ONLY` = empty
@@ -61,9 +107,11 @@ Source of truth for existing-disposable apply subsets: `scripts/f10c2/phase4bApp
 
 Canonical CR1 order: **210 → 211 → 212 → 213 → skip 214 → 215 → 216**.
 
+Next-apply adapter: **implemented.** Historical `000_disposable_operational_schema.sql` asserts `app.f10c2_disposable_confirmed = yes` (it does not SET that GUC; the disposable JS wrapper does `SET LOCAL`). That GUC is inappropriate on staging. The staging adapter copies the same schema DDL, omits the assert-yes / SET LOCAL / any invented `app.f10c2_staging_confirmed`, and aborts if the disposable GUC is already yes or if `public.profiles` is labeled DISPOSABLE ONLY. Empty-DB proof is a REST-only live gate on the **execute** path (before first migration). This package does not send SQL.
+
 ## 2. Migrations to apply (permanent staging, fresh)
 
-All rows in the table above except never-run slugs (`214` and `009`/`010`/`012`/`013`/`112`/`207`). On a brand-new authorized staging project apply the full chain once, including **216**. Do not apply 214. Do not apply never-run drafts. Do not contact staging until the owner supplies the generated ref.
+The 45 numbered rows in the table above (`000`, `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`, `201`, `202`, `203`, `204`, `205`, `206`, `208`, `209`, `210`, `211`, `212`, `213`, `215`, `216`). Do not apply `009`, `010`, `012`, `013`, `112`, `207`, or `214`. SQL execution approval remains **no** in this pass.
 
 ## 3. Retired / never-run drafts
 
@@ -89,7 +137,7 @@ Disposable-only synthetic fixture **301** is **not** part of permanent staging b
 
 ## 5. Extensions and database prerequisites
 
-Follow `000_disposable_operational_schema.sql` (operational tables: profiles, tasks, projects, grids, routes, and related). F10C1I 001–020 do not create those tables. Staging bootstrap is the same schema with staging guards, not a second invented schema.
+Follow `000_permanent_staging_operational_schema.sql` (same operational tables as historical disposable 000: profiles, tasks, projects, grids, routes, and related). F10C1I 001–020 do not create those tables. Staging bootstrap is the same schema without a disposable GUC. Do not modify historical `000_disposable_operational_schema.sql`.
 
 ## 6. RLS policies
 
@@ -194,12 +242,12 @@ Explicitly **excluded** from any seed: CR1 synthetic names, disposable-only vers
 
 ## 12. Verification SQL
 
-Run the `verification/` partner for every applied slug (000, 001–008/011/014–020, 101–111/113–115, 201–206, 208, 209, 210–213, 215, 216). SELECT-only. Stop on mismatch.
+Run the `verification/` partner for every applied slug individually. For slot 000 use `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.verify.sql` (not the historical disposable verify file). Then: `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`, `201`, `202`, `203`, `204`, `205`, `206`, `208`, `209`, `210`, `211`, `212`, `213`, `215`, `216`. SELECT-only. Stop on mismatch. Do not run verification for `009`, `010`, `012`, `013`, `112`, `207`, or `214`.
 
 ## 13. Automated contract tests
 
 - `npm run test:f10c2`
-- Focused: `tests/f10c2/cr1bMigrations.contract.test.js`, `cr1dMigrations.contract.test.js`, `cr1eMigrations.contract.test.js`, `cr1eProfileStatus.behavior.test.js`, `phase4bPreparation.contract.test.js`, `phase4bSBootstrap.contract.test.js`, `cr1dR2HeaderAssign.behavior.test.js`
+- Focused: `tests/f10c2/cr1bMigrations.contract.test.js`, `cr1dMigrations.contract.test.js`, `cr1eMigrations.contract.test.js`, `cr1ePermanentStagingApply.contract.test.js`, `cr1eProfileStatus.behavior.test.js`, `phase4bPreparation.contract.test.js`, `phase4bSBootstrap.contract.test.js`, `cr1dR2HeaderAssign.behavior.test.js`
 - `npm run f10c2:scan-phase4b-migrations`
 - `npm run f10c2:scan-cr1b-secrets`
 
@@ -320,6 +368,31 @@ Preserve expected truth for comparison:
 | GPS | **44** valid / **0** invalid |
 | Snapshots | Immutable — re-evaluation must not rewrite them |
 | Protected queue | `bd-rf-1787606300946` — never upload |
+
+---
+
+## Post-apply verification sequence (plan only — do not run in this pass)
+
+After a later explicit SQL approval and a successful hashed apply, verify in this exact order. Stop on first failure. Do not seed, create Auth, or upload until the empty-Auth / no-synthetic checks pass.
+
+1. **Tables** — adapter verify SQL; every later `verification/` partner; 14 operational tables + later CR1 tables exist; RLS enabled on bootstrap tables; business tables empty until authorized seed.
+2. **RPCs** — 004–007, 105–108, 113, 206, 212, 215, 216 exist as SECURITY DEFINER where specified; `set_acceptance_profile_active` present; no 214 objects.
+3. **RLS** — 011, 014–020, 109–111, 209, 213 policies present; no permissive `true` policies; `acceptance_profiles` remains SELECT-only for the client.
+4. **Grants** — 008, 115, 213: REVOKE anon/PUBLIC; GRANT authenticated EXECUTE only where intended.
+5. **Cross-tenant** — two staging tenants after authorized seed; artifact tenant columns do not leak; repeat `validateCr1bAuthMatrix.mjs` pattern against staging.
+6. **Storage** — private `result-artifacts` bucket from 114; object-key contract; no `task-photos` / `operational-evidence` for field-test artifacts; REST bucket list matches.
+7. **Acceptance** — profile upsert/list/assign (215) + status RPC (216); precedence task+scenario → task → project+scenario → project → tenant+scenario → tenant.
+8. **Inactive fallback** — do not seed **CR1-D-R2 E2E Data Rule**; do not restore `F10C2-P4BU-E2E`; default fallback remains CR1-B disposable-default **behavior** as product rule, not a copied disposable row.
+9. **Ingest / idempotency** — `ingest_field_test_canonical_result` / `submit_field_test_run`; repeat submit does not duplicate `client_run_id`; artifact checksum idempotency (106/107).
+10. **Snapshots** — `evaluateRun` returns the supplied snapshot; do not rewrite historical HTTP `cf39f235-…` or iPerf `1dab1239-…` (those live on disposable evidence; staging must not import them).
+11. **QC** — task-level QC does not auto-pass; 108 / field_test_qc_reviews; human QC separate from computed QC.
+12. **Empty Auth before account creation** — Auth admin user count 0 (or proven empty) **before** creating staging SA/Admin/FE; then create real staging users, never production identities.
+13. **No synthetic results** — no SYNTHETIC / F10C2-P4BU / disposable fixture rows; `F10C2_PERMANENT_STAGING_SEED_SYNTHETIC_FIELD_RESULTS=no`.
+14. **No disposable marker** — `current_setting('app.f10c2_disposable_confirmed', true)` is not `yes`; `public.profiles` comment is not `DISPOSABLE ONLY`.
+15. **Staging identity** — project name `babydragon-permanent-staging`, ref `qxtnoxkyyancndgswjnu`, host `qxtnoxkyyancndgswjnu.supabase.co`, pooler user `postgres.qxtnoxkyyancndgswjnu`.
+16. **Production untouched** — prefix `nsne` denied; no production SQL, Auth, storage, or env mutation.
+
+Protected queue `bd-rf-1787606300946` is never uploaded.
 
 ---
 

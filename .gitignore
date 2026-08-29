@@ -26,4 +26,5 @@ dist-ssr
 .env.local
 .env.disposable
 .env.permanent-staging
+.permanent-staging-apply-ledger.json
 supabase/config.toml

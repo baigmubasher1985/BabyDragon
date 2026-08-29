@@ -3,12 +3,12 @@
 **Read this before touching F10C2 / CR1 work.**
 **Never discard, reset, clean, stash, or revert the dirty working tree** that holds CR1-B through CR1-E. Do not stage, commit, push, PR, merge, or deploy unless the owner explicitly asks.
 
-Last updated: 2026-08-28 (CR1-E checkpoint boundary; SQL 214 quarantined)
+Last updated: 2026-08-29 (CR1-E permanent-staging apply package + staging 000 adapter; SQL approval remains no)
 
 ## Branch and HEAD
 
 - Branch: `step-1j2-f10c1i-security-baseline`
-- Committed HEAD: `28822c44a1294d76c3f757b7a039f7d41fe31691`
+- Committed HEAD: `00fbce27fd38526888129a4bd2dbca6937088836`
 - Working tree: dirty on purpose. CR1-B through CR1-E live as uncommitted tracked and untracked files.
 
 ## SQL and targets
@@ -19,8 +19,11 @@ Last updated: 2026-08-28 (CR1-E checkpoint boundary; SQL 214 quarantined)
 - SQL **214** never executed; quarantined at `supabase/drafts/f10c2/never-run/214/` (`CR1_NEVER_RUN`). Not draft-in-forward. Not silently required. Canonical order: **210 → 211 → 212 → 213 → skip 214 → 215 → 216**.
 - Never execute **009, 010, 012, 013, 112, 207**.
 - Production prefix **nsne** is denied. Do not contact production.
-- Do not create or connect to a permanent database until the owner supplies: environment name, project name, ref, confirmation it is staging not production, connection method, credential **variable names**, and explicit migration authorization.
-- Stop phrase when no target: **PERMANENT STAGING TARGET REQUIRED — CUTOVER PACKAGE READY — NO DATABASE CONTACTED**
+- Permanent staging identity is authorized for **pre-apply / dry-run only**: `babydragon-permanent-staging` / `qxtnoxkyyancndgswjnu` / `qxtnoxkyyancndgswjnu.supabase.co` / Session Pooler user `postgres.qxtnoxkyyancndgswjnu`. SQL execution approval remains **no**. Do not send SQL until a later explicit approval.
+- Wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs` — exact 45-path allowlist. Slot 000 is `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.sql` (replaces historical disposable 000 in the **staging** allowlist only). Never execute **009, 010, 012, 013, 112, 207, 214**.
+- Hash manifest: `scripts/f10c2/permanentStagingAllowlist.hashes.json`. Wrapper verifies SHA-256 before any connection. SQL files are never rewritten at apply time.
+- Empty-DB live check is REST-only on the **execute** path (before first migration). Dry-run is filesystem + env-guard + hash verification only.
+- Stop phrase while SQL approval is no: **WAITING FOR EXPLICIT SQL EXECUTION APPROVAL — PRODUCTION UNTOUCHED**
 
 ## CR1-E status (2026-08-28)
 
@@ -46,7 +49,7 @@ Physical runs and snapshots were not modified. Sync Now was not clicked.
 
 ## Tests
 
-`npm run test:f10c2`: **47 files, 464 passed, 14 todo**.
+`npm run test:f10c2`: **48 files, 471 passed, 14 todo**.
 
 ## Physical iPerf proof (immutable)
 
@@ -66,7 +69,7 @@ Historical snapshots are immutable. Changing today’s Current Criteria must not
 ## Permanent staging decision
 
 Stop using the disposable project for normal feature development after permanent staging cutover succeeds. Package: `docs/f10c2/permanent-staging/CUTOVER_PACKAGE.md`. ADR: `docs/adr/0001-permanent-staging-before-continued-feature-development.md`.
-Do not blindly copy disposable data. Classify A/B/C in the cutover package. Suggested unused project name: `babydragon-permanent-staging`. No generated ref has been supplied — do not create or connect.
+Do not blindly copy disposable data. Classify A/B/C in the cutover package. Authorized staging name/ref: `babydragon-permanent-staging` / `qxtnoxkyyancndgswjnu`. Identity-only this pass; do not apply SQL.
 
 Baseline templates are **approved definitions only — not seeded**.
 
@@ -76,9 +79,9 @@ Isolated. Unauthorized. Untouched.
 
 ## Exact next authorized action
 
-1. Owner reviews the CR1-E exact checkpoint A/B file list and authorizes git add/commit if desired.
-2. Owner supplies permanent staging project identity (generated ref) and migration authorization.
-3. Do not restore `F10C2-P4BU-E2E`. Do not SQL-reactivate **CR1-D-R2 E2E Data Rule**. Do not reapply 216.
+1. Owner reviews the CR1-E permanent-staging apply package (adapter, hashed 45-path allowlist, wrapper dry-run ledger) under `Audit Data/F10C2/CR1-E/`.
+2. If the owner later authorizes SQL, set `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED=yes` and run the staging wrapper **execute** pass (hash verify → target verify → REST empty-DB gate first → hashed files). Do not do that in this pass.
+3. Do not restore `F10C2-P4BU-E2E`. Do not SQL-reactivate **CR1-D-R2 E2E Data Rule**. Do not reapply 216 on disposable. Do not apply 214.
 
 ## Remaining cosmetic and functional issues
 
