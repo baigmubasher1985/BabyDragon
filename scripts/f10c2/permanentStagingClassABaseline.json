@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "kind": "permanent-staging-class-a-baseline",
+  "canonicalFeRole": "fe",
+  "tenant": {
+    "display_name": "MobbiTech Global LLC",
+    "slug": "mobbitech-global",
+    "deployment_mode": "mobbitech_saas",
+    "is_active": true,
+    "environment_purpose_column": false,
+    "environment_purpose_note": "public.tenants has no environment-purpose column. Purpose Permanent Staging is documentary only."
+  },
+  "profiles": {
+    "idMatchesAuthUserId": true,
+    "tenantIdColumn": false,
+    "tenantBindingNote": "public.profiles has no tenant_id. Tenant binding is through acceptance_profiles.tenant_id and later project rows."
+  },
+  "assignment": {
+    "scope_type": "tenant",
+    "is_default": false,
+    "projectOrTaskRequired": false,
+    "note": "Schema does not require a tenant default. None of the three templates is marked is_default. No project or task assignment is created."
+  },
+  "templates": [
+    {
+      "key": "standard_data_throughput",
+      "name": "Standard Data Throughput",
+      "summary": "Download 20 passing iterations at 10 Mbps AND upload 20 passing iterations at 1 Mbps. Voice directions are disabled and display N/A / NOT_EVALUATED. Missing applicable evidence is INCOMPLETE.",
+      "is_active": true,
+      "is_default": false,
+      "version": 1,
+      "scope_type": "tenant",
+      "scenario_family": null,
+      "rules": {
+        "description": "Pass only when at least 20 completed DL iterations each reach at least 10 Mbps AND at least 20 completed UL iterations each reach at least 1 Mbps. Failed, missing, or incomplete iterations do not count as passes. Missing applicable evidence remains INCOMPLETE. Disabled voice directions display N/A / NOT_EVALUATED.",
+        "missing_applicable": "INCOMPLETE",
+        "disabled_display": "N/A/NOT_EVALUATED",
+        "dl_ul": {
+          "enabled_directions": ["dl", "ul"],
+          "min_dl_mbps": 10,
+          "min_ul_mbps": 1,
+          "required_dl_passing_iterations": 20,
+          "required_ul_passing_iterations": 20,
+          "required_completed_iterations": 20,
+          "combine_mode": "AND",
+          "completion_policy": "min_passing",
+          "missing_applicable": "INCOMPLETE"
+        },
+        "mo_mt": {
+          "enabled_directions": [],
+          "required_mo_success": 0,
+          "required_mt_success": 0,
+          "combine_mode": "AND"
+        }
+      }
+    },
+    {
+      "key": "standard_voice_calls",
+      "name": "Standard Voice Calls",
+      "summary": "MO 10 successful calls AND MT 10 successful calls. Data directions are disabled and display N/A / NOT_EVALUATED. Missing applicable evidence is INCOMPLETE.",
+      "is_active": true,
+      "is_default": false,
+      "version": 1,
+      "scope_type": "tenant",
+      "scenario_family": null,
+      "rules": {
+        "description": "Pass only when at least 10 MO calls succeed AND at least 10 MT calls succeed. A successful call must also count as attempted. Disabled data directions display N/A / NOT_EVALUATED. Missing applicable evidence remains INCOMPLETE.",
+        "missing_applicable": "INCOMPLETE",
+        "disabled_display": "N/A/NOT_EVALUATED",
+        "dl_ul": {
+          "enabled_directions": [],
+          "min_dl_mbps": null,
+          "min_ul_mbps": null,
+          "required_dl_passing_iterations": null,
+          "required_ul_passing_iterations": null,
+          "required_completed_iterations": null,
+          "combine_mode": "AND",
+          "completion_policy": "min_passing",
+          "missing_applicable": "INCOMPLETE"
+        },
+        "mo_mt": {
+          "enabled_directions": ["MO", "MT"],
+          "required_mo_success": 10,
+          "required_mt_success": 10,
+          "combine_mode": "AND"
+        }
+      }
+    },
+    {
+      "key": "combined_data_and_voice",
+      "name": "Combined Data and Voice",
+      "summary": "DL 20 at 10 Mbps AND UL 20 at 1 Mbps AND MO 10 AND MT 10. All four families must pass. Missing applicable evidence is INCOMPLETE.",
+      "is_active": true,
+      "is_default": false,
+      "version": 1,
+      "scope_type": "tenant",
+      "scenario_family": null,
+      "rules": {
+        "description": "Pass only when all four enabled requirements pass: 20 DL iterations at 10 Mbps, 20 UL iterations at 1 Mbps, 10 successful MO calls, and 10 successful MT calls. Absence of any enabled family remains INCOMPLETE.",
+        "missing_applicable": "INCOMPLETE",
+        "disabled_display": "N/A/NOT_EVALUATED",
+        "dl_ul": {
+          "enabled_directions": ["dl", "ul"],
+          "min_dl_mbps": 10,
+          "min_ul_mbps": 1,
+          "required_dl_passing_iterations": 20,
+          "required_ul_passing_iterations": 20,
+          "required_completed_iterations": 20,
+          "combine_mode": "AND",
+          "completion_policy": "min_passing",
+          "missing_applicable": "INCOMPLETE"
+        },
+        "mo_mt": {
+          "enabled_directions": ["MO", "MT"],
+          "required_mo_success": 10,
+          "required_mt_success": 10,
+          "combine_mode": "AND"
+        }
+      }
+    }
+  ]
+}

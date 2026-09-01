@@ -21,6 +21,7 @@ export const DENIED_DISPOSABLE_PROJECT_REF = 'cxyqqgmepiphyejvceum'
 export const REQUIRED_GIT_BRANCH = 'step-1j2-f10c1i-security-baseline'
 export const APPROVED_GIT_SHA_ENV = 'F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA'
 export const SQL_217_EXECUTION_APPROVED_ENV = 'F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED'
+export const AUTH_SEED_APPROVED_ENV = 'F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED'
 export const REQUIRED_CONNECTION_METHOD = 'session-pooler'
 
 const REQUIRED_NAMES = [
@@ -106,6 +107,10 @@ export function sqlExecutionApprovedIsYes(value) {
 }
 
 export function sql217ExecutionApprovedIsYes(value) {
+  return normalizeYesNo(value) === 'yes'
+}
+
+export function authSeedApprovedIsYes(value) {
   return normalizeYesNo(value) === 'yes'
 }
 

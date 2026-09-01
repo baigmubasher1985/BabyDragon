@@ -1,7 +1,7 @@
 # Permanent staging cutover package (prepare only)
 
-**Status:** CR1-E-R1 — permanent-staging **45/45 applied and verified**. SQL **217** privilege hardening **applied and verified** 2026-08-29 via the dedicated 217-only runner (Session Pooler sender attached at `384c3aa`). 217 remains a **dedicated runner** (does not re-run the 45-path wrapper). Do not reapply 217. 45-path SQL execution approval remains **no**. Dedicated 217 flag is **reset to no**. Auth users and baseline seed were **not started**. Draft **218** is not required. Disposable SQL **216** remains disposable-only evidence (2026-08-28). Do not re-apply the 45-path set. Do not run 217 recovery automatically.
-**Gate:** CR1-E-R1 SQL SENDER CHECKPOINT PUSHED — SQL 217 APPLIED AND VERIFIED — PERMANENT STAGING READY FOR AUTH AND BASELINE SEED — PRODUCTION UNTOUCHED
+**Status:** CR1-E-R2 — permanent-staging **45/45 applied and verified**. SQL **217** privilege hardening **applied and verified**. Auth/Class A seed runner is committed (`scripts/f10c2/applyPermanentStagingAuthSeed.mjs`) and remains dry-run until `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED=yes` **and** `--execute`. Dedicated Auth/seed flag is **no**. 45-path and 217 SQL flags remain **no**. Auth users and baseline seed were **not executed**. Draft **218** is not required. Do not reapply 217. Do not re-apply the 45-path set.
+**Gate:** CR1-E-R2 AUTH/SEED RUNNER READY — WAITING FOR EXPLICIT AUTH_SEED APPROVAL — PRODUCTION UNTOUCHED
 **Owner:** MobbiTech Global LLC · Product: BabyDragon / NetField-360
 **Dated:** 2026-08-29
 
@@ -14,9 +14,11 @@ Authorized staging identity (not production):
 - Connection method: session-pooler
 - 45-path wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs` (explicit 45-path allowlist; execute refused while `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED` is no; do not re-apply)
 - 217-only runner: `scripts/f10c2/applyPermanentStaging217.mjs` (Session Pooler SQL sender attached; still dedicated — not the 45-path wrapper; dry-run by default; execute requires `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` **and** `--execute`; never reuses the 45-path flag)
+- Auth/Class A seed runner: `scripts/f10c2/applyPermanentStagingAuthSeed.mjs` (dry-run by default; execute requires `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED=yes` **and** `--execute`; never reuses the 45-path or 217 SQL flags; never rewrites `.env.permanent-staging`)
 - 217 hash manifest: `scripts/f10c2/permanentStaging217.hashes.json` (forward, verification, rollback SHA-256)
-- Git-gate (both runners): approved branch `step-1j2-f10c1i-security-baseline`; local HEAD equals remote-tracking; no staged changes; execution-package files match committed Git content on execute; reviewed hashes match the dedicated manifest; optional `F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA` must equal current HEAD if supplied. No commit SHA is hardcoded.
-- Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 gitignored ledger `.permanent-staging-217-apply-ledger.json` records 217 once (verified).
+- Auth/seed hash manifest: `scripts/f10c2/permanentStagingAuthSeed.hashes.json` (runner + Class A baseline spec SHA-256). No commit SHA is hardcoded.
+- Git-gate (all staging runners): approved branch `step-1j2-f10c1i-security-baseline`; local HEAD equals remote-tracking; no staged changes; execution-package files match committed Git content on execute; reviewed hashes match the dedicated manifest; optional `F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA` must equal current HEAD if supplied. No commit SHA is hardcoded.
+- Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 gitignored ledger `.permanent-staging-217-apply-ledger.json` records 217 once (verified). Auth/seed gitignored ledger `.permanent-staging-auth-seed-ledger.json` is written only after an authorized execute.
 
 The 45-path chain and SQL **217** are already applied. Auth users, baseline seed, package upload, and Sync Now were not started. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
 
@@ -211,7 +213,7 @@ Canonical names (Decision 5):
 - `BABYDRAGON_STAGING_FE_EMAIL`
 - `BABYDRAGON_STAGING_FE_PASSWORD`
 
-Compatible cutover-gate aliases: `F10C2_PERMANENT_STAGING_*` (including `CONFIRMED`, `NOT_PRODUCTION`, `SQL_EXECUTION_APPROVED`, `217_EXECUTION_APPROVED`, `APPROVED_GIT_SHA`, `CONNECTION_METHOD`). Never print values. The 45-path flag does not authorize 217.
+Compatible cutover-gate aliases: `F10C2_PERMANENT_STAGING_*` (including `CONFIRMED`, `NOT_PRODUCTION`, `SQL_EXECUTION_APPROVED`, `217_EXECUTION_APPROVED`, `AUTH_SEED_APPROVED`, `APPROVED_GIT_SHA`, `CONNECTION_METHOD`). Never print values. The 45-path flag does not authorize 217 or Auth/seed. The 217 flag does not authorize Auth/seed.
 
 ## 11. Controlled seed plan
 
@@ -444,6 +446,7 @@ Gap/loss point: Field Results previously selected `projects.id,name,market` and 
 - Draft **217** privilege contract approved and applied once on permanent staging; 217-only hashed runner has Session Pooler sender attached and remains dedicated. Dedicated 217 approval is **no** again. Recovery is manual emergency only.
 - Draft **218** not created (not required)
 - 216 newly applied once on disposable only; 215 not reapplied; 214 not executed
+- Auth/Class A seed runner committed; dedicated AUTH_SEED approval is **no**; Auth/seed not executed
 - No Auth users created
 - No baseline seed
 - No packages uploaded

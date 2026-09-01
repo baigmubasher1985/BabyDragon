@@ -3,7 +3,7 @@
 **Read this before touching F10C2 / CR1 work.**
 **Never discard, reset, clean, stash, or revert the dirty working tree** that holds CR1-B through CR1-E. Do not stage, commit, push, PR, merge, or deploy unless the owner explicitly asks.
 
-Last updated: 2026-08-29 (CR1-E-R1 SQL 217 applied and verified on permanent staging — sender checkpoint 384c3aa; dedicated 217 flag reset to no; Auth/seed not started)
+Last updated: 2026-08-29 (CR1-E-R2 Auth/Class A seed runner committed — dedicated AUTH_SEED flag is no; Auth/seed not executed; 217 remains applied once)
 
 ## Branch and git-gate
 
@@ -56,7 +56,7 @@ Draft **217** privilege contract is approved and **applied**. The 217-only hashe
 
 **Vendor contract:** there is no `vendors` table and none is required before Auth/seed. Product vendor display is `projects.customer` (Admin Create Project customer field). Field Results now selects `customer` so the Vendor column can show the persisted name. Do not invent 218.
 
-Auth users, seed, package upload, and Sync Now were **not** started. SQL approval remains **no**.
+Auth users, seed, package upload, and Sync Now were **not** started. SQL approval remains **no**. Dedicated Auth/seed flag `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED` is **no**. Runner: `scripts/f10c2/applyPermanentStagingAuthSeed.mjs` (dry-run by default; execute requires the dedicated flag **and** `--execute`).
 
 ## CR1-E disposable evidence (2026-08-28)
 
@@ -104,7 +104,7 @@ Historical snapshots are immutable. Changing today’s Current Criteria must not
 Stop using the disposable project for normal feature development after permanent staging cutover succeeds. Package: `docs/f10c2/permanent-staging/CUTOVER_PACKAGE.md`. ADR: `docs/adr/0001-permanent-staging-before-continued-feature-development.md`.
 Do not blindly copy disposable data. Classify A/B/C in the cutover package. Authorized staging name/ref: `babydragon-permanent-staging` / `qxtnoxkyyancndgswjnu`.
 
-Schema 45/45 is applied. SQL **217** is applied and verified. Auth users and the approved Class A baseline seed are the next authorized step and were **not** started. Baseline templates remain **approved definitions only — not seeded**.
+Schema 45/45 is applied. SQL **217** is applied and verified. The Auth/Class A seed runner is committed and hashed. Auth users and the approved Class A baseline seed were **not** executed. Baseline templates remain **approved definitions only — not seeded**.
 
 ## Production
 
@@ -112,7 +112,7 @@ Isolated. Unauthorized. Untouched.
 
 ## Exact next authorized action
 
-1. Create staging Auth users and the approved Class A baseline seed. Not before owner authorization of that pass.
+1. After the Auth/seed runner checkpoint is pushed and local equals origin: set `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED=yes` locally and run `node scripts/f10c2/applyPermanentStagingAuthSeed.mjs --execute`. Reset the flag to **no** after success or failure. Do not reuse the 45-path or 217 SQL flags.
 2. Do not reapply 217. Do not re-apply the 45-path wrapper. Do not apply 218. Do not run the 217 recovery file.
 3. Do not restore `F10C2-P4BU-E2E`. Do not SQL-reactivate **CR1-D-R2 E2E Data Rule**. Do not reapply 216 on disposable. Do not apply 214.
 

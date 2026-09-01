@@ -1,0 +1,20 @@
+{
+  "algorithm": "sha256",
+  "count": 2,
+  "expectedCount": 2,
+  "kind": "permanent-staging-auth-seed",
+  "neverRewriteEnv": true,
+  "neverCreateProjectsOrTasks": true,
+  "files": [
+    {
+      "role": "runner",
+      "path": "scripts/f10c2/applyPermanentStagingAuthSeed.mjs",
+      "sha256": "9f81e510af2a42283105742a7bd20e789d6b6a0fe4abb77e0d844854291c4204"
+    },
+    {
+      "role": "baseline",
+      "path": "scripts/f10c2/permanentStagingClassABaseline.json",
+      "sha256": "8e0066fcbdece31cdbd94389701cb90d6d42e22df1c5bc4e9ee61ececa0c8648"
+    }
+  ]
+}

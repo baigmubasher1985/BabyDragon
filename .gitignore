@@ -28,4 +28,5 @@ dist-ssr
 .env.permanent-staging
 .permanent-staging-apply-ledger.json
 .permanent-staging-217-apply-ledger.json
+.permanent-staging-auth-seed-ledger.json
 supabase/config.toml
