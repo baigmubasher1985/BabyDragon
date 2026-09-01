@@ -3,7 +3,7 @@
 **Read this before touching F10C2 / CR1 work.**
 **Never discard, reset, clean, stash, or revert the dirty working tree** that holds CR1-B through CR1-E. Do not stage, commit, push, PR, merge, or deploy unless the owner explicitly asks.
 
-Last updated: 2026-08-29 (CR1-E-R2 Auth/Class A seed runner committed — dedicated AUTH_SEED flag is no; Auth/seed not executed; 217 remains applied once)
+Last updated: 2026-09-01 (CR1-E-R2 READY FOR PROTECTED CHECKPOINT — Auth and Class A baseline verified; 217 ledger tests cover absent and complete states; all execution flags no)
 
 ## Branch and git-gate
 
@@ -23,7 +23,7 @@ Last updated: 2026-08-29 (CR1-E-R2 Auth/Class A seed runner committed — dedica
 - Never execute **009, 010, 012, 013, 112, 207**.
 - Production prefix **nsne** is denied. Do not contact production.
 - Permanent staging identity: `babydragon-permanent-staging` / `qxtnoxkyyancndgswjnu` / `qxtnoxkyyancndgswjnu.supabase.co` / Session Pooler user `postgres.qxtnoxkyyancndgswjnu`.
-- **45/45 hashed migrations applied and verified** on permanent staging. Local gitignored ledger `.permanent-staging-apply-ledger.json` records those 45 numbers. SQL execution approval is **reset to no**.
+- **45/45 hashed migrations applied and verified** on permanent staging. Local gitignored ledger `.permanent-staging-apply-ledger.json` records those 45 numbers. SQL execution approval is **reset to no**. Do not re-run.
 - Wrapper: `scripts/f10c2/applyPermanentStagingMigrations.mjs` — exact 45-path allowlist. Slot 000 is `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.sql`. Never execute **009, 010, 012, 013, 112, 207, 214**.
 - Hash manifest: `scripts/f10c2/permanentStagingAllowlist.hashes.json`. Wrapper verifies SHA-256 before any connection. SQL files are never rewritten at apply time.
 - Do not re-apply the 45-path set. A complete 45-verified ledger is a post-apply state: execute refuses re-apply. Do not delete the ledger to make tests pass.
@@ -43,7 +43,7 @@ Two local wrapper-test failures were contract bugs, not database failures:
 1. Git gate used to hardcode a commit SHA, which created a stale-SHA cycle. The gate no longer pins a SHA. It requires the approved branch, HEAD == remote-tracking, no staged changes, clean execution-package files on execute, reviewed hashes, and an optional locally supplied approved SHA.
 2. Execute tests assumed the gitignored apply ledger was absent. After the authorized 45/45 apply it exists with 45 verified entries. Tests now cover **pre-apply (absent)** and **post-apply (exactly 45 verified)**. Wrapper resume policy treats a complete ledger as “already applied — refuse re-apply”, not as a partial ledger. The file was not deleted.
 
-**217-only runner** has the authorized Session Pooler SQL sender attached (same proven connection/execution pattern as the 45-path wrapper, copied into the dedicated runner so 45 migrations are never re-run). 217 forward + verification **already applied**. Reapplication is refused. Never auto-rollback, cleanup, Auth, or seed.
+**217-only runner** has the authorized Session Pooler SQL sender attached (same proven connection/execution pattern as the 45-path wrapper, copied into the dedicated runner so 45 migrations are never re-run). 217 forward + verification **already applied**. A complete verified 217 ledger means already applied — refuse reapply safely. Tests inject absent vs complete ledgers; the real gitignored file is not deleted. Dedicated 217 flag is **no**. Never auto-rollback, cleanup, or re-run Auth/seed.
 
 **STG-GRANT-001 is closed** on permanent staging after authorized 217. Current tables **and** future objects:
 
@@ -56,7 +56,22 @@ Draft **217** privilege contract is approved and **applied**. The 217-only hashe
 
 **Vendor contract:** there is no `vendors` table and none is required before Auth/seed. Product vendor display is `projects.customer` (Admin Create Project customer field). Field Results now selects `customer` so the Vendor column can show the persisted name. Do not invent 218.
 
-Auth users, seed, package upload, and Sync Now were **not** started. SQL approval remains **no**. Dedicated Auth/seed flag `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED` is **no**. Runner: `scripts/f10c2/applyPermanentStagingAuthSeed.mjs` (dry-run by default; execute requires the dedicated flag **and** `--execute`).
+## CR1-E-R2 protected checkpoint (2026-09-01)
+
+Permanent staging `babydragon-permanent-staging` / `qxtnoxkyyancndgswjnu` is the verified Auth and Class A baseline. Do not mutate the database. Do not re-run Auth/seed. Do not re-run 45-path SQL or 217.
+
+Verified counts (do not re-query as a mutation pass):
+
+- Auth users **3**, tenants **1**, profiles **3**, acceptance templates **3**, acceptance rule rows **6**
+- Projects / tasks / field-test runs / QC / artifacts / storage objects: **0**
+
+All execution approval flags remain **no**: `F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED`, `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED`, `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED`.
+
+Pushed commits on this branch: `1027b7d` (45-path / 217 apply package) and `5b7cab8` (Auth/seed runner). Local HEAD equals origin at `5b7cab8`. Working tree stays dirty on purpose until the owner approves the exact CR1-E-R2 checkpoint file list.
+
+Two local 217 ledger-test failures were contract bugs, not database failures: after authorized 217 the gitignored ledger exists and CLI dry-run correctly refuses reapply. Tests assumed the ledger was absent. They now cover **pre-apply (absent)** and **post-apply (217 verified — refuse reapply)**. The real ledger was not deleted.
+
+Auth users and Class A baseline **seeded** on permanent staging (3 Auth users, 1 tenant, 3 profiles, 3 acceptance templates / 6 rule rows). Package upload and Sync Now were **not** started. SQL approval remains **no**. Dedicated Auth/seed flag `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED` is **no**. Runner: `scripts/f10c2/applyPermanentStagingAuthSeed.mjs`. Local gitignored ledger: `.permanent-staging-auth-seed-ledger.json`. Do not re-run Auth/seed.
 
 ## CR1-E disposable evidence (2026-08-28)
 
@@ -82,7 +97,7 @@ Physical runs and snapshots were not modified. Sync Now was not clicked.
 
 ## Tests
 
-`npm run test:f10c2`: **50 files, 497 passed, 14 todo**.
+`npm run test:f10c2`: **51 files, 512 passed, 14 todo**. Zero failed.
 
 ## Physical iPerf proof (immutable)
 
@@ -104,7 +119,7 @@ Historical snapshots are immutable. Changing today’s Current Criteria must not
 Stop using the disposable project for normal feature development after permanent staging cutover succeeds. Package: `docs/f10c2/permanent-staging/CUTOVER_PACKAGE.md`. ADR: `docs/adr/0001-permanent-staging-before-continued-feature-development.md`.
 Do not blindly copy disposable data. Classify A/B/C in the cutover package. Authorized staging name/ref: `babydragon-permanent-staging` / `qxtnoxkyyancndgswjnu`.
 
-Schema 45/45 is applied. SQL **217** is applied and verified. The Auth/Class A seed runner is committed and hashed. Auth users and the approved Class A baseline seed were **not** executed. Baseline templates remain **approved definitions only — not seeded**.
+Schema 45/45 is applied. SQL **217** is applied and verified. Auth users and the approved Class A baseline seed are **applied** (MobbiTech tenant; Standard Data Throughput, Standard Voice Calls, Combined Data and Voice). No projects, tasks, runs, QC, artifacts, or storage objects. Canonical FE role is `fe`.
 
 ## Production
 
@@ -112,9 +127,9 @@ Isolated. Unauthorized. Untouched.
 
 ## Exact next authorized action
 
-1. After the Auth/seed runner checkpoint is pushed and local equals origin: set `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED=yes` locally and run `node scripts/f10c2/applyPermanentStagingAuthSeed.mjs --execute`. Reset the flag to **no** after success or failure. Do not reuse the 45-path or 217 SQL flags.
-2. Do not reapply 217. Do not re-apply the 45-path wrapper. Do not apply 218. Do not run the 217 recovery file.
-3. Do not restore `F10C2-P4BU-E2E`. Do not SQL-reactivate **CR1-D-R2 E2E Data Rule**. Do not reapply 216 on disposable. Do not apply 214.
+1. Owner approves the exact CR1-E-R2 checkpoint file list, then commit/push (not in this pass).
+2. After that checkpoint: owner-authorized controlled project/task lifecycle and physical E2E validation. Do not upload the protected queue. Do not click Sync Now until authorized.
+3. Do not reapply 217. Do not re-apply the 45-path wrapper. Do not apply 218. Do not run the 217 recovery file. Do not re-run Auth/seed. Do not restore `F10C2-P4BU-E2E`. Do not SQL-reactivate **CR1-D-R2 E2E Data Rule**. Do not reapply 216 on disposable. Do not apply 214.
 
 ## Remaining cosmetic and functional issues
 

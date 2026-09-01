@@ -1,5 +1,7 @@
 /**
- * CR1-E-R1 217-only hashed runner contracts. No database connection.
+ * CR1-E-R1 / CR1-E-R2 217-only hashed runner contracts. No database connection.
+ * Injects 217 ledger snapshots for pre-apply (absent) and post-apply (verified — refuse reapply).
+ * Does not delete the gitignored 217 apply ledger.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,6 +29,7 @@ import {
   assert217HashesMatch,
   attachAuthorizedStaging217SqlSender,
   is217AlreadyVerified,
+  load217ApplyLedger,
   parseCliFlags,
   redact217Text,
   runPermanentStaging217DryRun,
@@ -49,6 +52,18 @@ const COMPLETE_45 = (() => {
     })),
   }
 })()
+const ABSENT_217 = { exists: false, applied: null }
+const VERIFIED_217 = {
+  exists: true,
+  targetRef: AUTHORIZED_STAGING_PROJECT_REF,
+  targetName: AUTHORIZED_STAGING_PROJECT_NAME,
+  applied: {
+    number: '217',
+    path: MIGRATION_217_FORWARD,
+    sha256: 'd'.repeat(64),
+    verified: true,
+  },
+}
 
 function fixtureGit(overrides = {}) {
   return {
@@ -85,7 +100,7 @@ function dryRun(overrides = {}) {
     argv: [],
     writeLedger: false,
     applyLedger: COMPLETE_45,
-    applyLedger217: { exists: false, applied: null },
+    applyLedger217: ABSENT_217,
     git: fixtureGit(),
     ...overrides,
   })
@@ -117,7 +132,7 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
       argv: ['--execute'],
       writeLedger: false,
       applyLedger: COMPLETE_45,
-      applyLedger217: { exists: false, applied: null },
+      applyLedger217: ABSENT_217,
       git: fixtureGit(),
       sqlSender: async () => {
         throw new Error('sql sender must not run')
@@ -136,7 +151,7 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
       argv: ['--execute'],
       writeLedger: false,
       applyLedger: COMPLETE_45,
-      applyLedger217: { exists: false, applied: null },
+      applyLedger217: ABSENT_217,
       git: fixtureGit(),
     })
     expect(denied.ok).toBe(false)
@@ -153,7 +168,7 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
       argv: [],
       writeLedger: false,
       applyLedger: COMPLETE_45,
-      applyLedger217: { exists: false, applied: null },
+      applyLedger217: ABSENT_217,
       git: fixtureGit(),
       sqlSender: async () => {
         throw new Error('sql sender must not run')
@@ -230,19 +245,8 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
   })
 
   it('already-applied 217 refuses reapplication', async () => {
-    const applied = {
-      exists: true,
-      targetRef: AUTHORIZED_STAGING_PROJECT_REF,
-      targetName: AUTHORIZED_STAGING_PROJECT_NAME,
-      applied: {
-        number: '217',
-        path: MIGRATION_217_FORWARD,
-        sha256: 'd'.repeat(64),
-        verified: true,
-      },
-    }
-    expect(is217AlreadyVerified(applied)).toBe(true)
-    const dry = dryRun({ applyLedger217: applied })
+    expect(is217AlreadyVerified(VERIFIED_217)).toBe(true)
+    const dry = dryRun({ applyLedger217: VERIFIED_217 })
     expect(dry.ok).toBe(false)
     expect(dry.sqlSent).toBe(false)
     expect(dry.ledger.blockers.some((b) => b.includes('already applied'))).toBe(true)
@@ -253,7 +257,7 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
       argv: ['--execute'],
       writeLedger: false,
       applyLedger: COMPLETE_45,
-      applyLedger217: applied,
+      applyLedger217: VERIFIED_217,
       git: fixtureGit(),
       sqlSender: async () => {
         throw new Error('sql sender must not run')
@@ -261,6 +265,40 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
     })
     expect(exec.sqlSent).toBe(false)
     expect(exec.blockers.some((b) => b.includes('already applied'))).toBe(true)
+  })
+
+  it('accepts both pre-apply (ledger absent) and post-apply (217 verified) ledger states without deleting the gitignored file', () => {
+    const gitignore = fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8')
+    expect(gitignore).toMatch(/^\.permanent-staging-217-apply-ledger\.json\s*$/m)
+    expect(is217AlreadyVerified(ABSENT_217)).toBe(false)
+
+    const absentDry = dryRun({ applyLedger217: ABSENT_217 })
+    expect(absentDry.ok).toBe(true)
+    expect(absentDry.sqlSent).toBe(false)
+    expect(absentDry.ledger.migration217.alreadyApplied).toBe(false)
+    expect(absentDry.ledger.verdict).toContain('WAITING FOR EXPLICIT 217 APPROVAL')
+
+    const completeDry = dryRun({ applyLedger217: VERIFIED_217 })
+    expect(is217AlreadyVerified(VERIFIED_217)).toBe(true)
+    expect(completeDry.ok).toBe(false)
+    expect(completeDry.sqlSent).toBe(false)
+    expect(completeDry.ledger.migration217.alreadyApplied).toBe(true)
+    expect(completeDry.ledger.blockers.some((b) => b.includes('already applied'))).toBe(true)
+
+    const local = load217ApplyLedger(ROOT)
+    if (local.exists) {
+      expect(is217AlreadyVerified(local)).toBe(true)
+      expect(local.targetRef).toBe(AUTHORIZED_STAGING_PROJECT_REF)
+      expect(local.targetName).toBe(AUTHORIZED_STAGING_PROJECT_NAME)
+      expect(String(local.applied?.number)).toBe('217')
+      expect(local.applied?.verified).toBe(true)
+      const blob = JSON.stringify(local)
+      expect(blob.toLowerCase()).not.toContain(DENIED_PRODUCTION_REF_PREFIX)
+      expect(blob).not.toContain(DENIED_DISPOSABLE_PROJECT_REF)
+      expect(blob).not.toMatch(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
+      expect(blob).not.toMatch(/postgres(?:ql)?:\/\/[^\s:]+:[^\s@]+@/i)
+      expect(fs.existsSync(path.join(ROOT, APPLY_LEDGER_217_REL))).toBe(true)
+    }
   })
 
   it('only 217 forward can execute, then verification must pass', async () => {
@@ -271,7 +309,7 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
       argv: ['--execute'],
       writeLedger: false,
       applyLedger: COMPLETE_45,
-      applyLedger217: { exists: false, applied: null },
+      applyLedger217: ABSENT_217,
       git: fixtureGit(),
       sqlSender: async (payload) => {
         sent.push(payload)
@@ -295,7 +333,7 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
       argv: ['--execute'],
       writeLedger: false,
       applyLedger: COMPLETE_45,
-      applyLedger217: { exists: false, applied: null },
+      applyLedger217: ABSENT_217,
       git: fixtureGit(),
       sqlSender: async (payload) => {
         if (payload.role === 'verification') throw new Error('verify failed')
@@ -330,7 +368,7 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
       argv: ['--execute'],
       writeLedger: false,
       applyLedger: COMPLETE_45,
-      applyLedger217: { exists: false, applied: null },
+      applyLedger217: ABSENT_217,
       git: fixtureGit(),
       sqlSender: async (payload) => {
         sent.push(payload.role)
@@ -343,22 +381,30 @@ describe('f10c2 cr1-e-r1 — 217-only hashed runner', () => {
     expect(result.authCreated).toBe(false)
     expect(result.seedCreated).toBe(false)
     expect(sent).toEqual(['forward'])
-    expect(fs.existsSync(path.join(ROOT, APPLY_LEDGER_217_REL))).toBe(false)
     expect(EXECUTION_PACKAGE_217).toContain(HASH_MANIFEST_217_REL)
   })
 
-  it('CLI dry-run exits 0 and prints SQL sent: no', () => {
+  it('CLI dry-run sends no SQL; absent ledger waits for approval, complete ledger refuses reapply', () => {
     const spawned = spawnSync(process.execPath, ['scripts/f10c2/applyPermanentStaging217.mjs'], {
       cwd: ROOT,
       encoding: 'utf8',
       env: { ...process.env },
     })
-    expect(spawned.status).toBe(0)
     expect(spawned.stdout).toContain('SQL sent: no')
     expect(spawned.stdout).toContain('Auth/seed/upload created: no')
-    expect(spawned.stdout).toContain('WAITING FOR EXPLICIT 217 APPROVAL')
     expect(spawned.stdout).not.toMatch(/postgres(?:ql)?:\/\/[^\s:]+:[^\s@]+@/)
     expect(spawned.stdout).not.toMatch(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/)
+
+    const local = load217ApplyLedger(ROOT)
+    if (is217AlreadyVerified(local)) {
+      expect(spawned.status).toBe(2)
+      expect(spawned.stdout).toContain('217 already applied: yes')
+      expect(spawned.stdout).toMatch(/already applied/)
+    } else {
+      expect(spawned.status).toBe(0)
+      expect(spawned.stdout).toContain('217 already applied: no')
+      expect(spawned.stdout).toContain('WAITING FOR EXPLICIT 217 APPROVAL')
+    }
   })
 
   it('Session Pooler attach refuses wrong/denied targets before connecting', async () => {

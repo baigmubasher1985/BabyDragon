@@ -1,9 +1,9 @@
 # Permanent staging cutover package (prepare only)
 
-**Status:** CR1-E-R2 — permanent-staging **45/45 applied and verified**. SQL **217** privilege hardening **applied and verified**. Auth/Class A seed runner is committed (`scripts/f10c2/applyPermanentStagingAuthSeed.mjs`) and remains dry-run until `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED=yes` **and** `--execute`. Dedicated Auth/seed flag is **no**. 45-path and 217 SQL flags remain **no**. Auth users and baseline seed were **not executed**. Draft **218** is not required. Do not reapply 217. Do not re-apply the 45-path set.
-**Gate:** CR1-E-R2 AUTH/SEED RUNNER READY — WAITING FOR EXPLICIT AUTH_SEED APPROVAL — PRODUCTION UNTOUCHED
+**Status:** CR1-E-R2 READY FOR PROTECTED CHECKPOINT — permanent-staging **45/45 applied and verified**. SQL **217** privilege hardening **applied and verified**. Auth users and Class A baseline **seeded** (3 Auth / 1 tenant / 3 profiles / 3 templates / 6 rules). All execution approval flags are **no**. Draft **218** is not required. Do not reapply 217. Do not re-apply the 45-path set. Do not re-run Auth/seed. Package upload and Sync Now were not started. Next phase is controlled project/task lifecycle and physical E2E.
+**Gate:** CR1-E-R2 READY FOR PROTECTED CHECKPOINT — PERMANENT STAGING AUTH AND CLASS A BASELINE VERIFIED — PRODUCTION UNTOUCHED
 **Owner:** MobbiTech Global LLC · Product: BabyDragon / NetField-360
-**Dated:** 2026-08-29
+**Dated:** 2026-09-01
 
 Authorized staging identity (not production):
 
@@ -18,9 +18,9 @@ Authorized staging identity (not production):
 - 217 hash manifest: `scripts/f10c2/permanentStaging217.hashes.json` (forward, verification, rollback SHA-256)
 - Auth/seed hash manifest: `scripts/f10c2/permanentStagingAuthSeed.hashes.json` (runner + Class A baseline spec SHA-256). No commit SHA is hardcoded.
 - Git-gate (all staging runners): approved branch `step-1j2-f10c1i-security-baseline`; local HEAD equals remote-tracking; no staged changes; execution-package files match committed Git content on execute; reviewed hashes match the dedicated manifest; optional `F10C2_PERMANENT_STAGING_APPROVED_GIT_SHA` must equal current HEAD if supplied. No commit SHA is hardcoded.
-- Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 gitignored ledger `.permanent-staging-217-apply-ledger.json` records 217 once (verified). Auth/seed gitignored ledger `.permanent-staging-auth-seed-ledger.json` is written only after an authorized execute.
+- Local gitignored apply ledger: `.permanent-staging-apply-ledger.json` — 45 verified entries; do not delete to make tests pass. 217 gitignored ledger `.permanent-staging-217-apply-ledger.json` records 217 once (verified). Auth/seed gitignored ledger `.permanent-staging-auth-seed-ledger.json` records the Class A seed (verified).
 
-The 45-path chain and SQL **217** are already applied. Auth users, baseline seed, package upload, and Sync Now were not started. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
+The 45-path chain, SQL **217**, Auth users, and Class A baseline are already applied. Package upload and Sync Now were not started. Production prefix `nsne` and disposable ref `cxyqqgmepiphyejvceum` remain denied.
 
 Do not copy the disposable database. Classify data A / B / C below.
 
@@ -117,7 +117,7 @@ Next-apply adapter: **implemented.** Historical `000_disposable_operational_sche
 
 ## 2. Migrations to apply (permanent staging, fresh)
 
-**Applied and verified on permanent staging (45/45).** Exact executed ledger ids: `000, 001, 002, 003, 004, 005, 006, 007, 008, 011, 014, 015, 016, 017, 018, 019, 020, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115, 201, 202, 203, 204, 205, 206, 208, 209, 210, 211, 212, 213, 215, 216`. Do not re-apply. Do not apply `009`, `010`, `012`, `013`, `112`, `207`, or `214`. Draft `217` is ready for a later **217-only** hashed apply. 45-path SQL execution approval is **no**. Dedicated 217 approval is **no**.
+**Applied and verified on permanent staging (45/45 + 217).** Exact executed 45-path ledger ids: `000, 001, 002, 003, 004, 005, 006, 007, 008, 011, 014, 015, 016, 017, 018, 019, 020, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 113, 114, 115, 201, 202, 203, 204, 205, 206, 208, 209, 210, 211, 212, 213, 215, 216`. SQL **217** applied and verified once via the dedicated hashed runner. Do not re-apply the 45-path set. Do not reapply 217. Do not apply `009`, `010`, `012`, `013`, `112`, `207`, or `214`. All execution approval flags (`F10C2_PERMANENT_STAGING_SQL_EXECUTION_APPROVED`, `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED`, `F10C2_PERMANENT_STAGING_AUTH_SEED_APPROVED`) are **no**. Do not re-run Auth/seed. Do not re-run SQL.
 
 ## 3. Retired / never-run drafts
 
@@ -130,7 +130,7 @@ Next-apply adapter: **implemented.** Historical `000_disposable_operational_sche
 | `112_result_artifacts_storage_contract` | Documentation-only; bucket DDL is `114` |
 | `207_rls_tenant_storage_assumptions` | **NEVER EXECUTE** |
 | `214_cr1b_acceptance_applicability` | **NEVER RUN.** Quarantined at `supabase/drafts/f10c2/never-run/214/`. 215 supersedes. Not silently required. Do not execute |
-| `217_cr1e_staging_grant_hardening` | **CR1E_DRAFT_ONLY.** Privilege contract approved. Apply only via `scripts/f10c2/applyPermanentStaging217.mjs` after `F10C2_PERMANENT_STAGING_217_EXECUTION_APPROVED=yes` and `--execute`. Not in the 45-path allowlist. Recovery is manual emergency only and reopens client writes; prefer a forward-fix, especially on production |
+| `217_cr1e_staging_grant_hardening` | **CR1E_DRAFT_ONLY.** Privilege contract approved and **applied once** on permanent staging. Do not reapply. Dedicated hashed runner refuses reapply when the gitignored 217 ledger is complete. Not in the 45-path allowlist. Recovery is manual emergency only and reopens client writes; prefer a forward-fix, especially on production |
 | `218_cr1e_vendor_contract` | **Not required.** Vendor is persisted `projects.customer` text. No `vendors` table |
 
 Disposable-only synthetic fixture **301** is **not** part of permanent staging by default.
@@ -174,7 +174,7 @@ Draft 217 current-table effect (approved plan): revoke anon/PUBLIC on the sixtee
 
 Draft 217 future-object effect (catalog-inspected 2026-08-29): `ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public` revokes automatic PUBLIC/anon/authenticated privileges on future tables, sequences, and functions. The creating migration must GRANT explicitly. No convenience authenticated default. `postgres` is the owner of all current public tables/functions. `supabase_admin` also has public client default ACLs, but the staging session is not a member of that role, so those platform defaults remain as a documented residual. 217 does not change storage/auth/realtime/extension defaults.
 
-217 recovery (kept under `rollback/`): **manual emergency recovery**, not a bit-identical inverse. It reopens direct client writes. It does not restore table-wipe (TRUNCATE) or MAINTAIN. It restores captured postgres public client defaults minus those broader privileges. Never run automatically. Production documentation: prefer a forward-fix over reopening unsafe grants. Do not apply 217 in this pass.
+217 recovery (kept under `rollback/`): **manual emergency recovery**, not a bit-identical inverse. It reopens direct client writes. It does not restore table-wipe (TRUNCATE) or MAINTAIN. It restores captured postgres public client defaults minus those broader privileges. Never run automatically. Production documentation: prefer a forward-fix over reopening unsafe grants. 217 is already applied; do not reapply.
 
 ## 8. Storage bucket definitions and policies
 
@@ -227,7 +227,7 @@ Compatible cutover-gate aliases: `F10C2_PERMANENT_STAGING_*` (including `CONFIRM
 - carefully selected acceptance-rule **templates** (below)
 - initial `super_admin` and optional `admin` Auth users created on staging (not imported from disposable)
 
-**Proposed baseline acceptance templates (approved definitions — human review — not seeded):**
+**Baseline acceptance templates (seeded on permanent staging, version 1, tenant-scoped, not default-assigned):**
 
 1. **Standard Data Throughput**
    - Download enabled. Minimum DL throughput per passing iteration: 10 Mbps. Required passing DL iterations: 20.
@@ -258,7 +258,7 @@ Explicitly **excluded** from any seed: CR1 synthetic names, disposable-only vers
 
 ## 12. Verification SQL
 
-Run the `verification/` partner for every applied slug individually. For slot 000 use `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.verify.sql` (not the historical disposable verify file). Then: `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`, `201`, `202`, `203`, `204`, `205`, `206`, `208`, `209`, `210`, `211`, `212`, `213`, `215`, `216`. SELECT-only. Stop on mismatch. Do not run verification for `009`, `010`, `012`, `013`, `112`, `207`, or `214`. Draft `217` verification exists (current-table grants, postgres public default ACL, broadening/table-wipe detection, documented `supabase_admin` residual, storage defaults untouched) but must not run until that slug is authorized.
+Run the `verification/` partner for every applied slug individually. For slot 000 use `supabase/drafts/f10c2/permanent-staging/000_permanent_staging_operational_schema.verify.sql` (not the historical disposable verify file). Then: `001`, `002`, `003`, `004`, `005`, `006`, `007`, `008`, `011`, `014`, `015`, `016`, `017`, `018`, `019`, `020`, `101`, `102`, `103`, `104`, `105`, `106`, `107`, `108`, `109`, `110`, `111`, `113`, `114`, `115`, `201`, `202`, `203`, `204`, `205`, `206`, `208`, `209`, `210`, `211`, `212`, `213`, `215`, `216`. SELECT-only. Stop on mismatch. Do not run verification for `009`, `010`, `012`, `013`, `112`, `207`, or `214`. Draft `217` verification already ran with the authorized 217 apply. Do not re-run 217 as a reapply.
 
 ## 13. Automated contract tests
 
@@ -388,9 +388,11 @@ Preserve expected truth for comparison:
 
 ---
 
-## Post-apply verification sequence (plan only — do not run in this pass)
+## Post-apply verification sequence (historical plan — 45/45 + 217 + Auth/seed already completed)
 
-After a later explicit SQL approval and a successful hashed apply, verify in this exact order. Stop on first failure. Do not seed, create Auth, or upload until the empty-Auth / no-synthetic checks pass.
+**CR1-E-R2 verified baseline (2026-09-01, no further SQL/Auth/seed):** Auth **3**, tenants **1**, profiles **3**, templates **3**, acceptance rules **6**. Projects / tasks / field-test runs / QC / artifacts / storage objects remain **0**. All execution approval flags remain **no**. Production and disposable untouched. Next authorized work is controlled project/task lifecycle and physical E2E — not another apply pass.
+
+The sequence below was the original empty-DB plan. Do not re-run it as SQL. Empty-Auth-before-creation is historical: staging Auth users already exist.
 
 1. **Tables** — adapter verify SQL; every later `verification/` partner; 14 operational tables + later CR1 tables exist; RLS enabled on bootstrap tables; business tables empty until authorized seed.
 2. **RPCs** — 004–007, 105–108, 113, 206, 212, 215, 216 exist as SECURITY DEFINER where specified; `set_acceptance_profile_active` present; no 214 objects.
@@ -403,7 +405,7 @@ After a later explicit SQL approval and a successful hashed apply, verify in thi
 9. **Ingest / idempotency** — `ingest_field_test_canonical_result` / `submit_field_test_run`; repeat submit does not duplicate `client_run_id`; artifact checksum idempotency (106/107).
 10. **Snapshots** — `evaluateRun` returns the supplied snapshot; do not rewrite historical HTTP `cf39f235-…` or iPerf `1dab1239-…` (those live on disposable evidence; staging must not import them).
 11. **QC** — task-level QC does not auto-pass; 108 / field_test_qc_reviews; human QC separate from computed QC.
-12. **Empty Auth before account creation** — Auth admin user count 0 (or proven empty) **before** creating staging SA/Admin/FE; then create real staging users, never production identities.
+12. **Empty Auth before account creation** — historical gate before the authorized Auth/seed execute. Staging now has 3 Auth users / 3 profiles. Do not re-create accounts. Do not re-run Auth/seed.
 13. **No synthetic results** — no SYNTHETIC / F10C2-P4BU / disposable fixture rows; `F10C2_PERMANENT_STAGING_SEED_SYNTHETIC_FIELD_RESULTS=no`.
 14. **No disposable marker** — `current_setting('app.f10c2_disposable_confirmed', true)` is not `yes`; `public.profiles` comment is not `DISPOSABLE ONLY`.
 15. **Staging identity** — project name `babydragon-permanent-staging`, ref `qxtnoxkyyancndgswjnu`, host `qxtnoxkyyancndgswjnu.supabase.co`, pooler user `postgres.qxtnoxkyyancndgswjnu`.
@@ -419,6 +421,13 @@ Two local failures in `tests/f10c2/cr1ePermanentStagingApply.contract.test.js` w
 
 1. Wrapper Git gate used to hardcode a commit SHA (`REQUIRED_GIT_HEAD`). That stale-SHA cycle is removed. Both the 45-path wrapper and the 217-only runner use the SHA-free git-gate (approved branch, HEAD == remote-tracking, no staged changes, clean execution-package files on execute, reviewed hashes, optional locally supplied approved SHA).
 2. Execute tests assumed `.permanent-staging-apply-ledger.json` did not exist. After 45/45 apply the gitignored ledger has 45 verified entries. Tests now cover pre-apply (absent) and post-apply (exactly 45 verified, reviewed hashes, authorized staging ref, no secrets, no production/disposable identity). Wrapper resume policy treats a complete ledger as already applied — refuse re-apply. The ledger was not deleted. The 217-only runner refuses unless that 45-entry ledger is complete and verified.
+
+## CR1-E-R2 217 ledger test-contract correction
+
+Two local failures in `tests/f10c2/cr1ePermanentStaging217.contract.test.js` were stale contracts, not database failures:
+
+1. A mocked execute path asserted `.permanent-staging-217-apply-ledger.json` was absent. After authorized 217 the gitignored ledger exists (217 verified). Tests must not delete it.
+2. CLI dry-run expected exit 0 and `WAITING FOR EXPLICIT 217 APPROVAL`. After a complete verified ledger the CLI correctly refuses reapply (SQL sent: no). Tests now inject **pre-apply (absent)** and **post-apply (217 verified — refuse reapply)** snapshots, matching the 45-path apply-test pattern.
 
 ## Vendor contract (no 218)
 
@@ -440,15 +449,14 @@ Current persistence model: **project text field** `projects.customer`.
 
 Gap/loss point: Field Results previously selected `projects.id,name,market` and dropped `customer`, so the Vendor column could not show the persisted name. That is a provider mapping gap, now corrected. Do not create a normalized vendors table merely because the UI has a Vendor column.
 
-## What CR1-E / CR1-E-R1 did not do (still true)
+## CR1-E-R2 verified baseline and remaining holds
 
-- Permanent staging 45/45 applied in the authorized earlier execute pass; 45-path SQL approval is now **no** again
-- Draft **217** privilege contract approved and applied once on permanent staging; 217-only hashed runner has Session Pooler sender attached and remains dedicated. Dedicated 217 approval is **no** again. Recovery is manual emergency only.
+- Permanent staging 45/45 applied in the authorized earlier execute pass; 45-path SQL approval is now **no** again. Do not re-run.
+- Draft **217** privilege contract approved and applied once on permanent staging; 217-only hashed runner has Session Pooler sender attached and remains dedicated. Dedicated 217 approval is **no** again. Recovery is manual emergency only. Do not reapply.
 - Draft **218** not created (not required)
 - 216 newly applied once on disposable only; 215 not reapplied; 214 not executed
-- Auth/Class A seed runner committed; dedicated AUTH_SEED approval is **no**; Auth/seed not executed
-- No Auth users created
-- No baseline seed
+- Auth/Class A seed applied on permanent staging (3 Auth users, 1 MobbiTech tenant, 3 profiles, 3 templates / 6 acceptance_rules). Dedicated AUTH_SEED approval is **no** again. Do not re-run Auth/seed.
+- No projects, tasks, field-test runs, QC, artifacts, or storage objects
 - No packages uploaded
 - Sync Now not clicked
 - Disposable not contacted in this pass
